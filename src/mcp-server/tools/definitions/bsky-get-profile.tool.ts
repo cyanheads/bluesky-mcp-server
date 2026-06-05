@@ -4,7 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
 const LabelSchema = z
@@ -72,8 +72,22 @@ export const bskyGetProfile = tool('bsky_get_profile', {
 
   async handler(input, ctx) {
     ctx.log.info('Fetching Bluesky profile', { actor: input.actor });
-    const profile = await getBlueskyService().getProfile(input.actor, ctx);
-    return profile;
+    try {
+      return await getBlueskyService().getProfile(input.actor, ctx);
+    } catch (err) {
+      if (err instanceof McpError) {
+        const body = (err.data as { responseBody?: string } | undefined)?.responseBody ?? '';
+        if (
+          err.data &&
+          (body.includes('not found') || body.includes('Not Found') || body.includes('NotFound'))
+        ) {
+          throw ctx.fail('actor_not_found', `Actor not found: "${input.actor}"`, {
+            ...ctx.recoveryFor('actor_not_found'),
+          });
+        }
+      }
+      throw err;
+    }
   },
 
   format: (result) => {

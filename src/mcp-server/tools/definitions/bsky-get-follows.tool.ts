@@ -4,8 +4,9 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
+import type { GraphResult } from '@/services/bluesky/types.js';
 
 const ActorSchema = z
   .object({
@@ -98,10 +99,26 @@ export const bskyGetFollows = tool('bsky_get_follows', {
       limit: input.limit,
       ...(input.cursor ? { cursor: input.cursor } : {}),
     };
-    const result =
-      input.direction === 'followers'
-        ? await getBlueskyService().getFollowers(params, ctx)
-        : await getBlueskyService().getFollows(params, ctx);
+    let result: GraphResult;
+    try {
+      result =
+        input.direction === 'followers'
+          ? await getBlueskyService().getFollowers(params, ctx)
+          : await getBlueskyService().getFollows(params, ctx);
+    } catch (err) {
+      if (err instanceof McpError) {
+        const body = (err.data as { responseBody?: string } | undefined)?.responseBody ?? '';
+        if (
+          err.data &&
+          (body.includes('not found') || body.includes('Not Found') || body.includes('NotFound'))
+        ) {
+          throw ctx.fail('actor_not_found', `Actor not found: "${input.actor}"`, {
+            ...ctx.recoveryFor('actor_not_found'),
+          });
+        }
+      }
+      throw err;
+    }
 
     ctx.enrich({ totalReturned: result.actors.length });
     if (result.actors.length === 0) {

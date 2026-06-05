@@ -10,7 +10,7 @@ export interface Label {
   val: string;
 }
 
-/** Normalized embed union — images, external link cards, or quoted posts. */
+/** Normalized embed union — images, external link cards, quoted posts, or videos. */
 export type Embed =
   | {
       type: 'images';
@@ -18,6 +18,13 @@ export type Embed =
     }
   | { type: 'external'; uri: string; title: string; description: string; thumb?: string }
   | { type: 'record'; uri: string; cid: string; text?: string; authorHandle?: string }
+  | {
+      type: 'video';
+      playlist?: string;
+      thumbnail?: string;
+      presentation?: string;
+      aspectRatio?: { width: number; height: number };
+    }
   | { type: 'unknown'; raw: string };
 
 /** Public actor profile returned by getProfile / searchActors / etc. */

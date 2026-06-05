@@ -4,8 +4,9 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
+import type { AuthorFeedResult } from '@/services/bluesky/types.js';
 
 /** Embed uses passthrough so all sub-fields flow through structuredContent while format() renders the key data. */
 const EmbedSchema = z
@@ -13,10 +14,11 @@ const EmbedSchema = z
   .passthrough()
   .describe(
     'Media or link embed attached to this post. ' +
-      'type: "images" | "external" | "record" | "unknown". ' +
+      'type: "images" | "external" | "record" | "video" | "unknown". ' +
       'images: array of { url, alt, aspectRatio? }. ' +
       'external: { uri, title, description, thumb? }. ' +
       'record: { uri, cid, text?, authorHandle? }. ' +
+      'video: { playlist?, thumbnail?, presentation?, aspectRatio? }. ' +
       'unknown: { raw }.',
   );
 
@@ -131,15 +133,31 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
       filter: input.filter,
       limit: input.limit,
     });
-    const result = await getBlueskyService().getAuthorFeed(
-      {
-        actor: input.actor,
-        filter: input.filter,
-        limit: input.limit,
-        ...(input.cursor ? { cursor: input.cursor } : {}),
-      },
-      ctx,
-    );
+    let result: AuthorFeedResult;
+    try {
+      result = await getBlueskyService().getAuthorFeed(
+        {
+          actor: input.actor,
+          filter: input.filter,
+          limit: input.limit,
+          ...(input.cursor ? { cursor: input.cursor } : {}),
+        },
+        ctx,
+      );
+    } catch (err) {
+      if (err instanceof McpError) {
+        const body = (err.data as { responseBody?: string } | undefined)?.responseBody ?? '';
+        if (
+          err.data &&
+          (body.includes('not found') || body.includes('Not Found') || body.includes('NotFound'))
+        ) {
+          throw ctx.fail('actor_not_found', `Actor not found: "${input.actor}"`, {
+            ...ctx.recoveryFor('actor_not_found'),
+          });
+        }
+      }
+      throw err;
+    }
     ctx.enrich({ totalReturned: result.feed.length });
     if (result.feed.length === 0) {
       ctx.enrich.notice(`No posts found for actor "${input.actor}" with filter "${input.filter}".`);
@@ -183,6 +201,11 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
         } else if (embedType === 'record') {
           parts.push(`💬 Quoted post AT-URI: \`${embed.uri}\``);
           if (embed.text) parts.push(`   > ${embed.text}`);
+        } else if (embedType === 'video') {
+          const vid = embed as { thumbnail?: string; playlist?: string; presentation?: string };
+          const label = vid.presentation === 'gif' ? '🎞 GIF' : '🎬 Video';
+          if (vid.thumbnail) parts.push(`${label}: ${vid.thumbnail}`);
+          else parts.push(label);
         }
       }
       if (p.replyToUri) parts.push(`↩ Reply to \`${p.replyToUri}\``);

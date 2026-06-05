@@ -129,9 +129,14 @@ describe('bskyGetFollows', () => {
 
   // --- Actor not found ---
 
-  it('propagates NotFound error from service', async () => {
+  it('translates upstream 400 "Actor not found" to actor_not_found', async () => {
     const { McpError } = await import('@cyanheads/mcp-ts-core/errors');
-    mockGetFollowers.mockRejectedValue(new McpError(JsonRpcErrorCode.NotFound, 'Not found', {}));
+    mockGetFollowers.mockRejectedValue(
+      new McpError(JsonRpcErrorCode.InvalidParams, 'Fetch failed. Status: 400', {
+        responseBody: '{"error":"InvalidRequest","message":"Actor not found: ghost.bsky.social"}',
+        errorSource: 'FetchHttpError',
+      }),
+    );
 
     const ctx = createMockContext({ errors: bskyGetFollows.errors });
     const input = bskyGetFollows.input.parse({
@@ -141,6 +146,7 @@ describe('bskyGetFollows', () => {
 
     await expect(bskyGetFollows.handler(input, ctx)).rejects.toMatchObject({
       code: JsonRpcErrorCode.NotFound,
+      data: expect.objectContaining({ reason: 'actor_not_found' }),
     });
   });
 

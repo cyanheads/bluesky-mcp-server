@@ -67,6 +67,8 @@ interface RawPostRecord {
 /** @internal Raw embed from AppView — $type discriminated. */
 interface RawEmbed {
   $type?: string;
+  aspectRatio?: { width?: number; height?: number };
+  cid?: string;
   external?: { uri?: string; title?: string; description?: string; thumb?: string };
   images?: Array<{
     fullsize?: string;
@@ -74,7 +76,11 @@ interface RawEmbed {
     alt?: string;
     aspectRatio?: { width?: number; height?: number };
   }>;
+  /** Video embed fields (app.bsky.embed.video#view). */
+  playlist?: string;
+  presentation?: string;
   record?: { uri?: string; cid?: string; author?: RawActorView; value?: { text?: string } };
+  thumbnail?: string;
 }
 
 /** @internal Raw post view returned by feed, search, and thread endpoints. */
@@ -165,6 +171,17 @@ function normalizeEmbed(r: RawEmbed | undefined): Embed | undefined {
       ...(rec.author?.handle ? { authorHandle: rec.author.handle } : {}),
     };
   }
+  if (type.includes('embed.video')) {
+    return {
+      type: 'video',
+      ...(r.playlist ? { playlist: r.playlist } : {}),
+      ...(r.thumbnail ? { thumbnail: r.thumbnail } : {}),
+      ...(r.presentation ? { presentation: r.presentation } : {}),
+      ...(r.aspectRatio?.width != null && r.aspectRatio?.height != null
+        ? { aspectRatio: { width: r.aspectRatio.width, height: r.aspectRatio.height } }
+        : {}),
+    };
+  }
   return { type: 'unknown', raw: type };
 }
 
@@ -237,7 +254,7 @@ export class BlueskyService {
   }
 
   /** @internal Fetch JSON from the AppView with retry/timeout. Throws ServiceUnavailable on upstream failure. */
-  private async get<T>(
+  private get<T>(
     lexicon: string,
     params: Record<string, string | number | boolean | undefined>,
     ctx: Context,

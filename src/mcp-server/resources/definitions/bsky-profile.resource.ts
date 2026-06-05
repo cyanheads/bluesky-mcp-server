@@ -4,7 +4,7 @@
  */
 
 import { resource, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
 export const bskyProfileResource = resource('bsky://profile/{actor}', {
@@ -32,7 +32,22 @@ export const bskyProfileResource = resource('bsky://profile/{actor}', {
 
   async handler(params, ctx) {
     ctx.log.debug('Fetching Bluesky profile resource', { actor: params.actor });
-    return getBlueskyService().getProfile(params.actor, ctx);
+    try {
+      return await getBlueskyService().getProfile(params.actor, ctx);
+    } catch (err) {
+      if (err instanceof McpError) {
+        const body = (err.data as { responseBody?: string } | undefined)?.responseBody ?? '';
+        if (
+          err.data &&
+          (body.includes('not found') || body.includes('Not Found') || body.includes('NotFound'))
+        ) {
+          throw ctx.fail('actor_not_found', `Actor not found: "${params.actor}"`, {
+            ...ctx.recoveryFor('actor_not_found'),
+          });
+        }
+      }
+      throw err;
+    }
   },
 
   list: async () => ({

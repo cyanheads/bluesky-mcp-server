@@ -58,6 +58,28 @@ describe('bskyGetPostThread', () => {
     mockGetPostThread.mockReset();
   });
 
+  // --- Post not found (typed contract, upstream translation) ---
+
+  it('translates upstream 404 "Post not found" to post_not_found', async () => {
+    const { McpError } = await import('@cyanheads/mcp-ts-core/errors');
+    mockGetPostThread.mockRejectedValue(
+      new McpError(JsonRpcErrorCode.NotFound, 'Fetch failed. Status: 400', {
+        responseBody: '{"error":"NotFound","message":"Post not found: at://..."}',
+        errorSource: 'FetchHttpError',
+      }),
+    );
+
+    const ctx = createMockContext({ errors: bskyGetPostThread.errors });
+    const input = bskyGetPostThread.input.parse({
+      uri: 'at://did:plc:abc/app.bsky.feed.post/deleted',
+    });
+
+    await expect(bskyGetPostThread.handler(input, ctx)).rejects.toMatchObject({
+      code: JsonRpcErrorCode.NotFound,
+      data: expect.objectContaining({ reason: 'post_not_found' }),
+    });
+  });
+
   // --- AT-URI validation ---
 
   it('rejects invalid AT-URI (missing at:// prefix) with invalid_at_uri', async () => {

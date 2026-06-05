@@ -12,10 +12,11 @@ const EmbedSchema = z
   .passthrough()
   .describe(
     'Media or link embed attached to this post. ' +
-      'type: "images" | "external" | "record" | "unknown". ' +
+      'type: "images" | "external" | "record" | "video" | "unknown". ' +
       'images: array of { url, alt, aspectRatio? }. ' +
       'external: { uri, title, description, thumb? }. ' +
       'record: { uri, cid, text?, authorHandle? }. ' +
+      'video: { playlist?, thumbnail?, presentation?, aspectRatio? }. ' +
       'unknown: { raw }.',
   );
 
@@ -220,6 +221,11 @@ export const bskySearchPosts = tool('bsky_search_posts', {
         } else if (embedType === 'record') {
           parts.push(`💬 Quoted: \`${embed.uri}\``);
           if (embed.text) parts.push(`   > ${embed.text}`);
+        } else if (embedType === 'video') {
+          const vid = embed as { thumbnail?: string; playlist?: string; presentation?: string };
+          const label = vid.presentation === 'gif' ? '🎞 GIF' : '🎬 Video';
+          if (vid.thumbnail) parts.push(`${label}: ${vid.thumbnail}`);
+          else parts.push(label);
         }
       }
       if (p.replyToUri) parts.push(`↩ Reply to \`${p.replyToUri}\``);

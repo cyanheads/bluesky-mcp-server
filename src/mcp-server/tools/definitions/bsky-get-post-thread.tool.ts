@@ -4,7 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 import type { ThreadPost } from '@/services/bluesky/types.js';
 
@@ -120,10 +120,29 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
       });
     }
 
-    const thread = await getBlueskyService().getPostThread(
-      { uri: input.uri, depth: input.depth, parentHeight: input.parent_height },
-      ctx,
-    );
+    let thread: ThreadPost;
+    try {
+      thread = await getBlueskyService().getPostThread(
+        { uri: input.uri, depth: input.depth, parentHeight: input.parent_height },
+        ctx,
+      );
+    } catch (err) {
+      if (err instanceof McpError) {
+        const body = (err.data as { responseBody?: string } | undefined)?.responseBody ?? '';
+        if (
+          err.data &&
+          (body.includes('NotFound') ||
+            body.includes('not found') ||
+            body.includes('Not Found') ||
+            body.includes('Post not found'))
+        ) {
+          throw ctx.fail('post_not_found', `Post not found: "${input.uri}"`, {
+            ...ctx.recoveryFor('post_not_found'),
+          });
+        }
+      }
+      throw err;
+    }
 
     return { thread };
   },

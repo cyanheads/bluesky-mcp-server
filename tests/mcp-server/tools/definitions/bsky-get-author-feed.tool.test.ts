@@ -95,11 +95,14 @@ describe('bskyGetAuthorFeed', () => {
 
   // --- Error contract ---
 
-  it('throws actor_not_found when service rejects with NotFound', async () => {
+  it('translates upstream 400 "Profile not found" to actor_not_found', async () => {
     const { McpError } = await import('@cyanheads/mcp-ts-core/errors');
     const { JsonRpcErrorCode } = await import('@cyanheads/mcp-ts-core/errors');
     mockGetAuthorFeed.mockRejectedValue(
-      new McpError(JsonRpcErrorCode.NotFound, 'Actor not found', {}),
+      new McpError(JsonRpcErrorCode.InvalidParams, 'Fetch failed. Status: 400', {
+        responseBody: '{"error":"InvalidRequest","message":"Profile not found"}',
+        errorSource: 'FetchHttpError',
+      }),
     );
 
     const ctx = createMockContext({ errors: bskyGetAuthorFeed.errors });
@@ -107,6 +110,7 @@ describe('bskyGetAuthorFeed', () => {
 
     await expect(bskyGetAuthorFeed.handler(input, ctx)).rejects.toMatchObject({
       code: JsonRpcErrorCode.NotFound,
+      data: expect.objectContaining({ reason: 'actor_not_found' }),
     });
   });
 

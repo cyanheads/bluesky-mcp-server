@@ -80,10 +80,13 @@ describe('bskyGetProfile', () => {
 
   // --- Actor not found (typed contract) ---
 
-  it('propagates actor_not_found when service throws NotFound', async () => {
+  it('translates upstream 400 "Profile not found" to actor_not_found', async () => {
     const { McpError } = await import('@cyanheads/mcp-ts-core/errors');
     mockGetProfile.mockRejectedValue(
-      new McpError(JsonRpcErrorCode.NotFound, 'Profile not found', {}),
+      new McpError(JsonRpcErrorCode.InvalidParams, 'Fetch failed. Status: 400', {
+        responseBody: '{"error":"InvalidRequest","message":"Profile not found"}',
+        errorSource: 'FetchHttpError',
+      }),
     );
 
     const ctx = createMockContext({ errors: bskyGetProfile.errors });
@@ -91,6 +94,21 @@ describe('bskyGetProfile', () => {
 
     await expect(bskyGetProfile.handler(input, ctx)).rejects.toMatchObject({
       code: JsonRpcErrorCode.NotFound,
+      data: expect.objectContaining({ reason: 'actor_not_found' }),
+    });
+  });
+
+  it('propagates non-not-found McpErrors unchanged', async () => {
+    const { McpError } = await import('@cyanheads/mcp-ts-core/errors');
+    mockGetProfile.mockRejectedValue(
+      new McpError(JsonRpcErrorCode.ServiceUnavailable, 'Upstream unavailable', {}),
+    );
+
+    const ctx = createMockContext({ errors: bskyGetProfile.errors });
+    const input = bskyGetProfile.input.parse({ actor: 'bsky.app' });
+
+    await expect(bskyGetProfile.handler(input, ctx)).rejects.toMatchObject({
+      code: JsonRpcErrorCode.ServiceUnavailable,
     });
   });
 
