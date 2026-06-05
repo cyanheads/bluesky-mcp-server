@@ -212,20 +212,17 @@ function normalizePost(r: RawPostView): PostView {
   };
 }
 
+/** @internal Sentinel PostView used for truncated/not-found thread stubs. */
+const STUB_POST: PostView = { uri: '', cid: '', text: '', author: { did: '', handle: '' } };
+
 function normalizeThread(node: RawThreadNode): ThreadPost {
   const typeStr = node.$type ?? '';
   if (typeStr.includes('threadViewPostMore')) {
     // The API returns a stub indicating there are more replies — surface as truncated
-    return {
-      post: { uri: '', cid: '', text: '', author: { did: '', handle: '' } },
-      truncated: true,
-    };
+    return { post: STUB_POST, truncated: true };
   }
   if (typeStr.includes('threadViewPostNotFound') || !node.post) {
-    return {
-      post: { uri: '', cid: '', text: '', author: { did: '', handle: '' } },
-      notFound: true,
-    };
+    return { post: STUB_POST, notFound: true };
   }
   const result: ThreadPost = { post: normalizePost(node.post) };
   if (node.parent) result.parent = normalizeThread(node.parent);

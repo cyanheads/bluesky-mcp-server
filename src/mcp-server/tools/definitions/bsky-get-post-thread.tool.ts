@@ -115,9 +115,11 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
 
     // Validate AT-URI format before hitting the API
     if (!input.uri.startsWith('at://')) {
-      throw ctx.fail('invalid_at_uri', `Invalid AT-URI: "${input.uri}" must start with "at://"`, {
-        ...ctx.recoveryFor('invalid_at_uri'),
-      });
+      throw ctx.fail(
+        'invalid_at_uri',
+        `Invalid AT-URI: "${input.uri}" must start with "at://"`,
+        ctx.recoveryFor('invalid_at_uri'),
+      );
     }
 
     let thread: ThreadPost;
@@ -136,9 +138,11 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
             body.includes('Not Found') ||
             body.includes('Post not found'))
         ) {
-          throw ctx.fail('post_not_found', `Post not found: "${input.uri}"`, {
-            ...ctx.recoveryFor('post_not_found'),
-          });
+          throw ctx.fail(
+            'post_not_found',
+            `Post not found: "${input.uri}"`,
+            ctx.recoveryFor('post_not_found'),
+          );
         }
       }
       throw err;

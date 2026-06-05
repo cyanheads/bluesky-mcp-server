@@ -81,9 +81,11 @@ export const bskyGetProfile = tool('bsky_get_profile', {
           err.data &&
           (body.includes('not found') || body.includes('Not Found') || body.includes('NotFound'))
         ) {
-          throw ctx.fail('actor_not_found', `Actor not found: "${input.actor}"`, {
-            ...ctx.recoveryFor('actor_not_found'),
-          });
+          throw ctx.fail(
+            'actor_not_found',
+            `Actor not found: "${input.actor}"`,
+            ctx.recoveryFor('actor_not_found'),
+          );
         }
       }
       throw err;

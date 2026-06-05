@@ -41,9 +41,11 @@ export const bskyProfileResource = resource('bsky://profile/{actor}', {
           err.data &&
           (body.includes('not found') || body.includes('Not Found') || body.includes('NotFound'))
         ) {
-          throw ctx.fail('actor_not_found', `Actor not found: "${params.actor}"`, {
-            ...ctx.recoveryFor('actor_not_found'),
-          });
+          throw ctx.fail(
+            'actor_not_found',
+            `Actor not found: "${params.actor}"`,
+            ctx.recoveryFor('actor_not_found'),
+          );
         }
       }
       throw err;
