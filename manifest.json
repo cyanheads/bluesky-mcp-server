@@ -2,8 +2,14 @@
   "manifest_version": "0.3",
   "name": "bluesky-mcp-server",
   "version": "0.1.0",
-  "description": "",
-  "author": { "name": "" },
+  "description": "Search posts, profiles, feeds, threads, and trending topics on Bluesky.",
+  "author": { "name": "cyanheads" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cyanheads/bluesky-mcp-server"
+  },
+  "homepage": "https://github.com/cyanheads/bluesky-mcp-server#readme",
+  "license": "Apache-2.0",
   "server": {
     "type": "node",
     "entry_point": "dist/index.js",

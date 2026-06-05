@@ -11,19 +11,6 @@
 
 ---
 
-## First Session
-
-This project was just scaffolded with `bunx @cyanheads/mcp-ts-core init`. You're holding a production-grade MCP framework with the hard parts already solved — error handling, telemetry, auth, transport, validation, lifecycle. What's missing is the **domain**. Your job: design the tool, resource, and service surface with the user, then implement it as small pure handlers that throw — the framework catches, classifies, and instruments the rest. Design before code; the user's first messages set direction, so wait for them before scaffolding definitions.
-
-> **Remove this section** from CLAUDE.md / AGENTS.md after completing these steps. The skills and conventions below remain — this block is one-time onboarding only.
-
-1. **Get your bearings.** Take stock of the project tree, the skills in `skills/`, and the tools/MCP servers available. Light tool use is fine for context-building — you're mapping the territory, not committing yet.
-2. **Read the framework docs** — `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` (builders, Context, errors, exports, conventions)
-3. **Run the `setup` skill** — read `skills/setup/SKILL.md` and follow its checklist (project orientation, agent protocol file selection, echo definition cleanup, skill sync)
-4. **Design the server** — read `skills/design-mcp-server/SKILL.md` and work through it with the user to map the domain into tools, resources, and services before scaffolding
-
----
-
 ## What's Next?
 
 When the user asks what's next or needs direction, suggest options based on the current project state. Common next steps:
@@ -60,35 +47,32 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 
 ```ts
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
-export const searchItems = tool('search_items', {
-  description: 'Search inventory items by query.',
+export const bskySearchActors = tool('bsky_search_actors', {
+  description: 'Find Bluesky accounts by name or handle fragment.',
   annotations: { readOnlyHint: true },
   input: z.object({
-    query: z.string().describe('Search terms'),
-    limit: z.number().default(10).describe('Max results'),
+    query: z.string().describe('Name or handle fragment to search for.'),
+    limit: z.number().int().min(1).max(100).default(25).describe('Max results (1–100).'),
   }),
   output: z.object({
-    items: z.array(z.object({
-      id: z.string().describe('Item ID'),
-      name: z.string().describe('Item name'),
-    })).describe('Matching items'),
+    actors: z.array(z.object({
+      did: z.string().describe('Permanent DID of the actor.'),
+      handle: z.string().describe('Human-readable handle, e.g. "alice.bsky.social".'),
+      displayName: z.string().optional().describe('Display name set by the actor.'),
+    })).describe('Matching actor profiles.'),
   }),
-  auth: ['inventory:read'],
 
   async handler(input, ctx) {
-    const items = await findItems(input.query, input.limit);
-    ctx.log.info('Search completed', { query: input.query, count: items.length });
-    return { items };
+    const result = await getBlueskyService().searchActors(input.query, input.limit, ctx);
+    ctx.log.info('Actor search completed', { query: input.query, count: result.actors.length });
+    return result;
   },
 
-  // format() populates content[] — the markdown twin of structuredContent.
-  // Different clients read different surfaces (Claude Code → structuredContent,
-  // Claude Desktop → content[]); both must carry the same data.
-  // Enforced at lint time: every field in `output` must appear in the rendered text.
   format: (result) => [{
     type: 'text',
-    text: result.items.map(i => `**${i.id}**: ${i.name}`).join('\n'),
+    text: result.actors.map(a => `**${a.handle}** (${a.did})${a.displayName ? ` — ${a.displayName}` : ''}`).join('\n'),
   }],
 });
 ```
@@ -97,60 +81,28 @@ export const searchItems = tool('search_items', {
 
 ```ts
 import { resource, z } from '@cyanheads/mcp-ts-core';
-import { notFound } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
-export const itemData = resource('inventory://{itemId}', {
-  description: 'Fetch an inventory item by ID.',
-  params: z.object({ itemId: z.string().describe('Item identifier') }),
-  auth: ['inventory:read'],
+export const bskyProfileResource = resource('bsky://profile/{actor}', {
+  name: 'bsky-profile',
+  description: "A Bluesky actor's public profile, addressable by handle or DID.",
+  params: z.object({
+    actor: z.string().describe('Handle (e.g. "alice.bsky.social") or DID of the actor.'),
+  }),
+  errors: [
+    {
+      reason: 'actor_not_found',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'The handle does not resolve or the profile does not exist.',
+      recovery: 'Verify the handle spelling or use bsky_search_actors to find the correct handle.',
+    },
+  ],
   async handler(params, ctx) {
-    const item = await ctx.state.get(`item:${params.itemId}`);
-    if (!item) throw notFound(`Item ${params.itemId} not found`, { itemId: params.itemId });
-    return item;
+    return await getBlueskyService().getProfile(params.actor, ctx);
   },
 });
 ```
-
-### Prompt
-
-```ts
-import { prompt, z } from '@cyanheads/mcp-ts-core';
-
-export const reviewCode = prompt('review_code', {
-  description: 'Review code for issues and best practices.',
-  args: z.object({
-    code: z.string().describe('Code to review'),
-    language: z.string().optional().describe('Programming language'),
-  }),
-  generate: (args) => [
-    { role: 'user', content: { type: 'text', text: `Review this ${args.language ?? ''} code:\n${args.code}` } },
-  ],
-});
-```
-
-### Server config
-
-```ts
-// src/config/server-config.ts — lazy-parsed, separate from framework config
-import { z } from '@cyanheads/mcp-ts-core';
-import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
-
-const ServerConfigSchema = z.object({
-  apiKey: z.string().describe('External API key'),
-  maxResults: z.coerce.number().default(100),
-});
-
-let _config: z.infer<typeof ServerConfigSchema> | undefined;
-export function getServerConfig() {
-  _config ??= parseEnvConfig(ServerConfigSchema, {
-    apiKey: 'MY_API_KEY',
-    maxResults: 'MY_MAX_RESULTS',
-  });
-  return _config;
-}
-```
-
-`parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`MY_API_KEY`) not the path (`apiKey`). Throws `ConfigurationError`, which the framework prints as a clean startup banner.
 
 ### Server instructions
 
@@ -223,20 +175,22 @@ See framework CLAUDE.md and the `api-errors` skill for the full auto-classificat
 
 ```text
 src/
-  index.ts                              # createApp() entry point
-  config/
-    server-config.ts                    # Server-specific env vars (Zod schema)
+  index.ts                              # createApp() entry point — registers tools, resource, service
   services/
-    [domain]/
-      [domain]-service.ts               # Domain service (init/accessor pattern)
-      types.ts                          # Domain types
+    bluesky/
+      bluesky-service.ts                # AT Protocol AppView HTTP client (retry, timeout, User-Agent)
+      types.ts                          # Domain types: Post, Actor, Thread, Trend, Embed
   mcp-server/
     tools/definitions/
-      [tool-name].tool.ts               # Tool definitions
+      bsky-search-posts.tool.ts         # Full-text post search with filters
+      bsky-get-profile.tool.ts          # Actor profile lookup by handle or DID
+      bsky-get-author-feed.tool.ts      # User's recent posts (filtered by type)
+      bsky-get-post-thread.tool.ts      # Full conversation thread by AT-URI
+      bsky-search-actors.tool.ts        # Actor discovery by name/handle fragment
+      bsky-get-follows.tool.ts          # Social graph edges (followers/following)
+      bsky-get-trending.tool.ts         # Real-time trending topics
     resources/definitions/
-      [resource-name].resource.ts       # Resource definitions
-    prompts/definitions/
-      [prompt-name].prompt.ts           # Prompt definitions
+      bsky-profile.resource.ts          # bsky://profile/{actor} — actor profile by handle or DID
 ```
 
 ---

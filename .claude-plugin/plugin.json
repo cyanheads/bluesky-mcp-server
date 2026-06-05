@@ -1,17 +1,17 @@
 {
-  "name": "bluesky-mcp-server",
+  "name": "@cyanheads/bluesky-mcp-server",
   "version": "0.1.0",
-  "description": "",
+  "description": "Search posts, profiles, feeds, threads, and trending topics on Bluesky via MCP. STDIO or Streamable HTTP.",
   "author": {
-    "name": ""
+    "name": "cyanheads"
   },
-  "homepage": "",
-  "repository": "",
+  "homepage": "https://github.com/cyanheads/bluesky-mcp-server#readme",
+  "repository": "git+https://github.com/cyanheads/bluesky-mcp-server.git",
   "license": "Apache-2.0",
   "mcpServers": {
-    "bluesky-mcp-server": {
+    "@cyanheads/bluesky-mcp-server": {
       "command": "npx",
-      "args": ["-y", "bluesky-mcp-server"],
+      "args": ["-y", "@cyanheads/bluesky-mcp-server"],
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio"
       }

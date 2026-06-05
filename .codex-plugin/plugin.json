@@ -1,25 +1,25 @@
 {
-  "name": "bluesky-mcp-server",
+  "name": "@cyanheads/bluesky-mcp-server",
   "version": "0.1.0",
-  "description": "",
+  "description": "Search posts, profiles, feeds, threads, and trending topics on Bluesky via MCP. STDIO or Streamable HTTP.",
   "author": {
-    "name": "",
-    "email": "",
-    "url": ""
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads/bluesky-mcp-server#readme"
   },
-  "homepage": "",
-  "repository": "",
+  "homepage": "https://github.com/cyanheads/bluesky-mcp-server#readme",
+  "repository": "git+https://github.com/cyanheads/bluesky-mcp-server.git",
   "license": "Apache-2.0",
-  "keywords": ["mcp", "mcp-server", "model-context-protocol"],
+  "keywords": ["bluesky", "atproto", "social-media", "mcp", "mcp-server", "model-context-protocol"],
   "mcpServers": "./.codex-plugin/mcp.json",
   "interface": {
-    "displayName": "bluesky-mcp-server",
-    "shortDescription": "",
+    "displayName": "@cyanheads/bluesky-mcp-server",
+    "shortDescription": "Search posts, profiles, feeds, threads, and trending topics on Bluesky via MCP. STDIO or Streamable HTTP.",
     "longDescription": "",
-    "developerName": "",
-    "category": "",
+    "developerName": "cyanheads",
+    "category": "social",
     "capabilities": ["Read"],
-    "websiteURL": "",
+    "websiteURL": "https://github.com/cyanheads/bluesky-mcp-server#readme",
     "defaultPrompt": []
   }
 }
