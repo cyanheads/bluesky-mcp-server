@@ -69,6 +69,7 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
   input: z.object({
     uri: z
       .string()
+      .max(2048)
       .describe(
         'AT-URI of the post to fetch, e.g. "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/abc123". ' +
           'Obtain from bsky_search_posts or bsky_get_author_feed.',

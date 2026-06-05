@@ -29,6 +29,7 @@ export const bskyGetProfile = tool('bsky_get_profile', {
   input: z.object({
     actor: z
       .string()
+      .max(253)
       .describe(
         'Handle (e.g. "bsky.app", "alice.bsky.social") or DID (e.g. "did:plc:z72i7hdynmk6r22z27h6tvur") of the actor to look up.',
       ),

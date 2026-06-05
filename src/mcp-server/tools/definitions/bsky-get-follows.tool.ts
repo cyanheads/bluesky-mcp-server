@@ -40,7 +40,10 @@ export const bskyGetFollows = tool('bsky_get_follows', {
     'cursor pagination to walk through the full list.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
-    actor: z.string().describe('Handle (e.g. "alice.bsky.social") or DID of the account to query.'),
+    actor: z
+      .string()
+      .max(253)
+      .describe('Handle (e.g. "alice.bsky.social") or DID of the account to query.'),
     direction: z
       .enum(['followers', 'following'])
       .describe(
@@ -55,6 +58,7 @@ export const bskyGetFollows = tool('bsky_get_follows', {
       .describe('Maximum number of actors to return per page (1–100). Default 25.'),
     cursor: z
       .string()
+      .max(2048)
       .optional()
       .describe('Opaque pagination cursor from a previous response. Omit for the first page.'),
   }),

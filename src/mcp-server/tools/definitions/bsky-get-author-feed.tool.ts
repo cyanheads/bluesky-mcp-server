@@ -81,6 +81,7 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
   input: z.object({
     actor: z
       .string()
+      .max(253)
       .describe('Handle (e.g. "alice.bsky.social") or DID of the author whose feed to fetch.'),
     filter: z
       .enum([
@@ -103,6 +104,7 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
       .describe('Maximum number of posts to return (1–100). Default 25.'),
     cursor: z
       .string()
+      .max(2048)
       .optional()
       .describe('Opaque pagination cursor from a previous response. Omit for the first page.'),
   }),

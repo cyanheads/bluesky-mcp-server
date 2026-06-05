@@ -81,9 +81,11 @@ export const bskySearchPosts = tool('bsky_search_posts', {
   input: z.object({
     query: z
       .string()
+      .max(500)
       .describe('Full-text search query, e.g. "climate change" or "#ai announcement".'),
     author_handle: z
       .string()
+      .max(253)
       .optional()
       .describe(
         'Filter to posts by this author. Accepts handle (e.g. "bsky.app") or DID. ' +
@@ -91,20 +93,24 @@ export const bskySearchPosts = tool('bsky_search_posts', {
       ),
     language: z
       .string()
+      .max(10)
       .optional()
       .describe('BCP-47 language code to restrict results to, e.g. "en", "ja", "es".'),
     tag: z
       .string()
+      .max(100)
       .optional()
       .describe('Hashtag to filter by — provide without the # prefix, e.g. "ai" not "#ai".'),
     since: z
       .string()
+      .max(32)
       .optional()
       .describe(
         'Return posts after this ISO 8601 datetime (inclusive), e.g. "2025-01-01T00:00:00Z".',
       ),
     until: z
       .string()
+      .max(32)
       .optional()
       .describe(
         'Return posts before this ISO 8601 datetime (inclusive), e.g. "2025-12-31T23:59:59Z".',
@@ -125,6 +131,7 @@ export const bskySearchPosts = tool('bsky_search_posts', {
       .describe('Maximum posts to return (1–100). Default 25.'),
     cursor: z
       .string()
+      .max(2048)
       .optional()
       .describe('Opaque pagination cursor from a previous response. Omit for the first page.'),
   }),

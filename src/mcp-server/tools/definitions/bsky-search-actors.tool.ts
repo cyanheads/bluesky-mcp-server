@@ -39,6 +39,7 @@ export const bskySearchActors = tool('bsky_search_actors', {
   input: z.object({
     query: z
       .string()
+      .max(500)
       .describe('Name or handle fragment to search for, e.g. "alice" or "nytimes.com".'),
     limit: z
       .number()
@@ -49,6 +50,7 @@ export const bskySearchActors = tool('bsky_search_actors', {
       .describe('Maximum number of actors to return (1–100). Default 25.'),
     cursor: z
       .string()
+      .max(2048)
       .optional()
       .describe('Opaque pagination cursor from a previous response. Omit for the first page.'),
   }),

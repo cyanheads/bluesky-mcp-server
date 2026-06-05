@@ -17,6 +17,7 @@ export const bskyProfileResource = resource('bsky://profile/{actor}', {
   params: z.object({
     actor: z
       .string()
+      .max(253)
       .describe(
         'Handle (e.g. "alice.bsky.social") or DID (e.g. "did:plc:z72i7hdynmk6r22z27h6tvur") of the actor.',
       ),
