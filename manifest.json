@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.3",
   "name": "bluesky-mcp-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Search posts, profiles, feeds, threads, and trending topics on Bluesky.",
   "author": { "name": "cyanheads" },
   "repository": {
