@@ -109,6 +109,35 @@ describe('bskySearchPosts', () => {
     expect(result.hitsTotal).toBeUndefined();
   });
 
+  it('calls ctx.enrich.notice on empty results', async () => {
+    mockSearchPosts.mockResolvedValue({ posts: [] });
+
+    const ctx = createMockContext();
+    const noticeSpy = vi.spyOn(
+      ctx.enrich as unknown as { notice: (msg: string) => void },
+      'notice',
+    );
+    const input = bskySearchPosts.input.parse({ query: 'xyznotfound999' });
+    await bskySearchPosts.handler(input, ctx);
+
+    expect(noticeSpy).toHaveBeenCalledOnce();
+    expect(noticeSpy.mock.calls[0][0]).toContain('xyznotfound999');
+  });
+
+  it('does not call ctx.enrich.notice when results are returned', async () => {
+    mockSearchPosts.mockResolvedValue({ posts: [makePost()] });
+
+    const ctx = createMockContext();
+    const noticeSpy = vi.spyOn(
+      ctx.enrich as unknown as { notice: (msg: string) => void },
+      'notice',
+    );
+    const input = bskySearchPosts.input.parse({ query: 'bluesky' });
+    await bskySearchPosts.handler(input, ctx);
+
+    expect(noticeSpy).not.toHaveBeenCalled();
+  });
+
   // --- Sparse upstream payload ---
 
   it('handles post missing all optional fields', async () => {

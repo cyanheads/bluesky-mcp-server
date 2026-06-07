@@ -14,7 +14,12 @@ const TrendSchema = z
         'Opaque topic slug, e.g. "ailaunch2025". Use as a search term in bsky_search_posts.',
       ),
     displayName: z.string().describe('Human-readable topic name, e.g. "AI Launch 2025".'),
-    link: z.string().optional().describe('URL associated with this trending topic, if provided.'),
+    link: z
+      .string()
+      .optional()
+      .describe(
+        'Full URL associated with this trending topic (e.g. https://bsky.app/…), if provided.',
+      ),
     startedAt: z
       .string()
       .optional()

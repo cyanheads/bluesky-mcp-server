@@ -133,14 +133,23 @@ export const bskySearchPosts = tool('bsky_search_posts', {
       .string()
       .max(2048)
       .optional()
-      .describe('Opaque pagination cursor from a previous response. Omit for the first page.'),
+      .describe(
+        'Opaque pagination cursor from a previous response. ' +
+          'Note: the public Bluesky AppView restricts cursor-based search pagination for unauthenticated ' +
+          'requests — passing a cursor may return a 403 error. Cursor pagination is reliable only for ' +
+          'bsky_get_author_feed and bsky_get_follows.',
+      ),
   }),
   output: z.object({
     posts: z.array(PostSchema).describe('Posts matching the search query.'),
     cursor: z
       .string()
       .optional()
-      .describe('Opaque cursor for the next page. Absent on the last page.'),
+      .describe(
+        'Opaque cursor returned by the API. ' +
+          'Unreliable for unauthenticated search requests on the public AppView — ' +
+          'passing it on a subsequent call may return a 403 error.',
+      ),
     hitsTotal: z
       .number()
       .optional()
@@ -152,6 +161,7 @@ export const bskySearchPosts = tool('bsky_search_posts', {
 
   enrichment: {
     totalReturned: z.number().describe('Number of posts in this response page.'),
+    notice: z.string().optional().describe('Guidance when the result set is empty or constrained.'),
   },
 
   async handler(input, ctx) {

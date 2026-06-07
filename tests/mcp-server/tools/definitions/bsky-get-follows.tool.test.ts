@@ -165,6 +165,41 @@ describe('bskyGetFollows', () => {
     expect(result.actors).toHaveLength(0);
   });
 
+  it('calls ctx.enrich.notice on empty actors list', async () => {
+    mockGetFollowers.mockResolvedValue(makeGraphResult({ actors: [] }));
+
+    const ctx = createMockContext();
+    const noticeSpy = vi.spyOn(
+      ctx.enrich as unknown as { notice: (msg: string) => void },
+      'notice',
+    );
+    const input = bskyGetFollows.input.parse({
+      actor: 'alice.bsky.social',
+      direction: 'followers',
+    });
+    await bskyGetFollows.handler(input, ctx);
+
+    expect(noticeSpy).toHaveBeenCalledOnce();
+    expect(noticeSpy.mock.calls[0][0]).toContain('alice.bsky.social');
+  });
+
+  it('does not call ctx.enrich.notice when actors are returned', async () => {
+    mockGetFollowers.mockResolvedValue(makeGraphResult());
+
+    const ctx = createMockContext();
+    const noticeSpy = vi.spyOn(
+      ctx.enrich as unknown as { notice: (msg: string) => void },
+      'notice',
+    );
+    const input = bskyGetFollows.input.parse({
+      actor: 'alice.bsky.social',
+      direction: 'followers',
+    });
+    await bskyGetFollows.handler(input, ctx);
+
+    expect(noticeSpy).not.toHaveBeenCalled();
+  });
+
   // --- Sparse subject ---
 
   it('handles subject with only did and handle', async () => {

@@ -75,6 +75,35 @@ describe('bskySearchActors', () => {
     expect(result.actors).toHaveLength(0);
   });
 
+  it('calls ctx.enrich.notice on empty results', async () => {
+    mockSearchActors.mockResolvedValue({ actors: [] });
+
+    const ctx = createMockContext();
+    const noticeSpy = vi.spyOn(
+      ctx.enrich as unknown as { notice: (msg: string) => void },
+      'notice',
+    );
+    const input = bskySearchActors.input.parse({ query: 'xyznotexist999' });
+    await bskySearchActors.handler(input, ctx);
+
+    expect(noticeSpy).toHaveBeenCalledOnce();
+    expect(noticeSpy.mock.calls[0][0]).toContain('xyznotexist999');
+  });
+
+  it('does not call ctx.enrich.notice when actors are returned', async () => {
+    mockSearchActors.mockResolvedValue({ actors: [makeActor()] });
+
+    const ctx = createMockContext();
+    const noticeSpy = vi.spyOn(
+      ctx.enrich as unknown as { notice: (msg: string) => void },
+      'notice',
+    );
+    const input = bskySearchActors.input.parse({ query: 'alice' });
+    await bskySearchActors.handler(input, ctx);
+
+    expect(noticeSpy).not.toHaveBeenCalled();
+  });
+
   // --- Cursor pagination ---
 
   it('passes opaque cursor to next page', async () => {

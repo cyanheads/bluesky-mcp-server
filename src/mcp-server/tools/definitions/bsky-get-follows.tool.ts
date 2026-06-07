@@ -90,6 +90,7 @@ export const bskyGetFollows = tool('bsky_get_follows', {
 
   enrichment: {
     totalReturned: z.number().describe('Number of actors in this response page.'),
+    notice: z.string().optional().describe('Guidance when the result set is empty or constrained.'),
   },
 
   async handler(input, ctx) {

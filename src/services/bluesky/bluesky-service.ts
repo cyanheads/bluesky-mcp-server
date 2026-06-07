@@ -465,7 +465,11 @@ export class BlueskyService {
       trends: (raw.trends ?? []).map((t) => ({
         topic: t.topic,
         displayName: t.displayName ?? t.topic,
-        ...(t.link ? { link: t.link } : {}),
+        ...(t.link
+          ? {
+              link: t.link.startsWith('/') ? `https://bsky.app${t.link}` : t.link,
+            }
+          : {}),
         ...(t.startedAt ? { startedAt: t.startedAt } : {}),
         ...(typeof t.postCount === 'number' ? { postCount: t.postCount } : {}),
         ...(t.status ? { status: t.status } : {}),

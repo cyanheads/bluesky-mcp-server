@@ -127,6 +127,7 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
 
   enrichment: {
     totalReturned: z.number().describe('Number of posts in this response page.'),
+    notice: z.string().optional().describe('Guidance when the result set is empty or constrained.'),
   },
 
   async handler(input, ctx) {

@@ -93,6 +93,35 @@ describe('bskyGetAuthorFeed', () => {
     expect(result.posts).toHaveLength(0);
   });
 
+  it('calls ctx.enrich.notice on empty feed', async () => {
+    mockGetAuthorFeed.mockResolvedValue({ feed: [] });
+
+    const ctx = createMockContext();
+    const noticeSpy = vi.spyOn(
+      ctx.enrich as unknown as { notice: (msg: string) => void },
+      'notice',
+    );
+    const input = bskyGetAuthorFeed.input.parse({ actor: 'empty.bsky.social' });
+    await bskyGetAuthorFeed.handler(input, ctx);
+
+    expect(noticeSpy).toHaveBeenCalledOnce();
+    expect(noticeSpy.mock.calls[0][0]).toContain('empty.bsky.social');
+  });
+
+  it('does not call ctx.enrich.notice when posts are returned', async () => {
+    mockGetAuthorFeed.mockResolvedValue({ feed: [makePost()] });
+
+    const ctx = createMockContext();
+    const noticeSpy = vi.spyOn(
+      ctx.enrich as unknown as { notice: (msg: string) => void },
+      'notice',
+    );
+    const input = bskyGetAuthorFeed.input.parse({ actor: 'alice.bsky.social' });
+    await bskyGetAuthorFeed.handler(input, ctx);
+
+    expect(noticeSpy).not.toHaveBeenCalled();
+  });
+
   // --- Error contract ---
 
   it('translates upstream 400 "Profile not found" to actor_not_found', async () => {

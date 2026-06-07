@@ -140,4 +140,11 @@ describe('bskyGetTrending', () => {
     expect(text).toContain('1.');
     expect(text).toContain('2.');
   });
+
+  it('renders link when present', () => {
+    const trend = makeTrend({ link: 'https://bsky.app/profile/trending.bsky.app/feed/123' });
+    const blocks = bskyGetTrending.format!({ trends: [trend] });
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).toContain('https://bsky.app/profile/trending.bsky.app/feed/123');
+  });
 });
