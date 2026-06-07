@@ -1,6 +1,6 @@
 # bluesky-mcp-server - Directory Structure
 
-Generated on: 2026-06-05 11:57:38
+Generated on: 2026-06-07 06:21:51
 
 ```text
 bluesky-mcp-server/
@@ -156,6 +156,9 @@ bluesky-mcp-server/
 │   │           └── bsky-search-posts.tool.test.ts
 │   ├── prompts/
 │   ├── resources/
+│   ├── services/
+│   │   └── bluesky/
+│   │       └── bluesky-service.test.ts
 │   └── tools/
 ├── .dockerignore
 ├── .env.example
