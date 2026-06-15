@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.4](changelog/0.1.x/0.1.4.md) — 2026-06-15
+
+Framework upgrade to mcp-ts-core ^0.10.6 — server identity fields, page-truncation disclosure across list tools, AT-URI validation reclassified to ValidationError
+
 ## [0.1.3](changelog/0.1.x/0.1.3.md) — 2026-06-06
 
 Empty-result notices in structuredContent, trending link normalization, cursor 403 caveat for unauthenticated search
