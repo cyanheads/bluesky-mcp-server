@@ -3,7 +3,7 @@
  * @module tests/mcp-server/tools/definitions/bsky-search-posts.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { bskySearchPosts } from '@/mcp-server/tools/definitions/bsky-search-posts.tool.js';
 import { initBlueskyService } from '@/services/bluesky/bluesky-service.js';
@@ -69,7 +69,7 @@ describe('bskySearchPosts', () => {
     expect(result.cursor).toBeUndefined();
   });
 
-  it('surfaces hitsTotal when API provides it', async () => {
+  it('surfaces hitsTotal when API provides it and discloses it as totalCount', async () => {
     mockSearchPosts.mockResolvedValue({ posts: [makePost()], hitsTotal: 1234 });
 
     const ctx = createMockContext();
@@ -77,6 +77,7 @@ describe('bskySearchPosts', () => {
     const result = await bskySearchPosts.handler(input, ctx);
 
     expect(result.hitsTotal).toBe(1234);
+    expect(getEnrichment(ctx).totalCount).toBe(1234);
   });
 
   it('passes cursor through to next page', async () => {
@@ -88,6 +89,19 @@ describe('bskySearchPosts', () => {
     const result = await bskySearchPosts.handler(input, ctx);
 
     expect(result.cursor).toBe(nextCursor);
+  });
+
+  it('discloses truncation when a cursor returns but no hitsTotal', async () => {
+    mockSearchPosts.mockResolvedValue({ posts: [makePost()], cursor: 'more-abc' });
+
+    const ctx = createMockContext();
+    const input = bskySearchPosts.input.parse({ query: 'test', limit: 1 });
+    await bskySearchPosts.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBe(true);
+    expect(enrichment.shown).toBe(1);
+    expect(enrichment.cap).toBe(1);
   });
 
   it('applies defaults (sort=latest, limit=25)', () => {

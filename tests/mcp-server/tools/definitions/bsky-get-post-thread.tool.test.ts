@@ -87,7 +87,7 @@ describe('bskyGetPostThread', () => {
     const input = bskyGetPostThread.input.parse({ uri: 'https://bsky.app/post/abc' });
 
     await expect(bskyGetPostThread.handler(input, ctx)).rejects.toMatchObject({
-      code: JsonRpcErrorCode.InvalidParams,
+      code: JsonRpcErrorCode.ValidationError,
       data: { reason: 'invalid_at_uri' },
     });
   });
@@ -97,7 +97,7 @@ describe('bskyGetPostThread', () => {
     const input = bskyGetPostThread.input.parse({ uri: 'did:plc:abc/app.bsky.feed.post/r1' });
 
     await expect(bskyGetPostThread.handler(input, ctx)).rejects.toMatchObject({
-      code: JsonRpcErrorCode.InvalidParams,
+      code: JsonRpcErrorCode.ValidationError,
     });
   });
 

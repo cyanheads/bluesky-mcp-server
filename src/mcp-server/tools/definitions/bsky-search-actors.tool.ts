@@ -73,6 +73,12 @@ export const bskySearchActors = tool('bsky_search_actors', {
 
   enrichment: {
     totalReturned: z.number().describe('Number of actors in this response page.'),
+    truncated: z
+      .boolean()
+      .optional()
+      .describe('True when more actors match than were returned on this page.'),
+    shown: z.number().optional().describe('Number of actors returned on this page.'),
+    cap: z.number().optional().describe('The limit applied to this page.'),
     notice: z.string().optional().describe('Guidance when the result set is empty or constrained.'),
   },
 
@@ -83,6 +89,14 @@ export const bskySearchActors = tool('bsky_search_actors', {
       ctx,
     );
     ctx.enrich({ totalReturned: result.actors.length });
+    if (result.cursor) {
+      ctx.enrich.truncated({
+        shown: result.actors.length,
+        cap: input.limit,
+        guidance:
+          'More actors match than were returned. Note: cursor pagination is unreliable for unauthenticated search on the public AppView — refine the query instead.',
+      });
+    }
     if (result.actors.length === 0) {
       ctx.enrich.notice(
         `No actors matched "${input.query}". Try a different name or handle fragment.`,

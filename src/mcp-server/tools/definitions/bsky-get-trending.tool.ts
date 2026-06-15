@@ -57,12 +57,27 @@ export const bskyGetTrending = tool('bsky_get_trending', {
 
   enrichment: {
     totalReturned: z.number().describe('Number of trending topics returned.'),
+    truncated: z
+      .boolean()
+      .optional()
+      .describe('True when the topic list was capped at the requested limit; more may exist.'),
+    shown: z.number().optional().describe('Number of trending topics returned.'),
+    cap: z.number().optional().describe('The limit applied to this request.'),
+    notice: z.string().optional().describe('Guidance when the result set is empty or constrained.'),
   },
 
   async handler(input, ctx) {
     ctx.log.info('Fetching Bluesky trending topics', { limit: input.limit });
     const result = await getBlueskyService().getTrends({ limit: input.limit }, ctx);
     ctx.enrich({ totalReturned: result.trends.length });
+    if (result.trends.length >= input.limit) {
+      ctx.enrich.truncated({
+        shown: result.trends.length,
+        cap: input.limit,
+        guidance:
+          'The topic list was capped at the requested limit — raise limit (max 25) for more.',
+      });
+    }
     return { trends: result.trends };
   },
 

@@ -3,7 +3,7 @@
  * @module tests/mcp-server/tools/definitions/bsky-get-trending.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { bskyGetTrending } from '@/mcp-server/tools/definitions/bsky-get-trending.tool.js';
 import { initBlueskyService } from '@/services/bluesky/bluesky-service.js';
@@ -64,6 +64,31 @@ describe('bskyGetTrending', () => {
   it('applies default limit=10', () => {
     const input = bskyGetTrending.input.parse({});
     expect(input.limit).toBe(10);
+  });
+
+  // --- Cap disclosure (no cursor on this endpoint) ---
+
+  it('discloses truncation when the list fills the requested limit', async () => {
+    mockGetTrends.mockResolvedValue({ trends: [makeTrend(), makeTrend({ topic: 't2' })] });
+
+    const ctx = createMockContext();
+    const input = bskyGetTrending.input.parse({ limit: 2 });
+    await bskyGetTrending.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBe(true);
+    expect(enrichment.shown).toBe(2);
+    expect(enrichment.cap).toBe(2);
+  });
+
+  it('does not disclose truncation when fewer topics than the limit return', async () => {
+    mockGetTrends.mockResolvedValue({ trends: [makeTrend()] });
+
+    const ctx = createMockContext();
+    const input = bskyGetTrending.input.parse({ limit: 10 });
+    await bskyGetTrending.handler(input, ctx);
+
+    expect(getEnrichment(ctx).truncated).toBeUndefined();
   });
 
   // --- Empty trends ---

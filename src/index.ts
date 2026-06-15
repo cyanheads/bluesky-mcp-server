@@ -16,6 +16,8 @@ import { bskySearchPosts } from './mcp-server/tools/definitions/bsky-search-post
 import { initBlueskyService } from './services/bluesky/bluesky-service.js';
 
 await createApp({
+  name: 'bluesky-mcp-server',
+  title: 'bluesky-mcp-server',
   tools: [
     bskyGetProfile,
     bskySearchActors,

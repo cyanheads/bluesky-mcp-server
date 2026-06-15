@@ -98,7 +98,7 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
   errors: [
     {
       reason: 'invalid_at_uri',
-      code: JsonRpcErrorCode.InvalidParams,
+      code: JsonRpcErrorCode.ValidationError,
       when: 'The uri parameter is not a valid AT-URI (at://<did>/<collection>/<rkey>).',
       recovery:
         'AT-URIs come from the "uri" field of posts returned by bsky_search_posts or bsky_get_author_feed.',

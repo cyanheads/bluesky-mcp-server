@@ -161,6 +161,12 @@ export const bskySearchPosts = tool('bsky_search_posts', {
 
   enrichment: {
     totalReturned: z.number().describe('Number of posts in this response page.'),
+    truncated: z
+      .boolean()
+      .optional()
+      .describe('True when more posts match than were returned on this page.'),
+    shown: z.number().optional().describe('Number of posts returned on this page.'),
+    cap: z.number().optional().describe('The limit applied to this page.'),
     notice: z.string().optional().describe('Guidance when the result set is empty or constrained.'),
   },
 
@@ -185,6 +191,16 @@ export const bskySearchPosts = tool('bsky_search_posts', {
       ctx,
     );
     ctx.enrich({ totalReturned: result.posts.length });
+    if (result.hitsTotal != null) {
+      ctx.enrich.total(result.hitsTotal);
+    } else if (result.cursor) {
+      ctx.enrich.truncated({
+        shown: result.posts.length,
+        cap: input.limit,
+        guidance:
+          'More posts match than were returned. Note: cursor pagination is unreliable for unauthenticated search on the public AppView — narrow with filters (author, tag, date range) instead.',
+      });
+    }
     if (result.posts.length === 0) {
       ctx.enrich.notice(
         `No posts matched "${input.query}". Try broader terms, different spelling, or remove filters.`,

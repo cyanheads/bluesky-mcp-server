@@ -90,6 +90,12 @@ export const bskyGetFollows = tool('bsky_get_follows', {
 
   enrichment: {
     totalReturned: z.number().describe('Number of actors in this response page.'),
+    truncated: z
+      .boolean()
+      .optional()
+      .describe('True when more actors exist beyond this page (a cursor was returned).'),
+    shown: z.number().optional().describe('Number of actors returned on this page.'),
+    cap: z.number().optional().describe('The limit applied to this page.'),
     notice: z.string().optional().describe('Guidance when the result set is empty or constrained.'),
   },
 
@@ -128,6 +134,13 @@ export const bskyGetFollows = tool('bsky_get_follows', {
     }
 
     ctx.enrich({ totalReturned: result.actors.length });
+    if (result.cursor) {
+      ctx.enrich.truncated({
+        shown: result.actors.length,
+        cap: input.limit,
+        guidance: `More ${input.direction} exist — pass the returned cursor to fetch the next page.`,
+      });
+    }
     if (result.actors.length === 0) {
       ctx.enrich.notice(`No ${input.direction} found for actor "${input.actor}".`);
     }

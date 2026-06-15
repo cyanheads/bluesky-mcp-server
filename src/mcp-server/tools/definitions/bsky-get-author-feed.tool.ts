@@ -127,6 +127,12 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
 
   enrichment: {
     totalReturned: z.number().describe('Number of posts in this response page.'),
+    truncated: z
+      .boolean()
+      .optional()
+      .describe('True when more posts exist beyond this page (a cursor was returned).'),
+    shown: z.number().optional().describe('Number of posts returned on this page.'),
+    cap: z.number().optional().describe('The limit applied to this page.'),
     notice: z.string().optional().describe('Guidance when the result set is empty or constrained.'),
   },
 
@@ -164,6 +170,13 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
       throw err;
     }
     ctx.enrich({ totalReturned: result.feed.length });
+    if (result.cursor) {
+      ctx.enrich.truncated({
+        shown: result.feed.length,
+        cap: input.limit,
+        guidance: 'More posts exist — pass the returned cursor to fetch the next page.',
+      });
+    }
     if (result.feed.length === 0) {
       ctx.enrich.notice(`No posts found for actor "${input.actor}" with filter "${input.filter}".`);
     }

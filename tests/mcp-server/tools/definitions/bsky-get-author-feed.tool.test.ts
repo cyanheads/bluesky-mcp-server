@@ -3,7 +3,7 @@
  * @module tests/mcp-server/tools/definitions/bsky-get-author-feed.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { bskyGetAuthorFeed } from '@/mcp-server/tools/definitions/bsky-get-author-feed.tool.js';
 import { initBlueskyService } from '@/services/bluesky/bluesky-service.js';
@@ -68,17 +68,32 @@ describe('bskyGetAuthorFeed', () => {
 
   // --- Cursor pagination ---
 
-  it('passes cursor to next page', async () => {
+  it('passes cursor to next page and discloses truncation', async () => {
     mockGetAuthorFeed.mockResolvedValue({ feed: [makePost()], cursor: 'cursor-abc' });
 
     const ctx = createMockContext();
     const input = bskyGetAuthorFeed.input.parse({
       actor: 'alice.bsky.social',
       cursor: 'prev-cursor',
+      limit: 1,
     });
     const result = await bskyGetAuthorFeed.handler(input, ctx);
 
     expect(result.cursor).toBe('cursor-abc');
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBe(true);
+    expect(enrichment.shown).toBe(1);
+    expect(enrichment.cap).toBe(1);
+  });
+
+  it('does not disclose truncation on the last page (no cursor)', async () => {
+    mockGetAuthorFeed.mockResolvedValue({ feed: [makePost()] });
+
+    const ctx = createMockContext();
+    const input = bskyGetAuthorFeed.input.parse({ actor: 'alice.bsky.social' });
+    await bskyGetAuthorFeed.handler(input, ctx);
+
+    expect(getEnrichment(ctx).truncated).toBeUndefined();
   });
 
   // --- Empty feed ---
