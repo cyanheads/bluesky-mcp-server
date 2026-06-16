@@ -1,5 +1,5 @@
 {
-  "name": "@cyanheads/bluesky-mcp-server",
+  "name": "bluesky-mcp-server",
   "version": "0.1.4",
   "description": "Search posts, profiles, feeds, threads, and trending topics on Bluesky via MCP. STDIO or Streamable HTTP.",
   "author": {
@@ -9,7 +9,7 @@
   "repository": "git+https://github.com/cyanheads/bluesky-mcp-server.git",
   "license": "Apache-2.0",
   "mcpServers": {
-    "@cyanheads/bluesky-mcp-server": {
+    "bluesky-mcp-server": {
       "command": "npx",
       "args": ["-y", "@cyanheads/bluesky-mcp-server"],
       "env": {

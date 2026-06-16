@@ -1,5 +1,5 @@
 {
-  "@cyanheads/bluesky-mcp-server": {
+  "bluesky-mcp-server": {
     "command": "npx",
     "args": ["-y", "@cyanheads/bluesky-mcp-server"],
     "env": {
