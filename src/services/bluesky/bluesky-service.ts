@@ -27,7 +27,7 @@ const BASE_URL = 'https://api.bsky.app';
 const TIMEOUT_MS = 15_000;
 
 /** @internal User-Agent header sent on every request. */
-const USER_AGENT = '@cyanheads/bluesky-mcp-server/0.1.4';
+const USER_AGENT = '@cyanheads/bluesky-mcp-server/0.1.5';
 
 // ---------------------------------------------------------------------------
 // Raw upstream response shapes

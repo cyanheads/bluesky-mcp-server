@@ -1,6 +1,6 @@
 {
   "name": "bluesky-mcp-server",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Search posts, profiles, feeds, threads, and trending topics on Bluesky via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads",
@@ -15,7 +15,7 @@
   "interface": {
     "displayName": "bluesky-mcp-server",
     "shortDescription": "Search posts, profiles, feeds, threads, and trending topics on Bluesky via MCP. STDIO or Streamable HTTP.",
-    "longDescription": "",
+    "longDescription": "bluesky-mcp-server gives agents read-only access to Bluesky over the public AT Protocol AppView — no account, key, or credential required. It exposes full-text post search, actor profile lookup by handle or DID, author feeds, full conversation threads by AT-URI, actor discovery, follower and following graph edges, and real-time trending topics, plus a bsky://profile/{actor} resource. Built on @cyanheads/mcp-ts-core, it runs over STDIO for local clients or Streamable HTTP for hosted deployments.",
     "developerName": "cyanheads",
     "category": "social",
     "capabilities": ["Read"],

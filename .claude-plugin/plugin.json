@@ -1,6 +1,6 @@
 {
   "name": "bluesky-mcp-server",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Search posts, profiles, feeds, threads, and trending topics on Bluesky via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads"
