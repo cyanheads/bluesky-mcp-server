@@ -1,8 +1,9 @@
 /**
  * @fileoverview Search Bluesky accounts by name or handle fragment. Each bio is
  * rendered through the shared blockquote framing, since it is text the account holder
- * wrote and can carry its own markdown structure; display names and label values,
- * which render inside lines this file writes, go through the inline framing instead.
+ * wrote and can carry its own markdown structure; display names, pronouns, and label
+ * values, which render inside lines this file writes, go through the inline framing
+ * instead.
  * @module mcp-server/tools/definitions/bsky-search-actors
  */
 
@@ -17,6 +18,13 @@ const ActorResultSchema = z
     handle: z.string().describe('Human-readable username, e.g. "alice.bsky.social".'),
     displayName: z.string().optional().describe('Display name set by the user.'),
     description: z.string().optional().describe('Biography / about text.'),
+    pronouns: z
+      .string()
+      .optional()
+      .describe(
+        'Free-form pronouns the account set, e.g. "they/he". Absent when it set none. Account-authored ' +
+          'text bounded only by length, not a fixed vocabulary — read it as written rather than parsing it.',
+      ),
     avatar: z.string().optional().describe('URL of the profile avatar image.'),
     followersCount: z.number().optional().describe('Number of followers.'),
     labels: z
@@ -37,7 +45,8 @@ export const bskySearchActors = tool('bsky_search_actors', {
   title: 'Search Bluesky Actors',
   description:
     'Find Bluesky accounts by name or handle fragment. Returns ranked profiles with handle, ' +
-    'DID, displayName, bio, and follower count. Use before bsky_get_profile or bsky_get_author_feed ' +
+    'DID, displayName, bio, pronouns when the account set them, and follower count — but not website, ' +
+    'which only bsky_get_profile returns. Use before bsky_get_profile or bsky_get_author_feed ' +
     'when you have a name but not a confirmed handle. Supports cursor-based pagination for browsing ' +
     'beyond the first page of results.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
@@ -122,6 +131,7 @@ export const bskySearchActors = tool('bsky_search_actors', {
       const parts = [`## @${a.handle}`];
       parts.push(`**DID:** \`${a.did}\``);
       if (a.displayName) parts.push(`**Name:** ${inlineUserText(a.displayName)}`);
+      if (a.pronouns) parts.push(`**Pronouns:** ${inlineUserText(a.pronouns)}`);
       if (a.description) parts.push(...quoteUserText(a.description));
       if (a.followersCount != null)
         parts.push(`**Followers:** ${a.followersCount.toLocaleString()}`);

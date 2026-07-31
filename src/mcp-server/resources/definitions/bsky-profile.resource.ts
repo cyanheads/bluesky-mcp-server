@@ -12,8 +12,8 @@ export const bskyProfileResource = resource('bsky://profile/{actor}', {
   name: 'bsky-profile',
   description:
     "A Bluesky actor's public profile, addressable by handle or DID. Returns the same data as " +
-    'bsky_get_profile in injectable-context form — displayName, handle, DID, bio, follower/following/post ' +
-    'counts, avatar, moderation labels, and pinned post AT-URI.',
+    'bsky_get_profile in injectable-context form — displayName, handle, DID, bio, pronouns, website, ' +
+    'follower/following/post counts, avatar, moderation labels, and pinned post AT-URI.',
   mimeType: 'application/json',
   params: z.object({
     actor: z

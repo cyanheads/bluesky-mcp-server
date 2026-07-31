@@ -121,6 +121,34 @@ describe('bskyProfileResource', () => {
     expect((result as ActorProfile).followersCount).toBeUndefined();
   });
 
+  /** The resource is a second surface on the same profile and must not be thinner than the tool. */
+  it('carries pronouns and website through to the injectable payload', async () => {
+    mockGetProfile.mockResolvedValue({
+      ...PROFILE,
+      handle: 'nerdynanny.com',
+      pronouns: 'they/he',
+      website: 'https://nerdynanny.com',
+    });
+
+    const ctx = createMockContext({ tenantId: 'test-tenant' });
+    const params = bskyProfileResource.params.parse({ actor: 'nerdynanny.com' });
+    const result = (await bskyProfileResource.handler(params, ctx)) as ActorProfile;
+
+    expect(result.pronouns).toBe('they/he');
+    expect(result.website).toBe('https://nerdynanny.com');
+  });
+
+  it('omits both for an account that set neither', async () => {
+    mockGetProfile.mockResolvedValue(PROFILE);
+
+    const ctx = createMockContext({ tenantId: 'test-tenant' });
+    const params = bskyProfileResource.params.parse({ actor: 'bsky.app' });
+    const result = (await bskyProfileResource.handler(params, ctx)) as ActorProfile;
+
+    expect(result).not.toHaveProperty('pronouns');
+    expect(result).not.toHaveProperty('website');
+  });
+
   // --- Actor validation (params layer, before the upstream call) ---
 
   it.each([

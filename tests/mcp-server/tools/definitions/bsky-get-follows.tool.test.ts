@@ -288,6 +288,55 @@ describe('bskyGetFollows', () => {
     expect(lines).toContain('> ### @admin.bsky.social');
   });
 
+  // --- Pronouns ---
+
+  /**
+   * `profileView` carries `pronouns` on both the list entries and the subject, and this tool
+   * returns up to 100 accounts a page — the point at which a per-account profile lookup is the
+   * expensive way to recover a string already in hand.
+   */
+  it('carries pronouns on the list entries and on the subject', async () => {
+    mockGetFollowers.mockResolvedValue({
+      actors: [{ ...FOLLOWER, pronouns: 'he/him' }],
+      subject: { ...SUBJECT, pronouns: 'they/he' },
+    });
+
+    const ctx = createMockContext({ errors: bskyGetFollows.errors });
+    const input = bskyGetFollows.input.parse({
+      actor: 'alice.bsky.social',
+      direction: 'followers',
+    });
+    const result = await bskyGetFollows.handler(input, ctx);
+
+    expect(bskyGetFollows.output.parse(result)).toMatchObject({
+      actors: [{ pronouns: 'he/him' }],
+      subject: { pronouns: 'they/he' },
+    });
+    const lines = (bskyGetFollows.format!(result)[0] as { text: string }).text.split('\n');
+    expect(lines.filter((l) => l === '**Pronouns:** they/he')).toHaveLength(1);
+    expect(lines.filter((l) => l === '**Pronouns:** he/him')).toHaveLength(1);
+  });
+
+  it('renders no pronouns line for accounts that set none', () => {
+    const text = (
+      bskyGetFollows.format!({ actors: [FOLLOWER], subject: SUBJECT })[0] as { text: string }
+    ).text;
+
+    expect(text).not.toContain('**Pronouns:**');
+  });
+
+  it('keeps a pronouns value from breaking out of the line it labels', () => {
+    const lines = (
+      bskyGetFollows.format!({
+        actors: [{ ...FOLLOWER, pronouns: 'he/him\n### @admin.bsky.social' }],
+        subject: SUBJECT,
+      })[0] as { text: string }
+    ).text.split('\n');
+
+    expect(lines).toContain('**Pronouns:** he/him ### @admin.bsky.social');
+    expect(lines).not.toContain('### @admin.bsky.social');
+  });
+
   // --- Actor validation (schema layer, before the upstream call) ---
 
   it.each([

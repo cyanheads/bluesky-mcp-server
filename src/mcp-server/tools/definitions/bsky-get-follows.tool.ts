@@ -1,8 +1,9 @@
 /**
  * @fileoverview Fetch social graph edges for a Bluesky account — followers or following.
  * Each bio is rendered through the shared blockquote framing, since it is text the
- * account holder wrote and can carry its own markdown structure; display names and label
- * values, which render inside lines this file writes, go through the inline framing.
+ * account holder wrote and can carry its own markdown structure; display names, pronouns,
+ * and label values, which render inside lines this file writes, go through the inline
+ * framing.
  * @module mcp-server/tools/definitions/bsky-get-follows
  */
 
@@ -19,6 +20,13 @@ const ActorSchema = z
     handle: z.string().describe('Human-readable handle, e.g. "alice.bsky.social".'),
     displayName: z.string().optional().describe('Display name set by the user.'),
     description: z.string().optional().describe('Biography / about text.'),
+    pronouns: z
+      .string()
+      .optional()
+      .describe(
+        'Free-form pronouns the account set, e.g. "they/he". Absent when it set none. Account-authored ' +
+          'text bounded only by length, not a fixed vocabulary — read it as written rather than parsing it.',
+      ),
     avatar: z.string().optional().describe('Avatar image URL.'),
     followersCount: z.number().optional().describe('Number of followers.'),
     labels: z
@@ -40,8 +48,9 @@ export const bskyGetFollows = tool('bsky_get_follows', {
   title: 'Get Bluesky Social Graph',
   description:
     'Fetch the social graph edges for a Bluesky account — who follows them, or who they follow. ' +
-    'Returns paginated actor profiles (handle, DID, displayName, bio, follower count) plus a summary ' +
-    'of the subject account. Accounts with large social graphs return only the first page; use ' +
+    'Returns paginated actor profiles (handle, DID, displayName, bio, pronouns when set, follower count) ' +
+    'plus a summary of the subject account — website is not on this view, only on bsky_get_profile. ' +
+    'Accounts with large social graphs return only the first page; use ' +
     'cursor pagination to walk through the full list.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
@@ -79,6 +88,12 @@ export const bskyGetFollows = tool('bsky_get_follows', {
         did: z.string().describe('Permanent DID of the queried account.'),
         handle: z.string().describe('Human-readable handle of the queried account.'),
         displayName: z.string().optional().describe('Subject display name.'),
+        pronouns: z
+          .string()
+          .optional()
+          .describe(
+            'Free-form pronouns the subject account set, e.g. "they/he". Absent when it set none.',
+          ),
         followersCount: z.number().optional().describe("Subject's follower count."),
         followsCount: z.number().optional().describe("Subject's following count."),
       })
@@ -155,13 +170,14 @@ export const bskyGetFollows = tool('bsky_get_follows', {
       ctx.enrich.notice(`No ${input.direction} found for actor "${input.actor}".`);
     }
 
-    const { followersCount, followsCount, did, handle, displayName } = result.subject;
+    const { followersCount, followsCount, did, handle, displayName, pronouns } = result.subject;
     return {
       actors: result.actors,
       subject: {
         did,
         handle,
         ...(displayName ? { displayName } : {}),
+        ...(pronouns ? { pronouns } : {}),
         ...(followersCount != null ? { followersCount } : {}),
         ...(followsCount != null ? { followsCount } : {}),
       },
@@ -172,6 +188,8 @@ export const bskyGetFollows = tool('bsky_get_follows', {
   format: (result) => {
     const header: string[] = [`## Subject: ${actorLabel(result.subject)}`];
     header.push(`**DID:** \`${result.subject.did}\``);
+    if (result.subject.pronouns)
+      header.push(`**Pronouns:** ${inlineUserText(result.subject.pronouns)}`);
     if (result.subject.followersCount != null)
       header.push(`Followers: ${result.subject.followersCount.toLocaleString()}`);
     if (result.subject.followsCount != null)
@@ -185,6 +203,7 @@ export const bskyGetFollows = tool('bsky_get_follows', {
       const parts = [`### @${a.handle}`];
       parts.push(`**DID:** \`${a.did}\``);
       if (a.displayName) parts.push(`**Name:** ${inlineUserText(a.displayName)}`);
+      if (a.pronouns) parts.push(`**Pronouns:** ${inlineUserText(a.pronouns)}`);
       if (a.description) parts.push(...quoteUserText(a.description));
       if (a.followersCount != null)
         parts.push(`**Followers:** ${a.followersCount.toLocaleString()}`);

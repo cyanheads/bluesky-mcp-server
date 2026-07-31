@@ -1,8 +1,9 @@
 /**
  * @fileoverview Fetch a Bluesky actor's public profile by handle or DID. The bio is
  * rendered through the shared blockquote framing, since it is text the account holder
- * wrote and can carry its own markdown structure; the display name and label values,
- * which render inside lines this file writes, go through the inline framing instead.
+ * wrote and can carry its own markdown structure; the display name, pronouns, and label
+ * values, which render inside lines this file writes, go through the inline framing
+ * instead. The avatar and website URLs are left bare — the lexicon types both as URIs.
  * @module mcp-server/tools/definitions/bsky-get-profile
  */
 
@@ -26,8 +27,8 @@ export const bskyGetProfile = tool('bsky_get_profile', {
   title: 'Get Bluesky Profile',
   description:
     'Fetch a Bluesky actor\'s public profile by handle (e.g. "bsky.app") or DID ' +
-    '(e.g. "did:plc:z72i7hdynmk6r22z27h6tvur"). Returns displayName, handle, DID, bio, ' +
-    'follower/following/post counts, avatar URL, moderation labels, and pinned post AT-URI. ' +
+    '(e.g. "did:plc:z72i7hdynmk6r22z27h6tvur"). Returns displayName, handle, DID, bio, pronouns, ' +
+    'website, follower/following/post counts, avatar URL, moderation labels, and pinned post AT-URI. ' +
     'Use this as the first step to resolve a handle to a DID before calling tools that require ' +
     'a DID or AT-URI. Handles and DIDs are interchangeable as input.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
@@ -54,6 +55,21 @@ export const bskyGetProfile = tool('bsky_get_profile', {
       .optional()
       .describe('Display name set by the user. May differ from the handle.'),
     description: z.string().optional().describe('Biography / about text.'),
+    pronouns: z
+      .string()
+      .optional()
+      .describe(
+        'Free-form pronouns the account set, e.g. "they/he". Absent when it set none. Account-authored ' +
+          'text bounded only by length, not a fixed vocabulary — read it as written rather than parsing it.',
+      ),
+    website: z
+      .string()
+      .optional()
+      .describe(
+        'URL the account set as its website, in the profile field of that name rather than in the bio. ' +
+          'Absent when it set none. The one link on a profile that points somewhere else — follow it before ' +
+          'reading the bio for one.',
+      ),
     avatar: z.string().optional().describe('URL of the profile avatar image.'),
     followersCount: z.number().optional().describe('Number of accounts following this actor.'),
     followsCount: z.number().optional().describe('Number of accounts this actor follows.'),
@@ -106,6 +122,11 @@ export const bskyGetProfile = tool('bsky_get_profile', {
     const name = result.displayName ? inlineUserText(result.displayName) : '';
     lines.push(`## ${name || result.handle}`);
     lines.push(`**Handle:** @${result.handle} | **DID:** \`${result.did}\``);
+    /**
+     * Pronouns take the inline framing rather than the blockquote: they render on a line this file
+     * writes, and quoting them would push that label onto a line of its own.
+     */
+    if (result.pronouns) lines.push(`**Pronouns:** ${inlineUserText(result.pronouns)}`);
     if (result.description) lines.push('', ...quoteUserText(result.description));
     const counts: string[] = [];
     if (result.followersCount != null)
@@ -114,7 +135,15 @@ export const bskyGetProfile = tool('bsky_get_profile', {
       counts.push(`following ${result.followsCount.toLocaleString()}`);
     if (result.postsCount != null) counts.push(`${result.postsCount.toLocaleString()} posts`);
     if (counts.length) lines.push(`\n${counts.join(' · ')}`);
-    if (result.avatar) lines.push(`\n**Avatar:** ${result.avatar}`);
+    /**
+     * The website URL renders bare, on the same terms as the avatar: the lexicon gives the field
+     * `format: "uri"`, so it is a URL by construction and carries no line break to escape with.
+     * Both share one leading blank line, whichever of them the account set.
+     */
+    const urls: string[] = [];
+    if (result.website) urls.push(`**Website:** ${result.website}`);
+    if (result.avatar) urls.push(`**Avatar:** ${result.avatar}`);
+    if (urls.length) lines.push('', ...urls);
     if (result.pinnedPostUri) lines.push(`**Pinned post AT-URI:** \`${result.pinnedPostUri}\``);
     if (result.labels?.length) {
       const labelParts = result.labels.map((l) => {

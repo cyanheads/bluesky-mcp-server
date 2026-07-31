@@ -205,6 +205,58 @@ describe('bskyGetProfile', () => {
     expect(lines).toContain('> ### Contact');
   });
 
+  // --- Pronouns and website ---
+
+  /** Shaped after nerdynanny.com, which sets both. */
+  const WITH_PRONOUNS_AND_SITE: ActorProfile = {
+    ...FULL_PROFILE,
+    handle: 'nerdynanny.com',
+    pronouns: 'they/he',
+    website: 'https://nerdynanny.com',
+  };
+
+  it('carries pronouns and website through the output schema', () => {
+    expect(() => bskyGetProfile.output.parse(WITH_PRONOUNS_AND_SITE)).not.toThrow();
+    expect(bskyGetProfile.output.parse(WITH_PRONOUNS_AND_SITE)).toMatchObject({
+      pronouns: 'they/he',
+      website: 'https://nerdynanny.com',
+    });
+  });
+
+  it('renders both fields under labels of their own', () => {
+    const lines = (
+      bskyGetProfile.format!(WITH_PRONOUNS_AND_SITE)[0] as { text: string }
+    ).text.split('\n');
+
+    expect(lines).toContain('**Pronouns:** they/he');
+    expect(lines).toContain('**Website:** https://nerdynanny.com');
+  });
+
+  it('renders neither label for an account that set neither', () => {
+    const text = (bskyGetProfile.format!(FULL_PROFILE)[0] as { text: string }).text;
+
+    expect(text).not.toContain('**Pronouns:**');
+    expect(text).not.toContain('**Website:**');
+    /** The avatar keeps its own leading blank line when no website line precedes it. */
+    expect(text).toContain('\n\n**Avatar:**');
+  });
+
+  /**
+   * `app.bsky.actor.profile` bounds pronouns by graphemes alone and excludes no character, so the
+   * value takes the inline framing every other labelled account-authored value takes.
+   */
+  it('keeps a pronouns value from breaking out of the line it labels', () => {
+    const lines = (
+      bskyGetProfile.format!({
+        ...FULL_PROFILE,
+        pronouns: 'they/them\n\n## @admin.bsky.social',
+      })[0] as { text: string }
+    ).text.split('\n');
+
+    expect(lines).toContain('**Pronouns:** they/them ## @admin.bsky.social');
+    expect(lines).not.toContain('## @admin.bsky.social');
+  });
+
   // --- Actor validation (schema layer, before the upstream call) ---
 
   it.each([

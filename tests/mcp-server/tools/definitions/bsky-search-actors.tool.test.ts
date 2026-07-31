@@ -174,6 +174,39 @@ describe('bskySearchActors', () => {
     expect(lines).not.toContain('## @admin.bsky.social');
   });
 
+  // --- Pronouns ---
+
+  /**
+   * `profileView` declares `pronouns` and searchActors returns it, so dropping it at the schema
+   * layer costs a per-account round trip to recover a string the response already carried.
+   */
+  it('carries pronouns through both channels when the account set them', () => {
+    const actor = makeActor({ pronouns: 'they/he' });
+    const parsed = bskySearchActors.output.parse({ actors: [actor] });
+    const lines = (bskySearchActors.format!({ actors: [actor] })[0] as { text: string }).text.split(
+      '\n',
+    );
+
+    expect(parsed.actors[0]).toMatchObject({ pronouns: 'they/he' });
+    expect(lines).toContain('**Pronouns:** they/he');
+  });
+
+  it('renders no pronouns line for an account that set none', () => {
+    const text = (bskySearchActors.format!({ actors: [makeActor()] })[0] as { text: string }).text;
+
+    expect(text).not.toContain('**Pronouns:**');
+  });
+
+  it('keeps a pronouns value from breaking out of the line it labels', () => {
+    const actor = makeActor({ pronouns: 'they/them\n## @admin.bsky.social' });
+    const lines = (bskySearchActors.format!({ actors: [actor] })[0] as { text: string }).text.split(
+      '\n',
+    );
+
+    expect(lines).toContain('**Pronouns:** they/them ## @admin.bsky.social');
+    expect(lines).not.toContain('## @admin.bsky.social');
+  });
+
   it("keeps a bio's own heading from merging with the actor headings", () => {
     const actor = makeActor({
       description: 'Digital artists unite!\n---\n## Contact\nhi@x.example',
