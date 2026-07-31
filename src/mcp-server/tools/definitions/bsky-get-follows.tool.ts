@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { AT_IDENTIFIER_MESSAGE, AT_IDENTIFIER_REGEX } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 import type { GraphResult } from '@/services/bluesky/types.js';
 
@@ -42,8 +43,13 @@ export const bskyGetFollows = tool('bsky_get_follows', {
   input: z.object({
     actor: z
       .string()
+      .min(1)
       .max(253)
-      .describe('Handle (e.g. "alice.bsky.social") or DID of the account to query.'),
+      .regex(AT_IDENTIFIER_REGEX, AT_IDENTIFIER_MESSAGE)
+      .describe(
+        'Handle (e.g. "alice.bsky.social") or DID of the account to query. ' +
+          'A bare name without a dot is not a handle — use bsky_search_actors to resolve one.',
+      ),
     direction: z
       .enum(['followers', 'following'])
       .describe(

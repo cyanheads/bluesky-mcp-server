@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { AT_IDENTIFIER_MESSAGE, AT_IDENTIFIER_REGEX } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 import type { AuthorFeedResult } from '@/services/bluesky/types.js';
 
@@ -81,8 +82,13 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
   input: z.object({
     actor: z
       .string()
+      .min(1)
       .max(253)
-      .describe('Handle (e.g. "alice.bsky.social") or DID of the author whose feed to fetch.'),
+      .regex(AT_IDENTIFIER_REGEX, AT_IDENTIFIER_MESSAGE)
+      .describe(
+        'Handle (e.g. "alice.bsky.social") or DID of the author whose feed to fetch. ' +
+          'A bare name without a dot is not a handle — use bsky_search_actors to resolve one.',
+      ),
     filter: z
       .enum([
         'posts_with_replies',

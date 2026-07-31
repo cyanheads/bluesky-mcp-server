@@ -168,4 +168,31 @@ describe('bskyGetProfile', () => {
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('official');
   });
+
+  // --- Actor validation (schema layer, before the upstream call) ---
+
+  it.each([
+    ['blank', ''],
+    ['whitespace only', '   '],
+    ['bare name without a dot', 'alice'],
+    ['leading @', '@bsky.app'],
+    ['spaces', 'not a handle'],
+    ['trailing dot', 'bsky.app.'],
+    ['numeric TLD', 'alice.123'],
+    ['DID with no method-specific id', 'did:plc:'],
+  ])('rejects a malformed actor (%s) at the schema layer', (_label, actor) => {
+    expect(() => bskyGetProfile.input.parse({ actor })).toThrow();
+    expect(mockGetProfile).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['two-label handle', 'bsky.app'],
+    ['three-label handle', 'alice.bsky.social'],
+    ['hyphenated handle', 'my-org.example.com'],
+    ['uppercase handle', 'UPPER.bsky.social'],
+    ['did:plc', 'did:plc:z72i7hdynmk6r22z27h6tvur'],
+    ['did:web', 'did:web:example.com'],
+  ])('accepts a valid actor (%s)', (_label, actor) => {
+    expect(bskyGetProfile.input.parse({ actor }).actor).toBe(actor);
+  });
 });

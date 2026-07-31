@@ -80,24 +80,51 @@ describe('bskyGetPostThread', () => {
     });
   });
 
-  // --- AT-URI validation ---
+  // --- AT-URI validation (schema layer, before the upstream call) ---
 
-  it('rejects invalid AT-URI (missing at:// prefix) with invalid_at_uri', async () => {
-    const ctx = createMockContext({ errors: bskyGetPostThread.errors });
-    const input = bskyGetPostThread.input.parse({ uri: 'https://bsky.app/post/abc' });
-
-    await expect(bskyGetPostThread.handler(input, ctx)).rejects.toMatchObject({
-      code: JsonRpcErrorCode.ValidationError,
-      data: { reason: 'invalid_at_uri' },
-    });
+  it.each([
+    ['blank', ''],
+    ['authority only', 'at://bad'],
+    ['https URL', 'https://bsky.app/post/abc'],
+    ['missing at:// prefix', 'did:plc:abc/app.bsky.feed.post/r1'],
+    ['missing record key', 'at://did:plc:abc/app.bsky.feed.post'],
+    ['missing collection and record key', 'at://did:plc:abc'],
+    ['collection without a dot', 'at://did:plc:abc/post/r1'],
+    ['handle authority without a dot', 'at://alice/app.bsky.feed.post/r1'],
+    ['trailing slash', 'at://did:plc:abc/app.bsky.feed.post/r1/'],
+    ['whitespace in record key', 'at://did:plc:abc/app.bsky.feed.post/r 1'],
+  ])('rejects a malformed AT-URI (%s) at the schema layer', (_label, uri) => {
+    expect(() => bskyGetPostThread.input.parse({ uri })).toThrow();
+    expect(mockGetPostThread).not.toHaveBeenCalled();
   });
 
-  it('rejects bare string without at:// prefix', async () => {
+  it.each([
+    ['did:plc authority', 'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3lc4gpsxr3c2q'],
+    ['handle authority', 'at://bsky.app/app.bsky.feed.post/3lc4gpsxr3c2q'],
+    ['did:web authority', 'at://did:web:example.com/app.bsky.feed.post/abc'],
+    ['record key with punctuation', 'at://did:plc:abc/app.bsky.feed.post/a.b_c~d-e'],
+  ])('accepts a well-formed AT-URI (%s)', (_label, uri) => {
+    expect(bskyGetPostThread.input.parse({ uri }).uri).toBe(uri);
+  });
+
+  it('translates an upstream "Invalid at-uri" rejection to invalid_at_uri', async () => {
+    const { McpError } = await import('@cyanheads/mcp-ts-core/errors');
+    mockGetPostThread.mockRejectedValue(
+      new McpError(JsonRpcErrorCode.ValidationError, 'Fetch failed. Status: 400', {
+        responseBody:
+          '{"error":"InvalidRequest","message":"Invalid app.bsky.feed.getPostThread params: Invalid at-uri"}',
+        errorSource: 'FetchHttpError',
+      }),
+    );
+
     const ctx = createMockContext({ errors: bskyGetPostThread.errors });
-    const input = bskyGetPostThread.input.parse({ uri: 'did:plc:abc/app.bsky.feed.post/r1' });
+    const input = bskyGetPostThread.input.parse({
+      uri: 'at://did:example:odd/app.bsky.feed.post/r1',
+    });
 
     await expect(bskyGetPostThread.handler(input, ctx)).rejects.toMatchObject({
       code: JsonRpcErrorCode.ValidationError,
+      data: expect.objectContaining({ reason: 'invalid_at_uri' }),
     });
   });
 

@@ -120,4 +120,23 @@ describe('bskyProfileResource', () => {
     expect((result as ActorProfile).did).toBe('did:plc:sparse');
     expect((result as ActorProfile).followersCount).toBeUndefined();
   });
+
+  // --- Actor validation (params layer, before the upstream call) ---
+
+  it.each([
+    ['blank', ''],
+    ['whitespace only', '   '],
+    ['bare name without a dot', 'alice'],
+    ['leading @', '@bsky.app'],
+  ])('rejects a malformed actor (%s) at the params layer', (_label, actor) => {
+    expect(() => bskyProfileResource.params.parse({ actor })).toThrow();
+    expect(mockGetProfile).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['handle', 'bsky.app'],
+    ['did:plc', 'did:plc:z72i7hdynmk6r22z27h6tvur'],
+  ])('accepts a valid actor (%s)', (_label, actor) => {
+    expect(bskyProfileResource.params.parse({ actor }).actor).toBe(actor);
+  });
 });

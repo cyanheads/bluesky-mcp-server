@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.5-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/bluesky-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/bluesky-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/bluesky-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.11-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.6-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/bluesky-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/bluesky-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/bluesky-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -33,7 +33,7 @@ Seven tools for read-only access to the public Bluesky/AT Protocol AppView — n
 
 | Tool | Description |
 |:-----|:------------|
-| `bsky_search_posts` | Full-text search across public Bluesky posts, with author, language, tag, domain, date, and sort filters |
+| `bsky_search_posts` | Full-text search across public Bluesky posts, with author, language, tag, date, and sort filters |
 | `bsky_get_profile` | Fetch a Bluesky actor's public profile by handle or DID — the handle↔DID resolver |
 | `bsky_get_author_feed` | A user's recent posts ordered newest-first, filterable by post type |
 | `bsky_get_post_thread` | Fetch the full conversation for a post by AT-URI — parent chain upward and reply tree downward |
@@ -45,7 +45,8 @@ Seven tools for read-only access to the public Bluesky/AT Protocol AppView — n
 
 Full-text search across public Bluesky posts.
 
-- Filters: author handle, language (BCP-47), hashtag, domain, date range (`since`/`until`), and sort order (`top` or `latest`)
+- Filters: author handle, language (BCP-47), hashtag, date range (`since`/`until`), and sort order (`top` or `latest`)
+- Identifier and date inputs are pattern-validated before the upstream call — a malformed handle, DID, AT-URI, or date fails locally with the expected shape instead of a generic upstream 400
 - Returns posts with text, author, engagement counts (likes/reposts/replies/quotes), embeds, AT-URIs, and timestamps
 - `hitsTotal` when available — total matching posts, not just the current page
 - Pagination via opaque cursor; up to 100 results per call
@@ -79,7 +80,7 @@ Fetch the full conversation for a post by AT-URI.
 
 - Returns the root post, parent chain (upward), and nested reply tree (downward)
 - Configurable `depth` (reply tree depth, default 6) and `parent_height` (parent chain height, default 80)
-- Truncated subtrees surface `truncated: true`; deleted posts surface as `not_found`
+- Truncated subtrees surface `truncated: true`; deleted posts surface as `notFound: true`
 - AT-URIs come from `bsky_search_posts` or `bsky_get_author_feed`
 
 ---

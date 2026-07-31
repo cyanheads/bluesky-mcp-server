@@ -4,6 +4,14 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import {
+  AT_IDENTIFIER_MESSAGE,
+  AT_IDENTIFIER_REGEX,
+  ISO_DATETIME_MESSAGE,
+  ISO_DATETIME_REGEX,
+  NON_BLANK_MESSAGE,
+  NON_BLANK_REGEX,
+} from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
 /** Embed uses passthrough to flow all sub-fields through structuredContent while format() renders the key data. */
@@ -81,15 +89,25 @@ export const bskySearchPosts = tool('bsky_search_posts', {
   input: z.object({
     query: z
       .string()
+      .min(1)
       .max(500)
-      .describe('Full-text search query, e.g. "climate change" or "#ai announcement".'),
+      .regex(NON_BLANK_REGEX, NON_BLANK_MESSAGE)
+      .describe(
+        'Full-text search query, e.g. "climate change" or "#ai announcement". Must not be blank.',
+      ),
     author_handle: z
-      .string()
-      .max(253)
+      .union([
+        z.literal(''),
+        z
+          .string()
+          .max(253)
+          .regex(AT_IDENTIFIER_REGEX, AT_IDENTIFIER_MESSAGE)
+          .describe('Handle or DID of the author.'),
+      ])
       .optional()
       .describe(
-        'Filter to posts by this author. Accepts handle (e.g. "bsky.app") or DID. ' +
-          'Use bsky_get_profile to resolve a name to a handle first.',
+        'Filter to posts by this author. Accepts handle (e.g. "bsky.app") or DID; pass "" or omit for no author filter. ' +
+          'Use bsky_search_actors to resolve a name to a handle first.',
       ),
     language: z
       .string()
@@ -102,18 +120,32 @@ export const bskySearchPosts = tool('bsky_search_posts', {
       .optional()
       .describe('Hashtag to filter by — provide without the # prefix, e.g. "ai" not "#ai".'),
     since: z
-      .string()
-      .max(32)
+      .union([
+        z.literal(''),
+        z
+          .string()
+          .max(32)
+          .regex(ISO_DATETIME_REGEX, ISO_DATETIME_MESSAGE)
+          .describe('ISO 8601 date or datetime.'),
+      ])
       .optional()
       .describe(
-        'Return posts after this ISO 8601 datetime (inclusive), e.g. "2025-01-01T00:00:00Z".',
+        'Return posts after this ISO 8601 date or datetime (inclusive), e.g. "2025-01-01" or "2025-01-01T00:00:00Z". ' +
+          'Pass "" or omit for no lower bound.',
       ),
     until: z
-      .string()
-      .max(32)
+      .union([
+        z.literal(''),
+        z
+          .string()
+          .max(32)
+          .regex(ISO_DATETIME_REGEX, ISO_DATETIME_MESSAGE)
+          .describe('ISO 8601 date or datetime.'),
+      ])
       .optional()
       .describe(
-        'Return posts before this ISO 8601 datetime (inclusive), e.g. "2025-12-31T23:59:59Z".',
+        'Return posts before this ISO 8601 date or datetime (inclusive), e.g. "2025-12-31" or "2025-12-31T23:59:59Z". ' +
+          'Pass "" or omit for no upper bound.',
       ),
     sort: z
       .enum(['top', 'latest'])

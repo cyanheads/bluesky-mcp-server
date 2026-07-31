@@ -6,10 +6,10 @@
 
 | Name | Description | Key Inputs | Annotations |
 |:-----|:------------|:-----------|:------------|
-| `bsky_search_posts` | Full-text search across public Bluesky posts. Filters by author, language, domain, hashtag, date range, and sort order. Returns posts with text, author, engagement counts (likes/reposts/replies), embeds, AT-URIs, timestamps, and `hitsTotal` when available (total matching posts, not just the current page — use for communicating result scale). The headline tool — real-time open social discourse on any topic. | `query` (required), `author_handle`, `language`, `tag`, `since`, `until`, `sort` (enum: `top`\|`latest`, default `latest`), `limit` (≤100), `cursor` | `readOnlyHint: true` |
+| `bsky_search_posts` | Full-text search across public Bluesky posts. Filters by author, language, hashtag, date range, and sort order. Returns posts with text, author, engagement counts (likes/reposts/replies), embeds, AT-URIs, timestamps, and `hitsTotal` when available (total matching posts, not just the current page — use for communicating result scale). The headline tool — real-time open social discourse on any topic. | `query` (required), `author_handle`, `language`, `tag`, `since`, `until`, `sort` (enum: `top`\|`latest`, default `latest`), `limit` (≤100), `cursor` | `readOnlyHint: true` |
 | `bsky_get_profile` | Fetch a Bluesky actor's public profile by handle or DID. Returns displayName, handle, DID, description, follower/following/post counts, avatar URL, labels (moderation), and pinned post AT-URI. Resolves handle↔DID — use before tools that require a DID or AT-URI when you only have a handle. | `actor` (handle or DID, required) | `readOnlyHint: true` |
 | `bsky_get_author_feed` | A user's recent posts ordered newest-first. Filter by post type to see only original posts, posts with media, or everything including replies. Returns posts with full text, engagement, embeds, and AT-URIs for thread drilling. | `actor` (handle or DID, required), `filter` (posts\_with\_replies\|posts\_no\_replies\|posts\_with\_media\|posts\_and\_author\_threads), `limit`, `cursor` | `readOnlyHint: true` |
-| `bsky_get_post_thread` | Fetch the full conversation for a post by AT-URI — the parent chain upward and the reply tree downward. Useful for reading an entire discussion from any entry point. Returns root post, parent chain, and nested replies with per-post author and engagement data. | `uri` (AT-URI matching `at://<did>/<collection>/<rkey>`, required — obtain from `bsky_search_posts` or `bsky_get_author_feed`), `depth` (reply tree depth, default 6), `parent_height` (parent chain height, default 80) | `readOnlyHint: true` |
+| `bsky_get_post_thread` | Fetch the full conversation for a post by AT-URI — the parent chain upward and the reply tree downward. Useful for reading an entire discussion from any entry point. Returns root post, parent chain, and nested replies with per-post author and engagement data. | `uri` (AT-URI matching `at://<handle-or-did>/<collection>/<rkey>`, required — obtain from `bsky_search_posts` or `bsky_get_author_feed`), `depth` (reply tree depth, default 6), `parent_height` (parent chain height, default 80) | `readOnlyHint: true` |
 | `bsky_search_actors` | Find Bluesky accounts by name or handle fragment. Returns ranked profiles (handle, DID, displayName, description, follower count). Use before `bsky_get_profile` or `bsky_get_author_feed` when you have a name but not a confirmed handle. | `query` (required), `limit`, `cursor` | `readOnlyHint: true` |
 | `bsky_get_follows` | Fetch the social graph edges for an account — who they follow or who follows them. Returns paginated profiles (handle, DID, displayName, description, follower count) plus the subject's profile summary. | `actor` (handle or DID, required), `direction` (followers\|following, required), `limit`, `cursor` | `readOnlyHint: true` |
 | `bsky_get_trending` | Fetch real-time trending topics on Bluesky. Returns topics with display name, post count, category (politics, sports, pop-culture, etc.), status (hot/rising), and start time. Entry point for "what is Bluesky talking about right now" — pair with `bsky_search_posts` to drill into any trending topic. | `limit` (max results, default 10) | `readOnlyHint: true`, `openWorldHint: true` |
@@ -36,7 +36,7 @@ Bluesky MCP Server exposes the public AT Protocol AppView as a read-only MCP sur
 
 - **Public reads only** — all seven tools operate against `api.bsky.app` with no credentials
 - **No authentication required** at runtime for the core surface; no env vars required for launch
-- Full-text post search with author, language, tag, domain, date, and sort filters
+- Full-text post search with author, language, tag, date, and sort filters
 - Profile resolution (handle ↔ DID, bio, counts, avatar, labels)
 - Author feeds filtered by post type
 - Thread traversal by AT-URI (parent chain + reply tree)
@@ -135,6 +135,9 @@ This endpoint is marked `unspecced` in the AT Protocol lexicon (not part of the 
 **9. AT Protocol identifier teaching responsibility.**
 Agents will frequently have a handle but need a DID or AT-URI for other tools. `bsky_get_profile` is the resolution step — its description makes this explicit. `bsky_search_posts` returns AT-URIs for every post for direct thread drilling. Tool descriptions explain the three identifier types (handle, DID, AT-URI) at first encounter.
 
+**10. Identifier and date syntax validated locally, calibrated against measured AppView behavior.**
+`src/services/bluesky/at-syntax.ts` holds the AT-identifier, AT-URI, non-blank, and date patterns shared by every input schema, so they also ship as JSON Schema `pattern` constraints in `tools/list`. The patterns are set to exactly what the AppView honours, never tighter — an over-strict pattern turns a working call into an unrecoverable `-32602`. Two calibrations worth preserving: the AT-URI authority accepts a **handle as well as a DID** (`at://bsky.app/app.bsky.feed.post/<rkey>` resolves), and the date filters accept an **unpadded month or day in the date-only form** (`2025-1-1` filters identically to `2025-01-01`) but require zero-padding once a time component is present (`2025-1-1T00:00:00Z` is silently dropped and returns unfiltered results). Re-measure before tightening either.
+
 ---
 
 ## Known Limitations
@@ -187,7 +190,7 @@ Domain failure modes per tool — these map directly to `errors: [{ reason, code
 - `actor_not_found` — `NotFound` — Actor does not exist. Recovery: verify the handle or DID, or use `bsky_search_actors` to find the correct actor.
 
 **`bsky_get_post_thread`**
-- `invalid_at_uri` — `InvalidParams` — `uri` parameter is not a valid AT-URI (`at://did:*/collection/rkey` format). API returns `InvalidRequest`. Recovery: AT-URIs come from post `uri` fields returned by `bsky_search_posts` or `bsky_get_author_feed` — obtain one from there.
+- `invalid_at_uri` — `ValidationError` — the `uri` passed the input pattern but the AppView could not resolve its authority, collection, or record key (API returns `InvalidRequest: Invalid at-uri`). A URI that fails the pattern outright never reaches the handler — it fails schema validation first. Recovery: AT-URIs come from post `uri` fields returned by `bsky_search_posts` or `bsky_get_author_feed` — obtain one from there.
 - `post_not_found` — `NotFound` — Post AT-URI is valid format but the post was deleted or never existed. Recovery: verify the AT-URI or search for the post with `bsky_search_posts`.
 
 **`bsky_get_follows`**

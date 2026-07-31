@@ -158,4 +158,19 @@ describe('bskySearchActors', () => {
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('tok123');
   });
+
+  // --- Query validation (schema layer, before the upstream call) ---
+
+  it.each([
+    ['blank', ''],
+    ['single space', ' '],
+    ['whitespace only', '  \t\n '],
+  ])('rejects a blank query (%s) at the schema layer', (_label, query) => {
+    expect(() => bskySearchActors.input.parse({ query })).toThrow();
+    expect(mockSearchActors).not.toHaveBeenCalled();
+  });
+
+  it('accepts a query with surrounding whitespace around real content', () => {
+    expect(bskySearchActors.input.parse({ query: ' alice ' }).query).toBe(' alice ');
+  });
 });

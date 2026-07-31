@@ -252,4 +252,25 @@ describe('bskyGetFollows', () => {
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('page2');
   });
+
+  // --- Actor validation (schema layer, before the upstream call) ---
+
+  it.each([
+    ['blank', ''],
+    ['whitespace only', '   '],
+    ['bare name without a dot', 'alice'],
+    ['leading @', '@alice.bsky.social'],
+    ['spaces', 'not a handle'],
+  ])('rejects a malformed actor (%s) at the schema layer', (_label, actor) => {
+    expect(() => bskyGetFollows.input.parse({ actor, direction: 'followers' })).toThrow();
+    expect(mockGetFollowers).not.toHaveBeenCalled();
+    expect(mockGetFollows).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['handle', 'alice.bsky.social'],
+    ['did:plc', 'did:plc:z72i7hdynmk6r22z27h6tvur'],
+  ])('accepts a valid actor (%s)', (_label, actor) => {
+    expect(bskyGetFollows.input.parse({ actor, direction: 'following' }).actor).toBe(actor);
+  });
 });

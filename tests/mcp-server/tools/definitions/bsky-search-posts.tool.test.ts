@@ -244,4 +244,89 @@ describe('bskySearchPosts', () => {
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('parent1');
   });
+
+  // --- Input validation (schema layer, before the upstream call) ---
+
+  it.each([
+    ['blank', ''],
+    ['single space', ' '],
+    ['whitespace only', ' \t '],
+  ])('rejects a blank query (%s) at the schema layer', (_label, query) => {
+    expect(() => bskySearchPosts.input.parse({ query })).toThrow();
+    expect(mockSearchPosts).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['bare name without a dot', 'alice'],
+    ['leading @', '@bsky.app'],
+    ['spaces', 'not a handle'],
+  ])('rejects a malformed author_handle (%s)', (_label, author_handle) => {
+    expect(() => bskySearchPosts.input.parse({ query: 'test', author_handle })).toThrow();
+    expect(mockSearchPosts).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['handle', 'bsky.app'],
+    ['did:plc', 'did:plc:z72i7hdynmk6r22z27h6tvur'],
+    ['empty string as "no filter"', ''],
+  ])('accepts author_handle (%s)', (_label, author_handle) => {
+    expect(bskySearchPosts.input.parse({ query: 'test', author_handle }).author_handle).toBe(
+      author_handle,
+    );
+  });
+
+  it.each([
+    ['free text', 'not-a-date'],
+    ['compact date', '20250101'],
+    ['month out of range', '2026-13-01'],
+    ['day out of range', '2026-01-45'],
+    ['hour out of range', '2026-01-01T25:00:00Z'],
+    ['US-style date', '01/01/2025'],
+    ['epoch seconds', '1735689600'],
+    ['unpadded month in a datetime', '2025-1-01T00:00:00Z'],
+    ['unpadded day in a datetime', '2025-01-1T00:00:00Z'],
+  ])('rejects a malformed since (%s)', (_label, since) => {
+    expect(() => bskySearchPosts.input.parse({ query: 'test', since })).toThrow();
+    expect(mockSearchPosts).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['free text', 'not-a-date'],
+    ['month out of range', '2026-13-01'],
+  ])('rejects a malformed until (%s)', (_label, until) => {
+    expect(() => bskySearchPosts.input.parse({ query: 'test', until })).toThrow();
+    expect(mockSearchPosts).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['ISO date', '2025-01-01'],
+    ['date with unpadded month and day', '2025-1-1'],
+    ['datetime with Z', '2025-01-01T00:00:00Z'],
+    ['datetime with fractional seconds', '2025-01-01T00:00:00.123Z'],
+    ['datetime with offset', '2025-01-01T00:00:00+02:00'],
+    ['datetime without seconds', '2025-01-01T00:00Z'],
+    ['datetime without zone', '2025-01-01T00:00:00'],
+    ['empty string as "no bound"', ''],
+  ])('accepts since/until (%s)', (_label, value) => {
+    const input = bskySearchPosts.input.parse({ query: 'test', since: value, until: value });
+    expect(input.since).toBe(value);
+    expect(input.until).toBe(value);
+  });
+
+  it('forwards a validated since/until pair to the service', async () => {
+    mockSearchPosts.mockResolvedValue({ posts: [makePost()] });
+
+    const ctx = createMockContext();
+    const input = bskySearchPosts.input.parse({
+      query: 'test',
+      since: '2025-01-01',
+      until: '2025-12-31T23:59:59Z',
+    });
+    await bskySearchPosts.handler(input, ctx);
+
+    expect(mockSearchPosts).toHaveBeenCalledWith(
+      expect.objectContaining({ since: '2025-01-01', until: '2025-12-31T23:59:59Z' }),
+      ctx,
+    );
+  });
 });

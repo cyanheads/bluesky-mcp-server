@@ -186,4 +186,24 @@ describe('bskyGetAuthorFeed', () => {
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('parent1');
   });
+
+  // --- Actor validation (schema layer, before the upstream call) ---
+
+  it.each([
+    ['blank', ''],
+    ['whitespace only', '   '],
+    ['bare name without a dot', 'alice'],
+    ['leading @', '@alice.bsky.social'],
+    ['spaces', 'not a handle'],
+  ])('rejects a malformed actor (%s) at the schema layer', (_label, actor) => {
+    expect(() => bskyGetAuthorFeed.input.parse({ actor })).toThrow();
+    expect(mockGetAuthorFeed).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['handle', 'alice.bsky.social'],
+    ['did:plc', 'did:plc:z72i7hdynmk6r22z27h6tvur'],
+  ])('accepts a valid actor (%s)', (_label, actor) => {
+    expect(bskyGetAuthorFeed.input.parse({ actor }).actor).toBe(actor);
+  });
 });

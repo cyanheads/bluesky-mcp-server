@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { NON_BLANK_MESSAGE, NON_BLANK_REGEX } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
 const ActorResultSchema = z
@@ -39,8 +40,12 @@ export const bskySearchActors = tool('bsky_search_actors', {
   input: z.object({
     query: z
       .string()
+      .min(1)
       .max(500)
-      .describe('Name or handle fragment to search for, e.g. "alice" or "nytimes.com".'),
+      .regex(NON_BLANK_REGEX, NON_BLANK_MESSAGE)
+      .describe(
+        'Name or handle fragment to search for, e.g. "alice" or "nytimes.com". Must not be blank.',
+      ),
     limit: z
       .number()
       .int()

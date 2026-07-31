@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { AT_IDENTIFIER_MESSAGE, AT_IDENTIFIER_REGEX } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
 const LabelSchema = z
@@ -29,9 +30,12 @@ export const bskyGetProfile = tool('bsky_get_profile', {
   input: z.object({
     actor: z
       .string()
+      .min(1)
       .max(253)
+      .regex(AT_IDENTIFIER_REGEX, AT_IDENTIFIER_MESSAGE)
       .describe(
-        'Handle (e.g. "bsky.app", "alice.bsky.social") or DID (e.g. "did:plc:z72i7hdynmk6r22z27h6tvur") of the actor to look up.',
+        'Handle (e.g. "bsky.app", "alice.bsky.social") or DID (e.g. "did:plc:z72i7hdynmk6r22z27h6tvur") of the actor to look up. ' +
+          'A bare name without a dot is not a handle — use bsky_search_actors to resolve one.',
       ),
   }),
   output: z.object({

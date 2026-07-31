@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { AT_URI_MESSAGE, AT_URI_REGEX } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 import type { ThreadPost } from '@/services/bluesky/types.js';
 
@@ -61,7 +62,7 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
   description:
     'Fetch the full conversation for a post by AT-URI — the parent chain upward and the reply tree downward. ' +
     'Enter the thread at any point and traverse the full discussion. ' +
-    'AT-URIs have the format "at://<did>/<collection>/<rkey>" and are returned by bsky_search_posts and ' +
+    'AT-URIs have the format "at://<handle-or-did>/<collection>/<rkey>" and are returned by bsky_search_posts and ' +
     'bsky_get_author_feed in the "uri" field of each post. ' +
     'Returns the root post, parent chain, and nested replies with per-post author and engagement data. ' +
     '"truncated: true" on a reply node means there are more replies below — increase depth to load them.',
@@ -70,8 +71,10 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
     uri: z
       .string()
       .max(2048)
+      .regex(AT_URI_REGEX, AT_URI_MESSAGE)
       .describe(
         'AT-URI of the post to fetch, e.g. "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/abc123". ' +
+          'All three segments are required — authority (handle or DID), collection, and record key. ' +
           'Obtain from bsky_search_posts or bsky_get_author_feed.',
       ),
     depth: z
@@ -99,7 +102,7 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
     {
       reason: 'invalid_at_uri',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'The uri parameter is not a valid AT-URI (at://<did>/<collection>/<rkey>).',
+      when: 'The AppView rejected the AT-URI — the shape passed the input pattern but the authority, collection, or record key is not one it can resolve.',
       recovery:
         'AT-URIs come from the "uri" field of posts returned by bsky_search_posts or bsky_get_author_feed.',
     },
@@ -114,15 +117,6 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
   async handler(input, ctx) {
     ctx.log.info('Fetching Bluesky post thread', { uri: input.uri, depth: input.depth });
 
-    // Validate AT-URI format before hitting the API
-    if (!input.uri.startsWith('at://')) {
-      throw ctx.fail(
-        'invalid_at_uri',
-        `Invalid AT-URI: "${input.uri}" must start with "at://"`,
-        ctx.recoveryFor('invalid_at_uri'),
-      );
-    }
-
     let thread: ThreadPost;
     try {
       thread = await getBlueskyService().getPostThread(
@@ -132,13 +126,14 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
     } catch (err) {
       if (err instanceof McpError) {
         const body = (err.data as { responseBody?: string } | undefined)?.responseBody ?? '';
-        if (
-          err.data &&
-          (body.includes('NotFound') ||
-            body.includes('not found') ||
-            body.includes('Not Found') ||
-            body.includes('Post not found'))
-        ) {
+        if (body.includes('Invalid at-uri')) {
+          throw ctx.fail(
+            'invalid_at_uri',
+            `Bluesky rejected the AT-URI "${input.uri}".`,
+            ctx.recoveryFor('invalid_at_uri'),
+          );
+        }
+        if (body.includes('NotFound') || body.includes('not found') || body.includes('Not Found')) {
           throw ctx.fail(
             'post_not_found',
             `Post not found: "${input.uri}"`,

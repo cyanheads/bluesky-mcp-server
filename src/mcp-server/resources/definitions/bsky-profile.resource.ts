@@ -5,6 +5,7 @@
 
 import { resource, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { AT_IDENTIFIER_MESSAGE, AT_IDENTIFIER_REGEX } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
 export const bskyProfileResource = resource('bsky://profile/{actor}', {
@@ -17,7 +18,9 @@ export const bskyProfileResource = resource('bsky://profile/{actor}', {
   params: z.object({
     actor: z
       .string()
+      .min(1)
       .max(253)
+      .regex(AT_IDENTIFIER_REGEX, AT_IDENTIFIER_MESSAGE)
       .describe(
         'Handle (e.g. "alice.bsky.social") or DID (e.g. "did:plc:z72i7hdynmk6r22z27h6tvur") of the actor.',
       ),
