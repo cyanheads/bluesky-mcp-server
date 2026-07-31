@@ -673,3 +673,255 @@ describe('BlueskyService.getAuthorFeed — feed item normalization', () => {
     expect(result.feed[0]?.replyRootUri).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Thread node normalization
+// ---------------------------------------------------------------------------
+
+/**
+ * Fixtures mirror the live `app.bsky.feed.getPostThread` union: `#threadViewPost` carries a post,
+ * `#notFoundPost` and `#blockedPost` carry a URI and no post at all.
+ */
+const threadPostNode = (rkey: string, replyCount: number) => ({
+  $type: 'app.bsky.feed.defs#threadViewPost',
+  post: {
+    uri: `at://did:plc:abc/app.bsky.feed.post/${rkey}`,
+    cid: `bafyr-${rkey}`,
+    record: { text: `text of ${rkey}` },
+    author: { did: 'did:plc:abc', handle: 'alice.bsky.social' },
+    replyCount,
+  },
+});
+
+describe('BlueskyService.getPostThread — thread node normalization', () => {
+  let service: BlueskyService;
+
+  beforeEach(() => {
+    service = new BlueskyService();
+    mockFetch.mockReset();
+  });
+
+  const fetchThread = (thread: unknown, threadgate?: unknown) => {
+    mockFetch.mockImplementation(() =>
+      fakeResponse(threadgate === undefined ? { thread } : { thread, threadgate }),
+    );
+    return service.getPostThread(
+      { uri: 'at://did:plc:abc/app.bsky.feed.post/root1' },
+      createMockContext(),
+    );
+  };
+
+  it('normalizes a post node without marking it a stub', async () => {
+    const { thread } = await fetchThread({ ...threadPostNode('root1', 0), replies: [] });
+
+    expect(thread.post.text).toBe('text of root1');
+    expect(thread.notFound).toBeUndefined();
+    expect(thread.blocked).toBeUndefined();
+    expect(thread.truncated).toBeUndefined();
+  });
+
+  it('marks an app.bsky.feed.defs#notFoundPost node and keeps its AT-URI', async () => {
+    const { thread } = await fetchThread({
+      ...threadPostNode('root1', 1),
+      replies: [
+        {
+          $type: 'app.bsky.feed.defs#notFoundPost',
+          uri: 'at://did:plc:gone/app.bsky.feed.post/deleted1',
+          notFound: true,
+        },
+      ],
+    });
+    const stub = thread.replies?.[0];
+
+    expect(stub?.notFound).toBe(true);
+    expect(stub?.blocked).toBeUndefined();
+    expect(stub?.post.uri).toBe('at://did:plc:gone/app.bsky.feed.post/deleted1');
+    expect(stub?.post.text).toBe('');
+  });
+
+  it('marks an app.bsky.feed.defs#blockedPost node distinctly from a deleted one', async () => {
+    const { thread } = await fetchThread({
+      ...threadPostNode('root1', 1),
+      replies: [
+        {
+          $type: 'app.bsky.feed.defs#blockedPost',
+          uri: 'at://did:plc:blocker/app.bsky.feed.post/hidden1',
+          blocked: true,
+          author: { did: 'did:plc:blocker' },
+        },
+      ],
+    });
+    const stub = thread.replies?.[0];
+
+    expect(stub?.blocked).toBe(true);
+    expect(stub?.notFound).toBeUndefined();
+    expect(stub?.post.uri).toBe('at://did:plc:blocker/app.bsky.feed.post/hidden1');
+    expect(stub?.post.author.did).toBe('did:plc:blocker');
+  });
+
+  it('falls back to notFound for a node carrying neither a post nor a known $type', async () => {
+    const { thread } = await fetchThread({
+      ...threadPostNode('root1', 1),
+      replies: [{ uri: 'at://did:plc:abc/app.bsky.feed.post/mystery' }],
+    });
+
+    expect(thread.replies?.[0]?.notFound).toBe(true);
+  });
+
+  it('reports a short replies array against replyCount as truncationReason "unavailable"', async () => {
+    const { thread } = await fetchThread({
+      ...threadPostNode('root1', 1805),
+      replies: [threadPostNode('r1', 0), threadPostNode('r2', 0)],
+    });
+
+    expect(thread.truncated).toBe(true);
+    expect(thread.truncationReason).toBe('unavailable');
+    expect(thread.unreturnedReplies).toBe(1803);
+  });
+
+  it('reports an empty replies array against a positive replyCount as "unavailable"', async () => {
+    const { thread } = await fetchThread({ ...threadPostNode('root1', 4), replies: [] });
+
+    expect(thread.truncated).toBe(true);
+    expect(thread.truncationReason).toBe('unavailable');
+    expect(thread.unreturnedReplies).toBe(4);
+  });
+
+  /**
+   * The live AppView's most common shortfall by far: `replyCount: 1` beside an empty `replies`
+   * array, far below the ~150-200 replies its per-post limit actually returns. The node is still
+   * flagged, but as an unretrievable difference rather than as replies being held back.
+   */
+  it('flags a single-reply count against an empty array without blaming the per-post limit', async () => {
+    const { thread } = await fetchThread({ ...threadPostNode('root1', 1), replies: [] });
+
+    expect(thread.truncated).toBe(true);
+    expect(thread.truncationReason).toBe('unavailable');
+    expect(thread.unreturnedReplies).toBe(1);
+  });
+
+  it('reports a missing replies array against a positive replyCount as "depth"', async () => {
+    const { thread } = await fetchThread(threadPostNode('root1', 7));
+
+    expect(thread.truncated).toBe(true);
+    expect(thread.truncationReason).toBe('depth');
+    expect(thread.unreturnedReplies).toBe(7);
+  });
+
+  it('leaves a node whose replies all came back unflagged', async () => {
+    const { thread } = await fetchThread({
+      ...threadPostNode('root1', 2),
+      replies: [threadPostNode('r1', 0), threadPostNode('r2', 0)],
+    });
+
+    expect(thread.truncated).toBeUndefined();
+    expect(thread.unreturnedReplies).toBeUndefined();
+  });
+
+  it('flags a nested reply node, not just the root', async () => {
+    const { thread } = await fetchThread({
+      ...threadPostNode('root1', 1),
+      replies: [{ ...threadPostNode('r1', 12), replies: [threadPostNode('r1a', 0)] }],
+    });
+
+    expect(thread.truncated).toBeUndefined();
+    expect(thread.replies?.[0]?.truncated).toBe(true);
+    expect(thread.replies?.[0]?.unreturnedReplies).toBe(11);
+  });
+
+  it('never flags a parent-chain node, whose sibling replies were never requested', async () => {
+    const { thread } = await fetchThread({
+      ...threadPostNode('root1', 0),
+      replies: [],
+      parent: { ...threadPostNode('p1', 40), parent: threadPostNode('p2', 12) },
+    });
+
+    expect(thread.parent?.truncated).toBeUndefined();
+    expect(thread.parent?.unreturnedReplies).toBeUndefined();
+    expect(thread.parent?.parent?.truncated).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Threadgate normalization
+// ---------------------------------------------------------------------------
+
+describe('BlueskyService.getPostThread — threadgate normalization', () => {
+  let service: BlueskyService;
+
+  beforeEach(() => {
+    service = new BlueskyService();
+    mockFetch.mockReset();
+  });
+
+  const fetchGate = (threadgate: unknown) => {
+    mockFetch.mockImplementation(() =>
+      fakeResponse({ thread: { ...threadPostNode('root1', 0), replies: [] }, threadgate }),
+    );
+    return service.getPostThread(
+      { uri: 'at://did:plc:abc/app.bsky.feed.post/root1' },
+      createMockContext(),
+    );
+  };
+
+  it('omits the threadgate when the response carries none', async () => {
+    mockFetch.mockImplementation(() =>
+      fakeResponse({ thread: { ...threadPostNode('root1', 0), replies: [] } }),
+    );
+    const result = await service.getPostThread(
+      { uri: 'at://did:plc:abc/app.bsky.feed.post/root1' },
+      createMockContext(),
+    );
+
+    expect(result.threadgate).toBeUndefined();
+  });
+
+  it('maps every allow rule onto its normalized name', async () => {
+    const result = await fetchGate({
+      uri: 'at://did:plc:abc/app.bsky.feed.threadgate/root1',
+      record: {
+        allow: [
+          { $type: 'app.bsky.feed.threadgate#mentionRule' },
+          { $type: 'app.bsky.feed.threadgate#followingRule' },
+          { $type: 'app.bsky.feed.threadgate#followerRule' },
+          { $type: 'app.bsky.feed.threadgate#listRule' },
+        ],
+      },
+    });
+
+    expect(result.threadgate?.allow).toEqual(['mentioned', 'following', 'follower', 'list']);
+    expect(result.threadgate?.uri).toBe('at://did:plc:abc/app.bsky.feed.threadgate/root1');
+    expect(result.threadgate?.hiddenReplies).toEqual([]);
+  });
+
+  it('maps an unrecognized allow rule to "unknown" rather than dropping it', async () => {
+    const result = await fetchGate({
+      uri: 'at://did:plc:abc/app.bsky.feed.threadgate/root1',
+      record: { allow: [{ $type: 'app.bsky.feed.threadgate#futureRule' }] },
+    });
+
+    expect(result.threadgate?.allow).toEqual(['unknown']);
+  });
+
+  /** An absent `allow` means anyone may reply; an empty one means nobody may. */
+  it('keeps an absent allow list distinct from an empty one', async () => {
+    const open = await fetchGate({
+      uri: 'at://did:plc:abc/app.bsky.feed.threadgate/root1',
+      record: { hiddenReplies: ['at://did:plc:x/app.bsky.feed.post/h1'] },
+    });
+    const closed = await fetchGate({
+      uri: 'at://did:plc:abc/app.bsky.feed.threadgate/root1',
+      record: { allow: [] },
+    });
+
+    expect(open.threadgate?.allow).toBeUndefined();
+    expect(open.threadgate?.hiddenReplies).toEqual(['at://did:plc:x/app.bsky.feed.post/h1']);
+    expect(closed.threadgate?.allow).toEqual([]);
+  });
+
+  it('ignores a threadgate view with no URI of its own', async () => {
+    const result = await fetchGate({ record: { hiddenReplies: [] } });
+
+    expect(result.threadgate).toBeUndefined();
+  });
+});

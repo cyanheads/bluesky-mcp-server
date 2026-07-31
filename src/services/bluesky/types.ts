@@ -102,15 +102,70 @@ export interface PostView {
   uri: string;
 }
 
-/** A thread node in a post thread response. */
+/**
+ * Why a thread node returned fewer replies than its own `replyCount`.
+ * `depth` — the reply tree stopped at this node, so its replies were never fetched. Re-rooting a
+ * thread request at this node's AT-URI returns them.
+ * `unavailable` — the AppView returned a replies array shorter than the post's own `replyCount`
+ * and no request closes the gap. The difference is a mix of two causes the response cannot tell
+ * apart: replies held back past the AppView's per-post limit (`getPostThread` has no cursor on
+ * `replies`), and replies the counter still includes although they are gone from the index —
+ * deleted, authored by a departed account, hidden by the thread author, or filtered by moderation.
+ */
+export type ThreadTruncationReason = 'depth' | 'unavailable';
+
+/**
+ * A thread node in a post thread response.
+ * `notFound` and `blocked` nodes carry no post content — only the AT-URI the AppView reported
+ * (and, for a blocked node, the author DID) on the otherwise-empty `post`.
+ */
 export interface ThreadPost {
-  /** True when the API indicates this post was not found (deleted). */
+  /** True when the AppView returned `app.bsky.feed.defs#blockedPost` — the author blocks this view. */
+  blocked?: boolean;
+  /** True when the AppView returned `app.bsky.feed.defs#notFoundPost` — deleted or never existed. */
   notFound?: boolean;
   parent?: ThreadPost;
   post: PostView;
   replies?: ThreadPost[];
-  /** True when the API truncated deeper replies at this node. */
+  /**
+   * True when this node's `post.replyCount` exceeds the replies the AppView returned for it.
+   * Set only on the reply tree — parent-chain nodes never carry it, since a parent chain is
+   * linear by construction and its siblings are out of scope for the request.
+   */
   truncated?: boolean;
+  /** Set alongside `truncated` — which of the two shortfalls this is. */
+  truncationReason?: ThreadTruncationReason;
+  /**
+   * Set alongside `truncated` — how far this node's `replyCount` runs ahead of the replies it
+   * carries. An upper bound on what is missing, not a count of existing replies: Bluesky's
+   * counter keeps including replies that have left the index.
+   */
+  unreturnedReplies?: number;
+}
+
+/** A rule naming who may reply to a gated thread, normalized from `app.bsky.feed.threadgate`. */
+export type ThreadGateRule = 'follower' | 'following' | 'list' | 'mentioned' | 'unknown';
+
+/**
+ * The reply restrictions a thread author set on their own post, from the `threadgate` the AppView
+ * returns alongside a thread.
+ */
+export interface ThreadGate {
+  /**
+   * Who may reply. Absent means anyone; an empty array means nobody — the author turned replies
+   * off. Replies posted before a rule was set stay in the thread.
+   */
+  allow?: ThreadGateRule[];
+  /** AT-URIs of replies the thread author hid. */
+  hiddenReplies: string[];
+  /** AT-URI of the threadgate record itself. */
+  uri: string;
+}
+
+/** Result of getPostThread — the thread tree plus the author's reply restrictions, when set. */
+export interface PostThreadResult {
+  thread: ThreadPost;
+  threadgate?: ThreadGate;
 }
 
 /** Result of searchPosts. */

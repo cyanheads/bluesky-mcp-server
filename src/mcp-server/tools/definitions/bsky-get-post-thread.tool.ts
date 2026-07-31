@@ -1,5 +1,6 @@
 /**
- * @fileoverview Fetch a full Bluesky post conversation thread by AT-URI.
+ * @fileoverview Fetch a Bluesky post conversation thread by AT-URI, disclosing how far the
+ * AppView's reply counts run ahead of the replies it returned.
  * @module mcp-server/tools/definitions/bsky-get-post-thread
  */
 
@@ -8,17 +9,55 @@ import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { renderPostLines } from '@/mcp-server/tools/post-format.js';
 import { AT_URI_MESSAGE, AT_URI_REGEX } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
-import type { ThreadPost } from '@/services/bluesky/types.js';
+import type {
+  PostThreadResult,
+  ThreadGate,
+  ThreadGateRule,
+  ThreadPost,
+} from '@/services/bluesky/types.js';
+
+/**
+ * Deepest reply tree `app.bsky.feed.getPostThread` will return, measured against the live
+ * AppView: across 748 threads walked at `depth` 1000 — 94,366 nodes in all — no response ever
+ * carried a reply below level 10, and a 1,805-reply thread came back byte-identical at `depth`
+ * 10, 20, 50, and 1000 (365 nodes, 10 levels) while a re-rooted fetch proved the tree continued
+ * below level 10. The AppView's own bound is 1000; 1001 is a hard `InvalidRequest`.
+ */
+const MAX_REPLY_DEPTH = 10;
+
+/**
+ * Ceiling for the parent chain. Unlike the reply tree, the AppView honors `parentHeight` level
+ * for level up to its own maximum of 1000, so the bound is ours to set: sampling 244 live replies
+ * put the median chain at 1 post and the 99th percentile at 96, and each level costs roughly
+ * 1.5 KB upstream. Chains longer than this exist — the longest sampled ran 645 posts — and are
+ * read by re-rooting a request at the topmost parent returned.
+ */
+const MAX_PARENT_HEIGHT = 100;
+
+/** @internal "1 reply" / "N replies". */
+function replyCountLabel(n: number): string {
+  return `${n.toLocaleString()} ${n === 1 ? 'reply' : 'replies'}`;
+}
+
+/** @internal The line that discloses how far a node's reply count runs ahead of its replies. */
+function truncationLine(node: ThreadPost): string {
+  const n = node.unreturnedReplies ?? 0;
+  const count = replyCountLabel(n);
+  return node.truncationReason === 'unavailable'
+    ? `*[Bluesky counts ${count} to this post that it did not return — held back past its per-post limit, or gone from the index and never subtracted from the count. No request retrieves them]*`
+    : `*[${count} below this post ${n === 1 ? 'was' : 'were'} not returned — the reply tree ends at this level; fetch this post's AT-URI with bsky_get_post_thread to read them]*`;
+}
 
 /** @internal Recursively format a thread tree into readable markdown lines. */
 function formatThreadNode(node: ThreadPost, depth: number, lines: string[]): void {
   const indent = '  '.repeat(depth);
+  const uriSuffix = node.post.uri ? ` \`${node.post.uri}\`` : '';
   if (node.notFound) {
-    lines.push(`${indent}*[Post not found or deleted]*`);
+    lines.push(`${indent}*[Post not found or deleted]*${uriSuffix}`);
     return;
   }
-  if (node.truncated) {
-    lines.push(`${indent}*[More replies — use a deeper depth to load them]*`);
+  if (node.blocked) {
+    lines.push(`${indent}*[Post hidden — its author blocks this view]*${uriSuffix}`);
     return;
   }
   for (const line of renderPostLines(node.post)) {
@@ -30,12 +69,129 @@ function formatThreadNode(node: ThreadPost, depth: number, lines: string[]): voi
       formatThreadNode(reply, depth + 1, lines);
     }
   }
+  if (node.truncated) {
+    lines.push(`${indent}${truncationLine(node)}`);
+  }
+}
+
+/** What a walk of the normalized thread found. */
+interface ThreadSurvey {
+  /** Replies the thread author hid that are absent from the tree — a named part of the shortfall. */
+  authorHidden: number;
+  /** Nodes reached at the edge of the reply tree with replies still below them. */
+  depthLimitedNodes: number;
+  /** Every node in the response — the target, its parent chain, and every reply. */
+  nodes: number;
+  /** Nodes whose missing replies no further request can reach. */
+  unavailableNodes: number;
+  /** How far the AppView's reply counts run ahead of the replies returned, totalled. */
+  unreturnedReplies: number;
+}
+
+/**
+ * @internal Walk the normalized thread and total up what came back and what did not. The gate's
+ * `hiddenReplies` are matched against the URIs actually returned, so only the hidden replies that
+ * are genuinely absent count toward the explained part of the shortfall — the AppView leaves some
+ * of them in the tree.
+ */
+function surveyThread(thread: ThreadPost, gate: ThreadGate | undefined): ThreadSurvey {
+  const survey: ThreadSurvey = {
+    authorHidden: 0,
+    depthLimitedNodes: 0,
+    nodes: 0,
+    unavailableNodes: 0,
+    unreturnedReplies: 0,
+  };
+  const returned = new Set<string>();
+  const visit = (node: ThreadPost): void => {
+    survey.nodes++;
+    if (node.post.uri) returned.add(node.post.uri);
+    if (node.truncated) {
+      survey.unreturnedReplies += node.unreturnedReplies ?? 0;
+      if (node.truncationReason === 'unavailable') survey.unavailableNodes++;
+      else survey.depthLimitedNodes++;
+    }
+    if (node.parent) visit(node.parent);
+    for (const reply of node.replies ?? []) visit(reply);
+  };
+  visit(thread);
+  survey.authorHidden = (gate?.hiddenReplies ?? []).filter((uri) => !returned.has(uri)).length;
+  return survey;
+}
+
+/** @internal "1 post" / "N posts". */
+function postCountLabel(n: number): string {
+  return `${n.toLocaleString()} ${n === 1 ? 'post' : 'posts'}`;
+}
+
+/** @internal Spell out what the response is missing and which part of it is still reachable. */
+function truncationNotice(survey: ThreadSurvey): string {
+  const parts = [
+    `This thread is partial — Bluesky's reply counts run ${replyCountLabel(survey.unreturnedReplies)} ahead of what it returned.`,
+  ];
+  if (survey.depthLimitedNodes > 0) {
+    parts.push(
+      `${postCountLabel(survey.depthLimitedNodes)} ${survey.depthLimitedNodes === 1 ? 'sits' : 'sit'} at the edge of the reply tree — call bsky_get_post_thread with such a post's AT-URI to read below it.`,
+    );
+  }
+  if (survey.unavailableNodes > 0) {
+    parts.push(
+      `On ${postCountLabel(survey.unavailableNodes)} the difference is not retrievable by any request: Bluesky holds replies back past a per-post limit, and its counts also keep including replies that have left the index, so treat the number as an upper bound on what is missing rather than a count of readable replies.`,
+    );
+  }
+  if (survey.authorHidden > 0) {
+    parts.push(
+      `${replyCountLabel(survey.authorHidden)} in that difference ${survey.authorHidden === 1 ? 'is' : 'are'} accounted for: the thread author hid ${survey.authorHidden === 1 ? 'it' : 'them'}.`,
+    );
+  }
+  parts.push('Treat any summary of this conversation as covering only what was returned.');
+  return parts.join(' ');
+}
+
+/**
+ * @internal The threadgate as it reaches `format()`. Distinct from `ThreadGate` only in that the
+ * output schema hands optional fields over explicitly undefined rather than absent.
+ */
+interface ThreadGateView {
+  allow?: ThreadGateRule[] | undefined;
+  hiddenReplies: string[];
+  uri: string;
+}
+
+/** @internal The threadgate block that opens the rendered thread. */
+function renderGateLines(gate: ThreadGateView): string[] {
+  const hidden = gate.hiddenReplies;
+  const lines = [`> 🔒 ${gateAudience(gate)}. Threadgate: \`${gate.uri}\``];
+  if (hidden.length > 0) {
+    lines.push(
+      `> ${replyCountLabel(hidden.length)} hidden by the thread author: ${hidden.map((uri) => `\`${uri}\``).join(', ')}`,
+    );
+  }
+  lines.push('');
+  return lines;
+}
+
+/** @internal Plain-language name for each threadgate rule. */
+const GATE_AUDIENCE: Record<ThreadGateRule, string> = {
+  follower: "the author's followers",
+  following: 'accounts the author follows',
+  list: 'members of a list the author chose',
+  mentioned: 'accounts mentioned in the post',
+  unknown: 'an audience this server does not recognize',
+};
+
+/** @internal Plain-language rendering of who a threadgate lets reply. */
+function gateAudience(gate: ThreadGateView): string {
+  if (!gate.allow) return 'Replies are open to anyone';
+  if (gate.allow.length === 0) return 'Replies are turned off';
+  return `Replies are limited to ${gate.allow.map((r) => GATE_AUDIENCE[r]).join(', ')}`;
 }
 
 /**
  * Thread node schema — uses passthrough so all post fields (uri, cid, text, author, engagement counts,
  * createdAt, labels, embed, replyToUri, replyRootUri) and thread structure (parent, replies, truncated,
- * notFound) flow through structuredContent without format-parity constraints on the recursive tree shape.
+ * truncationReason, unreturnedReplies, notFound, blocked) flow through structuredContent without
+ * format-parity constraints on the recursive tree shape.
  */
 const ThreadNodeSchema: z.ZodType<unknown> = z
   .object({})
@@ -44,18 +200,59 @@ const ThreadNodeSchema: z.ZodType<unknown> = z
     'The conversation thread rooted at the requested post — a recursive node tree. Each node has: ' +
       'post: { uri, cid, text, author: { did, handle, displayName?, avatar? }, replyCount?, repostCount?, likeCount?, quoteCount?, indexedAt?, createdAt?, labels?, embed?, replyToUri?, replyRootUri? }. ' +
       'parent?: parent thread node. replies?: array of child thread nodes. ' +
-      'truncated?: true when the API cut off deeper replies. notFound?: true when the post was deleted.',
+      "truncated?: true when the node's own post.replyCount exceeds the replies returned for it, with " +
+      'unreturnedReplies: the size of that difference, and truncationReason: "depth" (the reply tree ends ' +
+      'at this node — fetch its post.uri as its own thread to continue below it) or "unavailable" (no ' +
+      'request closes the gap). unreturnedReplies is an upper bound on what is missing, not a count of ' +
+      "readable replies: Bluesky's counter keeps including replies that have left the index, so a node " +
+      'reporting one unreturned reply often has none left to fetch. Only reply-tree nodes carry these; a ' +
+      'parent-chain node is linear by construction and never reports a shortfall. ' +
+      'notFound?: true when the post was deleted or never existed. blocked?: true when its author blocks ' +
+      'this view. Both stubs carry the reported AT-URI on post.uri and no content — a blocked node also ' +
+      'carries the author DID on post.author.did.',
+  );
+
+/** Reply restrictions the thread author set, when the AppView returned a threadgate. */
+const ThreadGateSchema = z
+  .object({
+    uri: z.string().describe('AT-URI of the threadgate record itself.'),
+    allow: z
+      .array(z.enum(['follower', 'following', 'list', 'mentioned', 'unknown']))
+      .optional()
+      .describe(
+        'Who may reply. Omitted when anyone may; an empty array means the author turned replies off. ' +
+          'Replies posted before the rule was set stay in the thread.',
+      ),
+    hiddenReplies: z
+      .array(z.string())
+      .describe(
+        'AT-URIs of replies the thread author hid. Some are still present in the returned tree — ' +
+          'compare against the node URIs rather than assuming every entry is absent.',
+      ),
+  })
+  .describe(
+    "The thread author's reply restrictions, present only when they set one. Hidden replies are " +
+      'counted in replyCount whether or not they were returned, so a gated thread is one reason the ' +
+      'counts run ahead of the tree.',
   );
 
 export const bskyGetPostThread = tool('bsky_get_post_thread', {
   title: 'Get Bluesky Post Thread',
   description:
-    'Fetch the full conversation for a post by AT-URI — the parent chain upward and the reply tree downward. ' +
-    'Enter the thread at any point and traverse the full discussion. ' +
+    'Fetch the conversation for a post by AT-URI — the parent chain upward and the reply tree downward. ' +
+    'Enter the thread at any point and traverse the discussion. ' +
     'AT-URIs have the format "at://<handle-or-did>/<collection>/<rkey>" and are returned by bsky_search_posts and ' +
     'bsky_get_author_feed in the "uri" field of each post. ' +
     'Returns the root post, parent chain, and nested replies with per-post author and engagement data. ' +
-    '"truncated: true" on a reply node means there are more replies below — increase depth to load them.',
+    'The response is often a fraction of the conversation: Bluesky holds replies back past a per-post limit ' +
+    'and offers no way to page the rest, so a thread with thousands of replies commonly returns a few hundred. ' +
+    'Any node returning fewer replies than its own replyCount carries "truncated: true" with ' +
+    '"unreturnedReplies" and a "truncationReason" — "depth" means the reply tree ended there and fetching ' +
+    'that node\'s AT-URI as its own thread continues below it, "unavailable" means no request closes the gap. ' +
+    'Read "unreturnedReplies" as an upper bound on what is missing rather than a count of readable replies: ' +
+    "Bluesky's counter also includes replies that have left the index, so a small difference often means " +
+    'nothing is left to fetch. The enrichment fields total the difference for the whole thread; check them ' +
+    'before describing a conversation as complete.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     uri: z
@@ -71,22 +268,60 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
       .number()
       .int()
       .min(0)
-      .max(1000)
+      .max(MAX_REPLY_DEPTH)
       .default(6)
-      .describe('How many levels of replies to include in the reply tree. Default 6.'),
+      .describe(
+        `How many levels of replies to include below the target post. Default 6, maximum ${MAX_REPLY_DEPTH} — ` +
+          `Bluesky itself returns no more than ${MAX_REPLY_DEPTH} levels however deep the request. ` +
+          'Depth does not widen the reply tree either: the per-post reply limit is independent of it. ' +
+          "To read below the deepest level returned, fetch an edge node's AT-URI as its own thread.",
+      ),
     parent_height: z
       .number()
       .int()
       .min(0)
-      .max(1000)
+      .max(MAX_PARENT_HEIGHT)
       .default(80)
       .describe(
-        'How many parent posts to include in the parent chain above the target post. Default 80.',
+        `How many parent posts to include in the parent chain above the target post. Default 80, maximum ${MAX_PARENT_HEIGHT}. ` +
+          'The chain is returned level for level up to this many posts and stops early at the conversation root. ' +
+          'To read above a chain longer than this, fetch the topmost parent returned as its own thread.',
       ),
   }),
   output: z.object({
     thread: ThreadNodeSchema,
+    threadgate: ThreadGateSchema.optional(),
   }),
+
+  enrichment: {
+    totalReturned: z
+      .number()
+      .describe(
+        'Thread nodes in this response — the target post, its parent chain, and every reply returned.',
+      ),
+    truncated: z
+      .boolean()
+      .optional()
+      .describe(
+        'True when at least one post in the reply tree returned fewer replies than Bluesky counts for it.',
+      ),
+    unreturnedReplies: z
+      .number()
+      .optional()
+      .describe(
+        'How far the reply counts run ahead of the replies returned, summed across the reply tree. An ' +
+          "upper bound on what is missing, not a count of readable replies — Bluesky's counters keep " +
+          'including replies that have left the index. Compare against the root post replyCount to judge ' +
+          'how much of the conversation is present.',
+      ),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'What this response is missing, how much of the gap is explained, and which part of it can still ' +
+          'be reached by a further request.',
+      ),
+  },
 
   errors: [
     {
@@ -107,9 +342,9 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
   async handler(input, ctx) {
     ctx.log.info('Fetching Bluesky post thread', { uri: input.uri, depth: input.depth });
 
-    let thread: ThreadPost;
+    let result: PostThreadResult;
     try {
-      thread = await getBlueskyService().getPostThread(
+      result = await getBlueskyService().getPostThread(
         { uri: input.uri, depth: input.depth, parentHeight: input.parent_height },
         ctx,
       );
@@ -134,15 +369,40 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
       throw err;
     }
 
-    return { thread };
+    const survey = surveyThread(result.thread, result.threadgate);
+    ctx.enrich({ totalReturned: survey.nodes });
+    if (survey.unreturnedReplies > 0) {
+      ctx.enrich({ truncated: true, unreturnedReplies: survey.unreturnedReplies });
+      ctx.enrich.notice(truncationNotice(survey));
+    }
+
+    return result;
   },
 
   format: (result) => {
     const thread = result.thread as ThreadPost;
-    if (!thread || thread.notFound) {
-      return [{ type: 'text', text: '*Post not found or deleted.*' }];
+    /**
+     * The gate leads, and leads in every branch: it is the one part of the response that explains
+     * a missing reply as a deliberate act rather than an API limit.
+     */
+    const gate = result.threadgate;
+    const gateLines = gate ? renderGateLines(gate) : [];
+    /**
+     * `post` is checked as well as `notFound`: the node tree is declared `passthrough()`, so an
+     * empty node is a valid value of the output schema even though the AppView never sends one.
+     */
+    if (!thread?.post || thread.notFound) {
+      return [{ type: 'text', text: [...gateLines, '*Post not found or deleted.*'].join('\n') }];
     }
-    const lines: string[] = ['# Thread'];
+    if (thread.blocked) {
+      return [
+        {
+          type: 'text',
+          text: [...gateLines, '*Post hidden — its author blocks this view.*'].join('\n'),
+        },
+      ];
+    }
+    const lines: string[] = ['# Thread', ...gateLines];
     // Render parent chain first (walking up)
     if (thread.parent) {
       lines.push('## Parent chain');

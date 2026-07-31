@@ -38,7 +38,8 @@ await createApp({
     '- AT-URI: post address, e.g. "at://did:plc:.../app.bsky.feed.post/rkey"\n\n' +
     'Typical workflows:\n' +
     '1. bsky_search_posts — find recent posts on any topic\n' +
-    '2. bsky_get_post_thread — read a full conversation (AT-URI from search results)\n' +
+    '2. bsky_get_post_thread — read a conversation (AT-URI from search results); large threads come\n' +
+    '   back partial, so read its truncation fields before summarizing one\n' +
     '3. bsky_get_profile — resolve a handle or look up an account\n' +
     '4. bsky_get_trending — discover what Bluesky is talking about right now',
   setup(_core) {

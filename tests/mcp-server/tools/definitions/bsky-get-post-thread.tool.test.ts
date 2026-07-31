@@ -4,11 +4,11 @@
  */
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { bskyGetPostThread } from '@/mcp-server/tools/definitions/bsky-get-post-thread.tool.js';
 import { initBlueskyService } from '@/services/bluesky/bluesky-service.js';
-import type { ThreadPost } from '@/services/bluesky/types.js';
+import type { PostThreadResult, ThreadPost } from '@/services/bluesky/types.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -40,7 +40,7 @@ const makeThread = (overrides: Partial<ThreadPost> = {}): ThreadPost => ({
 // Module mock
 // ---------------------------------------------------------------------------
 
-const mockGetPostThread = vi.fn<[], Promise<ThreadPost>>();
+const mockGetPostThread = vi.fn<[], Promise<PostThreadResult>>();
 
 vi.mock('@/services/bluesky/bluesky-service.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('@/services/bluesky/bluesky-service.js')>();
@@ -131,7 +131,7 @@ describe('bskyGetPostThread', () => {
   // --- Happy path ---
 
   it('returns thread for valid AT-URI', async () => {
-    mockGetPostThread.mockResolvedValue(makeThread());
+    mockGetPostThread.mockResolvedValue({ thread: makeThread() });
 
     const ctx = createMockContext({ errors: bskyGetPostThread.errors });
     const input = bskyGetPostThread.input.parse({
@@ -167,7 +167,7 @@ describe('bskyGetPostThread', () => {
         },
       },
     };
-    mockGetPostThread.mockResolvedValue(thread);
+    mockGetPostThread.mockResolvedValue({ thread });
 
     const ctx = createMockContext({ errors: bskyGetPostThread.errors });
     const input = bskyGetPostThread.input.parse({
@@ -183,7 +183,7 @@ describe('bskyGetPostThread', () => {
       post: ROOT_POST,
       replies: [{ post: REPLY_POST }],
     };
-    mockGetPostThread.mockResolvedValue(thread);
+    mockGetPostThread.mockResolvedValue({ thread });
 
     const ctx = createMockContext({ errors: bskyGetPostThread.errors });
     const input = bskyGetPostThread.input.parse({
@@ -195,24 +195,340 @@ describe('bskyGetPostThread', () => {
     expect((resultThread.replies as ThreadPost[]).length).toBe(1);
   });
 
-  // --- Truncated node ---
+  // --- Input bounds ---
 
-  it('handles truncated reply node', async () => {
-    const thread: ThreadPost = {
-      post: ROOT_POST,
-      replies: [
-        { post: { uri: '', cid: '', text: '', author: { did: '', handle: '' } }, truncated: true },
-      ],
+  it.each([
+    ['depth', 0],
+    ['depth', 10],
+    ['parent_height', 0],
+    ['parent_height', 100],
+  ])('accepts %s = %i', (field, value) => {
+    const input = bskyGetPostThread.input.parse({
+      uri: 'at://did:plc:abc/app.bsky.feed.post/r1',
+      [field]: value,
+    });
+    expect(input[field as 'depth' | 'parent_height']).toBe(value);
+  });
+
+  it.each([
+    ['depth above the reply-tree ceiling', 'depth', 11],
+    ['depth at the old ceiling', 'depth', 1000],
+    ['negative depth', 'depth', -1],
+    ['fractional depth', 'depth', 2.5],
+    ['parent_height above the ceiling', 'parent_height', 101],
+    ['parent_height at the old ceiling', 'parent_height', 1000],
+    ['negative parent_height', 'parent_height', -1],
+  ])('rejects %s', (_label, field, value) => {
+    expect(() =>
+      bskyGetPostThread.input.parse({
+        uri: 'at://did:plc:abc/app.bsky.feed.post/r1',
+        [field]: value,
+      }),
+    ).toThrow();
+  });
+
+  // --- Truncation disclosure (enrichment) ---
+
+  /** A large real thread: the root's count runs far ahead of its replies, one reply hits the edge. */
+  const unretrievableThread: ThreadPost = {
+    post: { ...ROOT_POST, replyCount: 1805 },
+    replies: [
+      { post: REPLY_POST },
+      {
+        post: { ...REPLY_POST, uri: 'at://did:plc:def/app.bsky.feed.post/reply2', replyCount: 9 },
+        truncated: true,
+        truncationReason: 'depth',
+        unreturnedReplies: 9,
+      },
+    ],
+    truncated: true,
+    truncationReason: 'unavailable',
+    unreturnedReplies: 1803,
+  };
+
+  it('reports node count, unreturned replies, and a notice when the thread is partial', async () => {
+    mockGetPostThread.mockResolvedValue({ thread: unretrievableThread });
+
+    const ctx = createMockContext({ errors: bskyGetPostThread.errors });
+    const input = bskyGetPostThread.input.parse({
+      uri: 'at://did:plc:abc/app.bsky.feed.post/root1',
+    });
+    await bskyGetPostThread.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalReturned).toBe(3);
+    expect(enrichment.truncated).toBe(true);
+    expect(enrichment.unreturnedReplies).toBe(1812);
+    expect(enrichment.notice).toContain('1,812 replies');
+    expect(enrichment.notice).toContain('not retrievable by any request');
+    expect(enrichment.notice).toContain('bsky_get_post_thread');
+  });
+
+  /**
+   * The number is a ceiling on what is missing, never a promise that this many replies exist —
+   * Bluesky's counters keep including replies that have left the index.
+   */
+  it('presents the total as an upper bound rather than a count of readable replies', async () => {
+    mockGetPostThread.mockResolvedValue({ thread: unretrievableThread });
+
+    const ctx = createMockContext({ errors: bskyGetPostThread.errors });
+    const input = bskyGetPostThread.input.parse({
+      uri: 'at://did:plc:abc/app.bsky.feed.post/root1',
+    });
+    await bskyGetPostThread.handler(input, ctx);
+
+    const notice = getEnrichment(ctx).notice as string;
+    expect(notice).toContain('upper bound');
+    expect(notice).toContain('left the index');
+    expect(notice).not.toMatch(/withheld by Bluesky's per-post reply cap/i);
+  });
+
+  it('counts parent-chain nodes in totalReturned', async () => {
+    mockGetPostThread.mockResolvedValue({
+      thread: { post: ROOT_POST, parent: { post: REPLY_POST, parent: { post: REPLY_POST } } },
+    });
+
+    const ctx = createMockContext({ errors: bskyGetPostThread.errors });
+    const input = bskyGetPostThread.input.parse({
+      uri: 'at://did:plc:abc/app.bsky.feed.post/root1',
+    });
+    await bskyGetPostThread.handler(input, ctx);
+
+    expect(getEnrichment(ctx).totalReturned).toBe(3);
+  });
+
+  it('discloses nothing beyond the node count when the whole thread came back', async () => {
+    mockGetPostThread.mockResolvedValue({
+      thread: { post: { ...ROOT_POST, replyCount: 1 }, replies: [{ post: REPLY_POST }] },
+    });
+
+    const ctx = createMockContext({ errors: bskyGetPostThread.errors });
+    const input = bskyGetPostThread.input.parse({
+      uri: 'at://did:plc:abc/app.bsky.feed.post/root1',
+    });
+    await bskyGetPostThread.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalReturned).toBe(2);
+    expect(enrichment.truncated).toBeUndefined();
+    expect(enrichment.unreturnedReplies).toBeUndefined();
+    expect(enrichment.notice).toBeUndefined();
+  });
+
+  it('omits the unretrievable sentence when every shortfall is depth-limited', async () => {
+    mockGetPostThread.mockResolvedValue({
+      thread: {
+        post: { ...ROOT_POST, replyCount: 1 },
+        replies: [
+          {
+            post: { ...REPLY_POST, replyCount: 3 },
+            truncated: true,
+            truncationReason: 'depth',
+            unreturnedReplies: 3,
+          },
+        ],
+      },
+    });
+
+    const ctx = createMockContext({ errors: bskyGetPostThread.errors });
+    const input = bskyGetPostThread.input.parse({
+      uri: 'at://did:plc:abc/app.bsky.feed.post/root1',
+    });
+    await bskyGetPostThread.handler(input, ctx);
+
+    const notice = getEnrichment(ctx).notice as string;
+    expect(notice).not.toContain('not retrievable by any request');
+    expect(notice).toContain('edge of the reply tree');
+  });
+
+  it('agrees in number throughout the notice when one reply on one post is unaccounted for', async () => {
+    mockGetPostThread.mockResolvedValue({
+      thread: {
+        post: { ...ROOT_POST, replyCount: 1 },
+        truncated: true,
+        truncationReason: 'depth',
+        unreturnedReplies: 1,
+      },
+    });
+
+    const ctx = createMockContext({ errors: bskyGetPostThread.errors });
+    const input = bskyGetPostThread.input.parse({
+      uri: 'at://did:plc:abc/app.bsky.feed.post/root1',
+    });
+    await bskyGetPostThread.handler(input, ctx);
+
+    const notice = getEnrichment(ctx).notice as string;
+    expect(notice).toContain('run 1 reply ahead of what it returned');
+    expect(notice).toContain('1 post sits at the edge');
+  });
+
+  // --- Threadgate ---
+
+  const HIDDEN_URI = 'at://did:plc:def/app.bsky.feed.post/hidden1';
+
+  it('names the author-hidden replies that are missing from the tree', async () => {
+    mockGetPostThread.mockResolvedValue({
+      thread: {
+        post: { ...ROOT_POST, replyCount: 3 },
+        replies: [{ post: REPLY_POST }],
+        truncated: true,
+        truncationReason: 'unavailable',
+        unreturnedReplies: 2,
+      },
+      threadgate: {
+        uri: 'at://did:plc:abc/app.bsky.feed.threadgate/root1',
+        hiddenReplies: [HIDDEN_URI],
+      },
+    });
+
+    const ctx = createMockContext({ errors: bskyGetPostThread.errors });
+    const input = bskyGetPostThread.input.parse({
+      uri: 'at://did:plc:abc/app.bsky.feed.post/root1',
+    });
+    await bskyGetPostThread.handler(input, ctx);
+
+    expect(getEnrichment(ctx).notice).toContain('the thread author hid it');
+  });
+
+  /**
+   * The AppView leaves some hidden replies in the tree, so a hidden AT-URI only explains part of
+   * the shortfall when it is genuinely absent.
+   */
+  it('does not credit a hidden reply that the AppView still returned', async () => {
+    mockGetPostThread.mockResolvedValue({
+      thread: {
+        post: { ...ROOT_POST, replyCount: 3 },
+        replies: [{ post: { ...REPLY_POST, uri: HIDDEN_URI } }],
+        truncated: true,
+        truncationReason: 'unavailable',
+        unreturnedReplies: 2,
+      },
+      threadgate: {
+        uri: 'at://did:plc:abc/app.bsky.feed.threadgate/root1',
+        hiddenReplies: [HIDDEN_URI],
+      },
+    });
+
+    const ctx = createMockContext({ errors: bskyGetPostThread.errors });
+    const input = bskyGetPostThread.input.parse({
+      uri: 'at://did:plc:abc/app.bsky.feed.post/root1',
+    });
+    await bskyGetPostThread.handler(input, ctx);
+
+    expect(getEnrichment(ctx).notice).not.toContain('the thread author hid');
+  });
+
+  it('passes the threadgate through to the tool output', async () => {
+    const threadgate = {
+      uri: 'at://did:plc:abc/app.bsky.feed.threadgate/root1',
+      allow: ['following' as const],
+      hiddenReplies: [],
     };
-    mockGetPostThread.mockResolvedValue(thread);
+    mockGetPostThread.mockResolvedValue({ thread: makeThread(), threadgate });
 
     const ctx = createMockContext({ errors: bskyGetPostThread.errors });
     const input = bskyGetPostThread.input.parse({
       uri: 'at://did:plc:abc/app.bsky.feed.post/root1',
     });
     const result = await bskyGetPostThread.handler(input, ctx);
-    const resultThread = result.thread as ThreadPost;
-    expect((resultThread.replies as ThreadPost[])[0].truncated).toBe(true);
+
+    expect(result.threadgate).toEqual(threadgate);
+  });
+
+  it('discloses no truncation for a gated thread that came back whole', async () => {
+    mockGetPostThread.mockResolvedValue({
+      thread: { post: { ...ROOT_POST, replyCount: 1 }, replies: [{ post: REPLY_POST }] },
+      threadgate: {
+        uri: 'at://did:plc:abc/app.bsky.feed.threadgate/root1',
+        allow: [],
+        hiddenReplies: [],
+      },
+    });
+
+    const ctx = createMockContext({ errors: bskyGetPostThread.errors });
+    const input = bskyGetPostThread.input.parse({
+      uri: 'at://did:plc:abc/app.bsky.feed.post/root1',
+    });
+    await bskyGetPostThread.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBeUndefined();
+    expect(enrichment.notice).toBeUndefined();
+  });
+
+  // --- format() renders the threadgate ---
+
+  it.each([
+    ['an absent allow list as open', undefined, 'Replies are open to anyone'],
+    ['an empty allow list as closed', [] as const, 'Replies are turned off'],
+    ['named rules as an audience', ['following', 'mentioned'] as const, 'Replies are limited to'],
+  ])('renders %s', (_label, allow, expected) => {
+    const text = (
+      bskyGetPostThread.format!({
+        thread: makeThread(),
+        threadgate: {
+          uri: 'at://did:plc:abc/app.bsky.feed.threadgate/root1',
+          hiddenReplies: [],
+          ...(allow ? { allow: [...allow] } : {}),
+        },
+      })[0] as { text: string }
+    ).text;
+
+    expect(text).toContain(expected);
+    expect(text).toContain('at://did:plc:abc/app.bsky.feed.threadgate/root1');
+  });
+
+  it('lists the hidden reply AT-URIs so they can be fetched individually', () => {
+    const text = (
+      bskyGetPostThread.format!({
+        thread: makeThread(),
+        threadgate: {
+          uri: 'at://did:plc:abc/app.bsky.feed.threadgate/root1',
+          hiddenReplies: [HIDDEN_URI],
+        },
+      })[0] as { text: string }
+    ).text;
+
+    expect(text).toContain('1 reply hidden by the thread author');
+    expect(text).toContain(HIDDEN_URI);
+  });
+
+  it('renders the threadgate even when the requested post itself is gone', () => {
+    const text = (
+      bskyGetPostThread.format!({
+        thread: {
+          post: { uri: '', cid: '', text: '', author: { did: '', handle: '' } },
+          notFound: true,
+        },
+        threadgate: {
+          uri: 'at://did:plc:abc/app.bsky.feed.threadgate/root1',
+          allow: [],
+          hiddenReplies: [],
+        },
+      })[0] as { text: string }
+    ).text;
+
+    expect(text).toContain('Replies are turned off');
+    expect(text).toContain('not found');
+  });
+
+  it('renders no gate block for an ungated thread', () => {
+    const text = (bskyGetPostThread.format!({ thread: makeThread() })[0] as { text: string }).text;
+
+    expect(text).not.toContain('Threadgate');
+    expect(text).not.toContain('🔒');
+  });
+
+  // --- Tool description states the real contract ---
+
+  it('does not tell the reader to raise depth to recover unreturned replies', () => {
+    expect(bskyGetPostThread.description).not.toMatch(/increase depth/i);
+    expect(bskyGetPostThread.description).toContain('no way to page the rest');
+  });
+
+  it('frames the unreturned total as an upper bound in the tool description', () => {
+    expect(bskyGetPostThread.description).toContain('upper bound');
+    expect(bskyGetPostThread.description).toContain('left the index');
   });
 
   // --- format() ---
@@ -392,15 +708,79 @@ describe('bskyGetPostThread', () => {
     expect(text).toContain('root9');
   });
 
-  it('renders truncated node indicator', () => {
+  // --- format() renders the truncation and stub cases ---
+
+  it('renders a short-counted node with its post, its replies, and the shortfall line', () => {
+    const text = (bskyGetPostThread.format!({ thread: unretrievableThread })[0] as { text: string })
+      .text;
+
+    expect(text).toContain('Root post text');
+    expect(text).toContain('Reply text');
+    expect(text).toContain('Bluesky counts 1,803 replies to this post that it did not return');
+    expect(text).toContain('No request retrieves them');
+    expect(text).not.toMatch(/caps how many replies it returns per post/i);
+  });
+
+  it('points a depth-limited node at its own AT-URI rather than at a deeper depth', () => {
+    const text = (bskyGetPostThread.format!({ thread: unretrievableThread })[0] as { text: string })
+      .text;
+
+    expect(text).toContain('9 replies below this post were not returned');
+    expect(text).toContain("fetch this post's AT-URI with bsky_get_post_thread");
+    expect(text).not.toMatch(/use a deeper depth/i);
+  });
+
+  it('agrees in number when exactly one reply was withheld', () => {
+    const thread: ThreadPost = {
+      post: { ...ROOT_POST, replyCount: 1 },
+      truncated: true,
+      truncationReason: 'depth',
+      unreturnedReplies: 1,
+    };
+    const text = (bskyGetPostThread.format!({ thread })[0] as { text: string }).text;
+
+    expect(text).toContain('1 reply below this post was not returned');
+  });
+
+  it('renders a blocked reply distinctly from a deleted one, with both AT-URIs', () => {
     const thread: ThreadPost = {
       post: ROOT_POST,
       replies: [
-        { post: { uri: '', cid: '', text: '', author: { did: '', handle: '' } }, truncated: true },
+        {
+          post: {
+            uri: 'at://did:plc:blocker/app.bsky.feed.post/hidden1',
+            cid: '',
+            text: '',
+            author: { did: 'did:plc:blocker', handle: '' },
+          },
+          blocked: true,
+        },
+        {
+          post: {
+            uri: 'at://did:plc:gone/app.bsky.feed.post/deleted1',
+            cid: '',
+            text: '',
+            author: { did: '', handle: '' },
+          },
+          notFound: true,
+        },
       ],
     };
-    const blocks = bskyGetPostThread.format!({ thread });
-    const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('More replies');
+    const text = (bskyGetPostThread.format!({ thread })[0] as { text: string }).text;
+
+    expect(text).toContain('*[Post hidden — its author blocks this view]*');
+    expect(text).toContain('at://did:plc:blocker/app.bsky.feed.post/hidden1');
+    expect(text).toContain('*[Post not found or deleted]*');
+    expect(text).toContain('at://did:plc:gone/app.bsky.feed.post/deleted1');
+  });
+
+  it('renders the blocked fallback when the requested post itself is blocked', () => {
+    const thread: ThreadPost = {
+      post: { uri: '', cid: '', text: '', author: { did: 'did:plc:blocker', handle: '' } },
+      blocked: true,
+    };
+    const text = (bskyGetPostThread.format!({ thread })[0] as { text: string }).text;
+
+    expect(text).toContain('blocks this view');
   });
 });
