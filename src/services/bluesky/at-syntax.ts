@@ -69,3 +69,20 @@ export const ISO_DATETIME_REGEX = new RegExp(
 /** Validation message paired with {@link ISO_DATETIME_REGEX}. */
 export const ISO_DATETIME_MESSAGE =
   'Must be a calendar date ("2025-01-01") or a zero-padded ISO 8601 datetime ("2025-01-01T00:00:00Z"). A datetime with an unpadded month or day ("2025-1-1T00:00:00Z") is silently ignored by Bluesky and returns unfiltered results.';
+
+/**
+ * BCP-47 language tag *shape* — a 2–3 letter primary subtag followed by any number of
+ * alphanumeric subtags, so "en", "ja", "en-US", "pt-BR", and "zh-Hant" all pass.
+ *
+ * Deliberately a shape check and not a language-code registry: the AppView validates
+ * shape only. "qqq" is shape-valid but names no language, and Bluesky answers it with
+ * 200 and the filter quietly dropped rather than an error; a registry check here would
+ * be stricter than the API it wraps and could reject a tag Bluesky would have honoured.
+ * Shape validation catches the loud failure — "english", "zzzz", and "e n" all come
+ * back as a bare upstream 400.
+ */
+export const BCP47_LANGUAGE_REGEX = /^[a-zA-Z]{2,3}(?:-[a-zA-Z0-9]{1,8})*$/;
+
+/** Validation message paired with {@link BCP47_LANGUAGE_REGEX}. */
+export const BCP47_LANGUAGE_MESSAGE =
+  'Must be a BCP-47 language tag: a two- or three-letter language code, optionally followed by hyphen-separated subtags — "en", "ja", "es", "en-US", "pt-BR", "zh-Hant". A language name such as "english" is not a tag.';
