@@ -30,6 +30,21 @@ const TrendSchema = z
       .string()
       .optional()
       .describe('Category of the trend, e.g. "politics", "sports", "pop-culture".'),
+    actors: z
+      .array(
+        z
+          .object({
+            did: z.string().describe('Permanent DID of the actor.'),
+            handle: z.string().describe('Human-readable handle, e.g. "alice.bsky.social".'),
+            displayName: z.string().optional().describe('Display name set by the actor.'),
+          })
+          .describe('A representative account posting about this topic.'),
+      )
+      .optional()
+      .describe(
+        'Representative accounts posting about this topic — the AppView returns five per trend. ' +
+          'Pass a handle to bsky_get_author_feed or bsky_get_profile instead of searching for authors.',
+      ),
   })
   .describe('A single real-time trending topic on Bluesky.');
 
@@ -37,7 +52,8 @@ export const bskyGetTrending = tool('bsky_get_trending', {
   title: 'Get Bluesky Trending Topics',
   description:
     'Fetch the current real-time trending topics on Bluesky. Returns topics with display name, ' +
-    'post count, category (politics, sports, pop-culture, etc.), status (hot/rising), and start time. ' +
+    'post count, category (politics, sports, pop-culture, etc.), status (hot/rising), start time, and ' +
+    'the representative accounts driving each topic — so "who is talking about this" needs no follow-up search. ' +
     'Entry point for "what is Bluesky talking about right now". Pair with bsky_search_posts to drill ' +
     'into any trending topic. Note: uses the app.bsky.unspecced.getTrends endpoint, which is not part ' +
     "of Bluesky's stable lexicon and may change without notice.",
@@ -95,6 +111,13 @@ export const bskyGetTrending = tool('bsky_get_trending', {
       if (t.startedAt) parts.push(`   Started: ${t.startedAt}`);
       if (t.topic !== t.displayName) parts.push(`   Topic: \`${t.topic}\``);
       if (t.link) parts.push(`   Link: ${t.link}`);
+      if (t.actors?.length) {
+        parts.push('   Voices:');
+        for (const a of t.actors) {
+          const name = a.displayName ? `${a.displayName} (@${a.handle})` : `@${a.handle}`;
+          parts.push(`     - ${name} \`${a.did}\``);
+        }
+      }
       return parts.join('\n');
     });
     return [{ type: 'text', text: lines.join('\n\n') }];

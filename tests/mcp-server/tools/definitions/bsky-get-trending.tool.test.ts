@@ -166,6 +166,44 @@ describe('bskyGetTrending', () => {
     expect(text).toContain('2.');
   });
 
+  // --- Representative actors ---
+
+  it('carries actors through the handler and the output schema', async () => {
+    const trend = makeTrend({
+      actors: [
+        { did: 'did:plc:one', handle: 'one.bsky.social', displayName: 'One' },
+        { did: 'did:plc:two', handle: 'two.bsky.social' },
+      ],
+    });
+    mockGetTrends.mockResolvedValue({ trends: [trend] });
+
+    const ctx = createMockContext();
+    const result = await bskyGetTrending.handler(bskyGetTrending.input.parse({}), ctx);
+
+    expect(result.trends[0].actors).toHaveLength(2);
+    expect(() => bskyGetTrending.output.parse(result)).not.toThrow();
+  });
+
+  it('renders each actor handle, display name, and DID', () => {
+    const trend = makeTrend({
+      actors: [
+        { did: 'did:plc:one', handle: 'one.bsky.social', displayName: 'One' },
+        { did: 'did:plc:two', handle: 'two.bsky.social' },
+      ],
+    });
+    const text = (bskyGetTrending.format!({ trends: [trend] })[0] as { text: string }).text;
+
+    expect(text).toContain('One (@one.bsky.social)');
+    expect(text).toContain('did:plc:one');
+    expect(text).toContain('@two.bsky.social');
+    expect(text).toContain('did:plc:two');
+  });
+
+  it('renders no Voices block when the trend carries no actors', () => {
+    const text = (bskyGetTrending.format!({ trends: [makeTrend()] })[0] as { text: string }).text;
+    expect(text).not.toContain('Voices');
+  });
+
   it('renders link when present', () => {
     const trend = makeTrend({ link: 'https://bsky.app/profile/trending.bsky.app/feed/123' });
     const blocks = bskyGetTrending.format!({ trends: [trend] });
