@@ -264,6 +264,134 @@ describe('bskyGetPostThread', () => {
     expect(text).toContain('Reply text');
   });
 
+  // --- format() renders each node once ---
+
+  /** Build a thread node with a distinct AT-URI and CID per record key. */
+  const node = (rkey: string, replies?: ThreadPost[]): ThreadPost => ({
+    post: {
+      uri: `at://did:plc:abc/app.bsky.feed.post/${rkey}`,
+      cid: `bafyr-${rkey}`,
+      text: `text of ${rkey}`,
+      author: { did: 'did:plc:abc', handle: 'alice.bsky.social' },
+    },
+    ...(replies ? { replies } : {}),
+  });
+
+  /** A parent, the target, and a two-branch reply tree three levels deep below it. */
+  const nestedThread: ThreadPost = {
+    post: ROOT_POST,
+    parent: node('p1'),
+    replies: [node('r1', [node('r1a', [node('r1a1')])]), node('r2')],
+  };
+
+  it('renders each node exactly once across the whole thread', () => {
+    const text = (bskyGetPostThread.format!({ thread: nestedThread })[0] as { text: string }).text;
+    const rendered = text.match(/\*\*AT-URI:\*\* `[^`]+`/g) ?? [];
+
+    expect(rendered).toHaveLength(6);
+    expect(new Set(rendered).size).toBe(rendered.length);
+  });
+
+  it('renders the target post alone under "This post", not its whole subtree', () => {
+    const text = (bskyGetPostThread.format!({ thread: nestedThread })[0] as { text: string }).text;
+    const thisPost = text.split('## Replies')[0]?.split('## This post')[1] ?? '';
+
+    expect(thisPost).toContain('Root post text');
+    expect(thisPost).not.toContain('text of r1');
+    expect(thisPost).not.toContain('text of p1');
+  });
+
+  it('renders the reply tree under "Replies", indented by depth', () => {
+    const text = (bskyGetPostThread.format!({ thread: nestedThread })[0] as { text: string }).text;
+    const replies = text.split('## Replies')[1] ?? '';
+
+    expect(replies).toContain('### @alice.bsky.social');
+    expect(replies).toContain('  ### @alice.bsky.social');
+    expect(replies).toContain('    ### @alice.bsky.social');
+    expect(replies).toContain('text of r2');
+  });
+
+  // --- format() parity with structuredContent ---
+
+  it('renders the fields structuredContent carries: CID, author DID, quotes, indexedAt', () => {
+    const thread = makeThread({
+      post: {
+        ...ROOT_POST,
+        quoteCount: 7,
+        indexedAt: '2026-07-28T12:27:14.146Z',
+        author: { ...ROOT_POST.author, avatar: 'https://cdn/avatar.jpg' },
+      },
+    });
+    const text = (bskyGetPostThread.format!({ thread })[0] as { text: string }).text;
+
+    expect(text).toContain('bafyrroot');
+    expect(text).toContain('did:plc:abc');
+    expect(text).toContain('7 quotes');
+    expect(text).toContain('2026-07-28T12:27:14.146Z');
+    expect(text).toContain('https://cdn/avatar.jpg');
+  });
+
+  it('renders an image embed on a thread node', () => {
+    const thread = makeThread({
+      post: {
+        ...ROOT_POST,
+        embed: {
+          type: 'images',
+          images: [
+            {
+              url: 'https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:jwj/aaa',
+              alt: 'a photo',
+              aspectRatio: { width: 1080, height: 1080 },
+            },
+          ],
+        },
+      },
+    });
+    const text = (bskyGetPostThread.format!({ thread })[0] as { text: string }).text;
+
+    expect(text).toContain('https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:jwj/aaa');
+    expect(text).toContain('a photo');
+  });
+
+  it('renders a quoted post embed on a reply node, indented under it', () => {
+    const thread: ThreadPost = {
+      post: ROOT_POST,
+      replies: [
+        {
+          post: {
+            ...REPLY_POST,
+            embed: {
+              type: 'record',
+              uri: 'at://did:plc:x/app.bsky.feed.post/quoted1',
+              cid: 'bafyrquoted',
+              text: 'the quoted text',
+              authorHandle: 'quoted.bsky.social',
+            },
+          },
+        },
+      ],
+    };
+    const text = (bskyGetPostThread.format!({ thread })[0] as { text: string }).text;
+
+    expect(text).toContain('at://did:plc:x/app.bsky.feed.post/quoted1');
+    expect(text).toContain('quoted.bsky.social');
+    expect(text).toContain('the quoted text');
+  });
+
+  it('renders replyToUri and replyRootUri on a thread node', () => {
+    const thread = makeThread({
+      post: {
+        ...ROOT_POST,
+        replyToUri: 'at://did:plc:abc/app.bsky.feed.post/parent9',
+        replyRootUri: 'at://did:plc:abc/app.bsky.feed.post/root9',
+      },
+    });
+    const text = (bskyGetPostThread.format!({ thread })[0] as { text: string }).text;
+
+    expect(text).toContain('parent9');
+    expect(text).toContain('root9');
+  });
+
   it('renders truncated node indicator', () => {
     const thread: ThreadPost = {
       post: ROOT_POST,

@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { renderPostLines } from '@/mcp-server/tools/post-format.js';
 import {
   AT_IDENTIFIER_MESSAGE,
   AT_IDENTIFIER_REGEX,
@@ -21,11 +22,17 @@ const EmbedSchema = z
   .describe(
     'Media or link embed attached to this post. ' +
       'type: "images" | "external" | "record" | "video" | "unknown". ' +
-      'images: array of { url, alt, aspectRatio? }. ' +
+      'images: array of { url, alt, aspectRatio? } — also carries app.bsky.embed.gallery embeds. ' +
       'external: { uri, title, description, thumb? }. ' +
-      'record: { uri, cid, text?, authorHandle? }. ' +
+      'record: { uri, cid, text?, authorHandle?, media?, recordKind? } — media is the image/video/link attached ' +
+      'alongside the quote on a recordWithMedia embed, itself an embed of one of these shapes. ' +
+      'recordKind is absent for an ordinary quoted post and otherwise names what stood in for one: ' +
+      '"notFound" | "blocked" | "detached" (the quote exists but cannot be read) or ' +
+      '"generator" | "list" | "starterPack" | "labeler" | "unknown" (the quoted record is not a post). ' +
+      'When recordKind is set, text and authorHandle are absent because that variant does not carry them — ' +
+      'do not read the quote as an empty post. ' +
       'video: { playlist?, thumbnail?, presentation?, aspectRatio? }. ' +
-      'unknown: { raw }.',
+      'unknown: { raw } — raw is the upstream $type this server has no mapping for.',
   );
 
 const PostSchema = z
@@ -71,8 +78,15 @@ const PostSchema = z
       )
       .optional()
       .describe('Moderation labels on this post.'),
-    embed: EmbedSchema.optional().describe('Media or link embed, if any.'),
+    embed: EmbedSchema.optional(),
     replyToUri: z.string().optional().describe('AT-URI of the parent post if this is a reply.'),
+    replyRootUri: z
+      .string()
+      .optional()
+      .describe(
+        'AT-URI of the post this conversation started from, if this is a reply. ' +
+          'Pass to bsky_get_post_thread to read the whole conversation rather than one branch.',
+      ),
   })
   .describe('A single post matching the search query.');
 
@@ -254,51 +268,7 @@ export const bskySearchPosts = tool('bsky_search_posts', {
       header.push(
         `**${result.hitsTotal.toLocaleString()} total matches** (showing ${result.posts.length})`,
       );
-    const lines = result.posts.map((p) => {
-      const parts: string[] = [];
-      const author = p.author.displayName
-        ? `${p.author.displayName} (@${p.author.handle})`
-        : `@${p.author.handle}`;
-      parts.push(`### ${author}`);
-      parts.push(`**AT-URI:** \`${p.uri}\` | **CID:** \`${p.cid}\``);
-      parts.push(`**Author DID:** \`${p.author.did}\``);
-      parts.push(p.text);
-      const meta: string[] = [];
-      if (p.likeCount != null) meta.push(`${p.likeCount} likes`);
-      if (p.repostCount != null) meta.push(`${p.repostCount} reposts`);
-      if (p.replyCount != null) meta.push(`${p.replyCount} replies`);
-      if (p.quoteCount != null) meta.push(`${p.quoteCount} quotes`);
-      if (meta.length) parts.push(`*${meta.join(' · ')}*`);
-      if (p.createdAt) parts.push(`*Created: ${p.createdAt}*`);
-      if (p.indexedAt) parts.push(`*Indexed: ${p.indexedAt}*`);
-      if (p.embed) {
-        const embed = p.embed as Record<string, unknown>;
-        const embedType = embed.type as string | undefined;
-        if (embedType === 'images') {
-          const images = embed.images as Array<{ url: string; alt: string }> | undefined;
-          if (images?.length) {
-            parts.push(
-              `📷 ${images.length} image(s): ${images.map((img) => `${img.url} [${img.alt}]`).join(', ')}`,
-            );
-          }
-        } else if (embedType === 'external') {
-          parts.push(`🔗 [${embed.title}](${embed.uri}): ${embed.description}`);
-        } else if (embedType === 'record') {
-          parts.push(`💬 Quoted: \`${embed.uri}\``);
-          if (embed.text) parts.push(`   > ${embed.text}`);
-        } else if (embedType === 'video') {
-          const vid = embed as { thumbnail?: string; playlist?: string; presentation?: string };
-          const label = vid.presentation === 'gif' ? '🎞 GIF' : '🎬 Video';
-          if (vid.thumbnail) parts.push(`${label}: ${vid.thumbnail}`);
-          else parts.push(label);
-        }
-      }
-      if (p.replyToUri) parts.push(`↩ Reply to \`${p.replyToUri}\``);
-      if (p.author.avatar) parts.push(`**Avatar:** ${p.author.avatar}`);
-      if (p.labels?.length) parts.push(`**Labels:** ${p.labels.map((l) => l.val).join(', ')}`);
-      return parts.join('\n');
-    });
-    const body = lines.join('\n\n---\n\n');
+    const body = result.posts.map((p) => renderPostLines(p).join('\n')).join('\n\n---\n\n');
     const footer = result.cursor ? `\n\n---\n*cursor: \`${result.cursor}\`*` : '';
     return [
       { type: 'text', text: (header.length ? `${header.join('\n')}\n\n` : '') + body + footer },

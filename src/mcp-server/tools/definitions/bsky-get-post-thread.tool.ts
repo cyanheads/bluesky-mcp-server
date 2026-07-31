@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { renderPostLines } from '@/mcp-server/tools/post-format.js';
 import { AT_URI_MESSAGE, AT_URI_REGEX } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 import type { ThreadPost } from '@/services/bluesky/types.js';
@@ -20,20 +21,9 @@ function formatThreadNode(node: ThreadPost, depth: number, lines: string[]): voi
     lines.push(`${indent}*[More replies — use a deeper depth to load them]*`);
     return;
   }
-  const p = node.post;
-  const author = p.author.displayName
-    ? `${p.author.displayName} (@${p.author.handle})`
-    : `@${p.author.handle}`;
-  lines.push(`${indent}### ${author}`);
-  lines.push(`${indent}**AT-URI:** \`${p.uri}\``);
-  lines.push(`${indent}${p.text}`);
-  const meta: string[] = [];
-  if (p.likeCount != null) meta.push(`${p.likeCount} likes`);
-  if (p.repostCount != null) meta.push(`${p.repostCount} reposts`);
-  if (p.replyCount != null) meta.push(`${p.replyCount} replies`);
-  if (meta.length) lines.push(`${indent}*${meta.join(' · ')}*`);
-  if (p.createdAt) lines.push(`${indent}*${p.createdAt}*`);
-  if (p.labels?.length) lines.push(`${indent}**Labels:** ${p.labels.map((l) => l.val).join(', ')}`);
+  for (const line of renderPostLines(node.post)) {
+    lines.push(`${indent}${line}`);
+  }
   if (node.replies?.length) {
     lines.push(`${indent}---`);
     for (const reply of node.replies) {
@@ -44,15 +34,15 @@ function formatThreadNode(node: ThreadPost, depth: number, lines: string[]): voi
 
 /**
  * Thread node schema — uses passthrough so all post fields (uri, cid, text, author, engagement counts,
- * createdAt, labels, embed, replyToUri) and thread structure (parent, replies, truncated, notFound)
- * flow through structuredContent without format-parity constraints on the recursive tree shape.
+ * createdAt, labels, embed, replyToUri, replyRootUri) and thread structure (parent, replies, truncated,
+ * notFound) flow through structuredContent without format-parity constraints on the recursive tree shape.
  */
 const ThreadNodeSchema: z.ZodType<unknown> = z
   .object({})
   .passthrough()
   .describe(
-    'Recursive thread node. Each node has: ' +
-      'post: { uri, cid, text, author: { did, handle, displayName?, avatar? }, replyCount?, repostCount?, likeCount?, quoteCount?, indexedAt?, createdAt?, labels?, embed?, replyToUri? }. ' +
+    'The conversation thread rooted at the requested post — a recursive node tree. Each node has: ' +
+      'post: { uri, cid, text, author: { did, handle, displayName?, avatar? }, replyCount?, repostCount?, likeCount?, quoteCount?, indexedAt?, createdAt?, labels?, embed?, replyToUri?, replyRootUri? }. ' +
       'parent?: parent thread node. replies?: array of child thread nodes. ' +
       'truncated?: true when the API cut off deeper replies. notFound?: true when the post was deleted.',
   );
@@ -95,7 +85,7 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
       ),
   }),
   output: z.object({
-    thread: ThreadNodeSchema.describe('The conversation thread rooted at the requested post.'),
+    thread: ThreadNodeSchema,
   }),
 
   errors: [
@@ -170,8 +160,12 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
       lines.push('---');
     }
     lines.push('## This post');
-    const { parent: _p, ...threadWithoutParent } = thread;
-    formatThreadNode(threadWithoutParent, 0, lines);
+    /**
+     * The target renders alone — `formatThreadNode` walks `replies` itself, so leaving them
+     * on would emit the whole subtree here and again under `## Replies`.
+     */
+    const { parent: _p, replies: _r2, ...targetOnly } = thread;
+    formatThreadNode(targetOnly, 0, lines);
     if (thread.replies?.length) {
       lines.push('');
       lines.push('## Replies');

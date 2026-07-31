@@ -238,11 +238,117 @@ describe('bskySearchPosts', () => {
     expect(text).toContain('at://did:plc:x/app.bsky.feed.post/q1');
   });
 
+  it('renders the quoted post author handle', () => {
+    const post = makePost({
+      embed: {
+        type: 'record',
+        uri: 'at://did:plc:x/app.bsky.feed.post/q1',
+        cid: 'bafyrq1',
+        text: 'quoted text',
+        authorHandle: 'quoted.bsky.social',
+      },
+    });
+    const text = (bskySearchPosts.format!({ posts: [post] })[0] as { text: string }).text;
+    expect(text).toContain('quoted.bsky.social');
+    expect(text).toContain('quoted text');
+  });
+
+  it('renders the media attached alongside a quote-with-media post', () => {
+    const post = makePost({
+      embed: {
+        type: 'record',
+        uri: 'at://did:plc:x/app.bsky.feed.post/q1',
+        cid: 'bafyrq1',
+        text: 'quoted text',
+        authorHandle: 'quoted.bsky.social',
+        media: {
+          type: 'images',
+          images: [{ url: 'https://cdn/attached.jpg', alt: 'attached image' }],
+        },
+      },
+    });
+    const text = (bskySearchPosts.format!({ posts: [post] })[0] as { text: string }).text;
+    expect(text).toContain('at://did:plc:x/app.bsky.feed.post/q1');
+    expect(text).toContain('https://cdn/attached.jpg');
+    expect(text).toContain('attached image');
+  });
+
+  it.each([
+    ['notFound', 'deleted or never existed'],
+    ['blocked', 'hidden by a block'],
+    ['detached', 'detached by its author'],
+  ])(
+    'says an unreadable %s quote is unavailable rather than rendering an empty one',
+    (recordKind, phrase) => {
+      const post = makePost({
+        embed: {
+          type: 'record',
+          uri: 'at://did:plc:x/app.bsky.feed.post/gone',
+          cid: '',
+          recordKind,
+        },
+      });
+      const text = (bskySearchPosts.format!({ posts: [post] })[0] as { text: string }).text;
+
+      expect(text).toContain('Quoted post unavailable');
+      expect(text).toContain(phrase);
+      expect(text).toContain('at://did:plc:x/app.bsky.feed.post/gone');
+      expect(text).not.toContain('💬 Quoted post: ');
+    },
+  );
+
+  it.each([
+    ['generator', 'app.bsky.feed.generator/infreq', 'Quoted feed generator'],
+    ['list', 'app.bsky.graph.list/3mrsmgz', 'Quoted list'],
+    ['starterPack', 'app.bsky.graph.starterpack/3mrwv66', 'Quoted starter pack'],
+    ['labeler', 'app.bsky.labeler.service/self', 'Quoted labeler service'],
+    ['unknown', 'some.new/1', 'unrecognized type'],
+  ])('does not present a quoted %s as a quoted post', (recordKind, rkey, phrase) => {
+    const post = makePost({
+      embed: { type: 'record', uri: `at://did:plc:x/${rkey}`, cid: 'bafyrx', recordKind },
+    });
+    const text = (bskySearchPosts.format!({ posts: [post] })[0] as { text: string }).text;
+
+    expect(text).toContain(phrase);
+    expect(text).toContain('not a post');
+    expect(text).not.toContain('💬 Quoted post: ');
+  });
+
+  it('renders an unmapped embed type instead of dropping it silently', () => {
+    const post = makePost({ embed: { type: 'unknown', raw: 'app.bsky.embed.somethingNew#view' } });
+    const text = (bskySearchPosts.format!({ posts: [post] })[0] as { text: string }).text;
+    expect(text).toContain('app.bsky.embed.somethingNew#view');
+  });
+
+  it('renders video playlist and thumbnail', () => {
+    const post = makePost({
+      embed: {
+        type: 'video',
+        playlist: 'https://video.bsky.app/watch/did/cid/playlist.m3u8',
+        thumbnail: 'https://video.bsky.app/watch/did/cid/thumbnail.jpg',
+        presentation: 'default',
+      },
+    });
+    const text = (bskySearchPosts.format!({ posts: [post] })[0] as { text: string }).text;
+    expect(text).toContain('https://video.bsky.app/watch/did/cid/playlist.m3u8');
+    expect(text).toContain('https://video.bsky.app/watch/did/cid/thumbnail.jpg');
+  });
+
   it('renders reply-to indicator', () => {
     const post = makePost({ replyToUri: 'at://did:plc:abc/app.bsky.feed.post/parent1' });
     const blocks = bskySearchPosts.format!({ posts: [post] });
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('parent1');
+  });
+
+  it('renders the thread root AT-URI alongside the parent', () => {
+    const post = makePost({
+      replyToUri: 'at://did:plc:abc/app.bsky.feed.post/parent1',
+      replyRootUri: 'at://did:plc:abc/app.bsky.feed.post/root1',
+    });
+    const text = (bskySearchPosts.format!({ posts: [post] })[0] as { text: string }).text;
+    expect(text).toContain('parent1');
+    expect(text).toContain('root1');
   });
 
   // --- Input validation (schema layer, before the upstream call) ---

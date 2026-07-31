@@ -1,10 +1,11 @@
 /**
- * @fileoverview Get a Bluesky user's recent posts ordered newest-first.
+ * @fileoverview Get a Bluesky user's recent feed — their own posts and their reposts, newest-first.
  * @module mcp-server/tools/definitions/bsky-get-author-feed
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { renderPostLines } from '@/mcp-server/tools/post-format.js';
 import { AT_IDENTIFIER_MESSAGE, AT_IDENTIFIER_REGEX } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 import type { AuthorFeedResult } from '@/services/bluesky/types.js';
@@ -16,11 +17,17 @@ const EmbedSchema = z
   .describe(
     'Media or link embed attached to this post. ' +
       'type: "images" | "external" | "record" | "video" | "unknown". ' +
-      'images: array of { url, alt, aspectRatio? }. ' +
+      'images: array of { url, alt, aspectRatio? } — also carries app.bsky.embed.gallery embeds. ' +
       'external: { uri, title, description, thumb? }. ' +
-      'record: { uri, cid, text?, authorHandle? }. ' +
+      'record: { uri, cid, text?, authorHandle?, media?, recordKind? } — media is the image/video/link attached ' +
+      'alongside the quote on a recordWithMedia embed, itself an embed of one of these shapes. ' +
+      'recordKind is absent for an ordinary quoted post and otherwise names what stood in for one: ' +
+      '"notFound" | "blocked" | "detached" (the quote exists but cannot be read) or ' +
+      '"generator" | "list" | "starterPack" | "labeler" | "unknown" (the quoted record is not a post). ' +
+      'When recordKind is set, text and authorHandle are absent because that variant does not carry them — ' +
+      'do not read the quote as an empty post. ' +
       'video: { playlist?, thumbnail?, presentation?, aspectRatio? }. ' +
-      'unknown: { raw }.',
+      'unknown: { raw } — raw is the upstream $type this server has no mapping for.',
   );
 
 const PostSchema = z
@@ -62,19 +69,43 @@ const PostSchema = z
       )
       .optional()
       .describe('Moderation labels on this post.'),
-    embed: EmbedSchema.optional().describe('Media or link embed attached to this post, if any.'),
+    embed: EmbedSchema.optional(),
     replyToUri: z
       .string()
       .optional()
       .describe('AT-URI of the post this is a reply to, if applicable.'),
+    replyRootUri: z
+      .string()
+      .optional()
+      .describe(
+        'AT-URI of the post this conversation started from, if this is a reply. ' +
+          'Pass to bsky_get_post_thread to read the whole conversation rather than one branch.',
+      ),
+    repostedBy: z
+      .object({
+        did: z.string().describe('Permanent DID of the account that reposted.'),
+        handle: z.string().describe('Handle of the account that reposted.'),
+        displayName: z.string().optional().describe('Display name of the account that reposted.'),
+      })
+      .optional()
+      .describe(
+        'Present only when this item is a repost rather than the requested actor writing. ' +
+          'The post itself — text, author, engagement counts — belongs to the author field, not to this account.',
+      ),
+    repostedAt: z
+      .string()
+      .optional()
+      .describe('ISO 8601 timestamp of the repost. Present only on reposted items.'),
   })
-  .describe('A single post from the author feed.');
+  .describe("A single item from the author feed — the actor's own post, or a post they reposted.");
 
 export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
   title: 'Get Bluesky Author Feed',
   description:
-    "Get a Bluesky user's recent posts ordered newest-first. Filter by post type: " +
-    '"posts_with_replies" (everything), "posts_no_replies" (original posts only), ' +
+    "Get a Bluesky user's recent feed ordered newest-first. Every filter includes reposts, so " +
+    'items authored by other accounts appear alongside the actor\'s own writing — a "repostedBy" ' +
+    'field marks those, and the "author" field always names who actually wrote the post. Filter by ' +
+    'post type: "posts_with_replies" (everything), "posts_no_replies" (excludes replies), ' +
     '"posts_with_media" (posts with images or links), or "posts_and_author_threads" ' +
     '(posts the author started). Returns posts with full text, engagement counts, embeds, ' +
     'and AT-URIs for drilling into threads via bsky_get_post_thread. Supports cursor pagination.',
@@ -98,8 +129,9 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
       ])
       .default('posts_no_replies')
       .describe(
-        'Filter for post types: "posts_no_replies" for original posts only, "posts_with_replies" for everything, ' +
-          '"posts_with_media" for posts with images/links, "posts_and_author_threads" for threads the author started.',
+        'Filter for post types: "posts_no_replies" excludes replies, "posts_with_replies" for everything, ' +
+          '"posts_with_media" for posts with images/links, "posts_and_author_threads" for threads the author started. ' +
+          'None of these exclude reposts — the AppView offers no repost filter, so check "repostedBy" on each item.',
       ),
     limit: z
       .number()
@@ -115,7 +147,12 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
       .describe('Opaque pagination cursor from a previous response. Omit for the first page.'),
   }),
   output: z.object({
-    posts: z.array(PostSchema).describe('Posts from this author, ordered newest-first.'),
+    posts: z
+      .array(PostSchema)
+      .describe(
+        "Feed items, newest-first — the actor's own posts and the posts they reposted. Items carrying " +
+          '"repostedBy" were written by the account named in "author", not by the requested actor.',
+      ),
     cursor: z
       .string()
       .optional()
@@ -193,51 +230,7 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
     if (result.posts.length === 0) {
       return [{ type: 'text', text: 'No posts found for this actor.' }];
     }
-    const lines = result.posts.map((p) => {
-      const parts: string[] = [];
-      const author = p.author.displayName
-        ? `${p.author.displayName} (@${p.author.handle})`
-        : `@${p.author.handle}`;
-      parts.push(`### ${author}`);
-      parts.push(`**AT-URI:** \`${p.uri}\` | **CID:** \`${p.cid}\``);
-      parts.push(`**Author DID:** \`${p.author.did}\``);
-      parts.push(p.text);
-      const meta: string[] = [];
-      if (p.likeCount != null) meta.push(`${p.likeCount} likes`);
-      if (p.repostCount != null) meta.push(`${p.repostCount} reposts`);
-      if (p.replyCount != null) meta.push(`${p.replyCount} replies`);
-      if (p.quoteCount != null) meta.push(`${p.quoteCount} quotes`);
-      if (meta.length) parts.push(`*${meta.join(' · ')}*`);
-      if (p.createdAt) parts.push(`*Created: ${p.createdAt}*`);
-      if (p.indexedAt) parts.push(`*Indexed: ${p.indexedAt}*`);
-      if (p.embed) {
-        const embed = p.embed as Record<string, unknown>;
-        const embedType = embed.type as string | undefined;
-        if (embedType === 'images') {
-          const images = embed.images as Array<{ url: string; alt: string }> | undefined;
-          if (images?.length) {
-            parts.push(
-              `📷 ${images.length} image(s): ${images.map((img) => `${img.url} [${img.alt}]`).join(', ')}`,
-            );
-          }
-        } else if (embedType === 'external') {
-          parts.push(`🔗 [${embed.title}](${embed.uri}): ${embed.description}`);
-        } else if (embedType === 'record') {
-          parts.push(`💬 Quoted post AT-URI: \`${embed.uri}\``);
-          if (embed.text) parts.push(`   > ${embed.text}`);
-        } else if (embedType === 'video') {
-          const vid = embed as { thumbnail?: string; playlist?: string; presentation?: string };
-          const label = vid.presentation === 'gif' ? '🎞 GIF' : '🎬 Video';
-          if (vid.thumbnail) parts.push(`${label}: ${vid.thumbnail}`);
-          else parts.push(label);
-        }
-      }
-      if (p.replyToUri) parts.push(`↩ Reply to \`${p.replyToUri}\``);
-      if (p.author.avatar) parts.push(`**Avatar:** ${p.author.avatar}`);
-      if (p.labels?.length) parts.push(`**Labels:** ${p.labels.map((l) => l.val).join(', ')}`);
-      return parts.join('\n');
-    });
-    const output = lines.join('\n\n---\n\n');
+    const output = result.posts.map((p) => renderPostLines(p).join('\n')).join('\n\n---\n\n');
     return [
       {
         type: 'text',

@@ -25,6 +25,17 @@ const makePost = (overrides: Partial<PostView> = {}): PostView => ({
   ...overrides,
 });
 
+/** A feed item the requested actor reposted — written by someone else. */
+const REPOSTED_POST: PostView = {
+  uri: 'at://did:plc:orta/app.bsky.feed.post/3mrx1',
+  cid: 'bafyrorta',
+  text: 'a post by someone else',
+  author: { did: 'did:plc:orta', handle: 'orta.io', displayName: 'Orta' },
+  createdAt: '2026-07-31T10:00:00Z',
+  repostedBy: { did: 'did:plc:reposter', handle: 'pfrazee.com', displayName: 'Paul Frazee' },
+  repostedAt: '2026-07-31T14:52:54.764Z',
+};
+
 // ---------------------------------------------------------------------------
 // Module mock
 // ---------------------------------------------------------------------------
@@ -185,6 +196,43 @@ describe('bskyGetAuthorFeed', () => {
     const blocks = bskyGetAuthorFeed.format!({ posts: [post] });
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('parent1');
+  });
+
+  // --- Reposts ---
+
+  it('carries the repost marker into structuredContent', async () => {
+    mockGetAuthorFeed.mockResolvedValue({ feed: [REPOSTED_POST] });
+
+    const ctx = createMockContext();
+    const input = bskyGetAuthorFeed.input.parse({ actor: 'pfrazee.com' });
+    const result = await bskyGetAuthorFeed.handler(input, ctx);
+
+    expect(result.posts[0].repostedBy).toEqual({
+      did: 'did:plc:reposter',
+      handle: 'pfrazee.com',
+      displayName: 'Paul Frazee',
+    });
+    expect(result.posts[0].repostedAt).toBe('2026-07-31T14:52:54.764Z');
+    expect(result.posts[0].author.handle).toBe('orta.io');
+    expect(() => bskyGetAuthorFeed.output.parse(result)).not.toThrow();
+  });
+
+  it('renders a repost marker naming the reposter, above the original author', () => {
+    const text = (bskyGetAuthorFeed.format!({ posts: [REPOSTED_POST] })[0] as { text: string })
+      .text;
+
+    expect(text).toContain('Reposted by');
+    expect(text).toContain('pfrazee.com');
+    expect(text).toContain('did:plc:reposter');
+    expect(text).toContain('2026-07-31T14:52:54.764Z');
+    // The reposter line precedes the author heading, so the two are not conflated.
+    expect(text.indexOf('Reposted by')).toBeLessThan(text.indexOf('### Orta'));
+    expect(text).toContain('Orta');
+  });
+
+  it('renders no repost marker for the actor own posts', () => {
+    const text = (bskyGetAuthorFeed.format!({ posts: [makePost()] })[0] as { text: string }).text;
+    expect(text).not.toContain('Reposted by');
   });
 
   // --- Actor validation (schema layer, before the upstream call) ---
