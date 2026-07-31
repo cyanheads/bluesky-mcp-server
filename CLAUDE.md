@@ -1,8 +1,8 @@
 # Developer Protocol
 
 **Server:** bluesky-mcp-server
-**Version:** 0.1.5
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.10.9`
+**Version:** 0.1.6
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.11.0`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/sdk` ^1.29.0
 **Zod:** ^4.4.3
@@ -178,6 +178,7 @@ src/
   index.ts                              # createApp() entry point — registers tools, resource, service
   services/
     bluesky/
+      at-syntax.ts                      # AT identifier / AT-URI / ISO 8601 patterns shared by input schemas
       bluesky-service.ts                # AT Protocol AppView HTTP client (retry, timeout, User-Agent)
       types.ts                          # Domain types: Post, Actor, Thread, Trend, Embed
   mcp-server/

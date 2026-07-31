@@ -1,6 +1,6 @@
 # bluesky-mcp-server - Directory Structure
 
-Generated on: 2026-06-20 10:38:02
+Generated on: 2026-07-31 16:54:47
 
 ```text
 bluesky-mcp-server/
@@ -12,10 +12,12 @@ bluesky-mcp-server/
 │   ├── mcp.json
 │   └── plugin.json
 ├── .github/
-│   └── ISSUE_TEMPLATE/
-│       ├── bug_report.yml
-│       ├── config.yml
-│       └── feature_request.yml
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── bug_report.yml
+│   │   ├── config.yml
+│   │   └── feature_request.yml
+│   ├── FUNDING.yml
+│   └── SECURITY.md
 ├── .vscode/
 │   ├── extensions.json
 │   └── settings.json
@@ -144,6 +146,7 @@ bluesky-mcp-server/
 │   │           └── bsky-search-posts.tool.ts
 │   ├── services/
 │   │   └── bluesky/
+│   │       ├── at-syntax.ts
 │   │       ├── bluesky-service.ts
 │   │       └── types.ts
 │   └── index.ts
@@ -169,6 +172,7 @@ bluesky-mcp-server/
 │   └── tools/
 ├── .dockerignore
 ├── .env.example
+├── .gitattributes
 ├── .gitignore
 ├── .mcpbignore
 ├── AGENTS.md

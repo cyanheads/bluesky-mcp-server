@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.6](changelog/0.1.x/0.1.6.md) — 2026-07-31
+
+Local validation for blank/malformed tool inputs (#4) — new at-syntax.ts patterns catch bad handles, AT-URIs, and dates before they hit the AppView; framework upgrade to mcp-ts-core ^0.11.0, typescript ^7.0.2, Socket security scanner
+
 ## [0.1.5](changelog/0.1.x/0.1.5.md) — 2026-06-20
 
 Framework upgrade to mcp-ts-core ^0.10.9 — plugin-manifest and floating-specifier devcheck guards, image/audio content collector, fresh-scaffold devcheck fixes; @types/node 26; skill and script re-sync
