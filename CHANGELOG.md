@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.2](changelog/0.2.x/0.2.2.md) — 2026-07-31
+
+Quoted posts carry their own embeds, the parent chain discloses when it's cut short, reply depth no longer breaks markdown rendering, and profiles gain pronouns/website
+
 ## [0.2.1](changelog/0.2.x/0.2.1.md) — 2026-07-31 · 🛡️ Security
 
 Bluesky user-generated text renders as markdown blockquotes instead of bare strings; bsky_search_posts reports its hitsTotal cap as a bound, fixes truncation disclosure, and validates language input locally
