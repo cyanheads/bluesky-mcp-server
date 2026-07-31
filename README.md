@@ -52,7 +52,9 @@ Full-text search across public Bluesky posts.
 - `hitsTotal` when available, reported as the bound it is — Bluesky caps the count at 10,000, so exactly 10,000 means "at least 10,000" and both the field description and the rendered header say so
 - Truncation is disclosed (`truncated`, `shown`, `cap`, and guidance) in both `structuredContent` and the `content[]` trailer when more posts match than came back. A returned cursor alone does not trigger it — Bluesky sends one on every non-empty response, exhausted or not, so `hitsTotal` is what settles whether the page was cut short
 - Pagination via opaque cursor; up to 100 results per call
-- Embeds normalized into a flat union: `images` (also covers `app.bsky.embed.gallery`), `external` (link cards), `record` (quoted posts, carrying any attached `media`), `video`, `unknown`
+- Embeds normalized into a flat union: `images` (also covers `app.bsky.embed.gallery`), `external` (link cards), `record` (quoted posts), `video`, `unknown`
+- A quoted post carries its own attachments under `embeds`, so a quote of an image post is not reduced to a line of text, alongside `media` for anything the quoting post attached beside the quote. The rendered output names which post each block belongs to, since the two belong to different accounts
+- Quote nesting is followed three levels down, which is deeper than the AppView has been seen to hydrate. A quote at that bound reports the attachments it did not carry through as `omittedEmbeds` and says so in the rendered text, so it never reads as a quote that had none
 - A quote that cannot be read — deleted, blocked, detached — or that points at a feed generator, list, starter pack, or labeler rather than a post carries `recordKind` naming the case, instead of arriving as an empty quote
 - Moderation labels surfaced as-is — not filtered
 
@@ -62,8 +64,9 @@ Full-text search across public Bluesky posts.
 
 Fetch a Bluesky actor's public profile by handle or DID.
 
-- Returns displayName, handle, DID, description, follower/following/post counts, avatar URL, moderation labels, and pinned post AT-URI
-- The bio is rendered as a blockquote — it is text the account holder wrote, and can carry markdown of its own. The display name renders in the heading with its line breaks folded to spaces, so it cannot open a heading of its own either
+- Returns displayName, handle, DID, description, pronouns, website, follower/following/post counts, avatar URL, moderation labels, and pinned post AT-URI
+- `website` is the one link a profile carries in a field of its own rather than inside the bio; both it and `pronouns` are absent for accounts that set neither
+- The bio is rendered as a blockquote — it is text the account holder wrote, and can carry markdown of its own. The display name and pronouns render inside lines the server writes, with their line breaks folded to spaces, so neither can open a heading of its own
 - The resolution step for handle↔DID — use before tools that require a DID or AT-URI when you only have a handle
 
 ---
@@ -74,6 +77,7 @@ A user's recent feed ordered newest-first — their own posts and their reposts.
 
 - Filter by post type: `posts_with_replies`, `posts_no_replies` (excludes replies), `posts_with_media`, or `posts_and_author_threads`. None of them exclude reposts — the AppView has no repost filter
 - Reposts carry `repostedBy` and `repostedAt`; `author` always names whoever wrote the post
+- Because `limit` counts reposts too, a page from an account that reposts heavily holds far fewer of that account's own posts than the limit suggests — 30 items from one such account came back as 10 originals and 20 reposts. The response reports `originalPosts` and `reposts` whenever a repost is present, so the yield is stated rather than reconstructed by counting
 - Returns posts with full text, engagement counts, embeds, and AT-URIs for thread drilling
 - Pagination via cursor
 
@@ -87,6 +91,8 @@ Fetch the conversation for a post by AT-URI.
 - Configurable `depth` (reply tree depth, default 6, max 10 — Bluesky returns no more than 10 levels however deep the request) and `parent_height` (parent chain height, default 80, max 100)
 - Bluesky holds replies back past a per-post limit and exposes no way to page the rest, so a thread with thousands of replies commonly comes back with a few hundred. Any node returning fewer replies than its own `replyCount` carries `truncated: true` with `unreturnedReplies` and a `truncationReason`: `"depth"` (the tree ends there — fetch that node's AT-URI as its own thread to continue) or `"unavailable"` (no request closes the gap). The response totals the difference for the whole thread
 - Read those totals as an upper bound on what is missing, not a count of readable replies — Bluesky's reply counter keeps including replies that have left the index, so a difference of one or two often means nothing is left to fetch
+- The parent chain is disclosed the same way. Bluesky stops the chain at `parent_height` and gives no signal that it did, so the topmost post returned would otherwise be indistinguishable from the start of the conversation. When it is not, that node carries `parentChainTruncated: true` and the response names its AT-URI — unlike the reply shortfall this one is fully recoverable, since `parent_height` is honored level for level and fetching that node as its own thread walks further up
+- Reply depth rides the author heading (`### ↳2 Name (@handle)` — two levels below the top-level reply it descends from) rather than a left margin, so a nested reply stays readable markdown. Indenting instead would push every line below the second level past four spaces, which renders the whole nested half of a thread as a code block. The number is stated rather than repeated as a glyph, since a reply can sit nine levels down and a run of nine arrows has to be counted to be read
 - Surfaces the author's reply gate when one is set: who may reply, and the AT-URIs of replies the author hid
 - Deleted posts surface as `notFound: true` and posts hidden by a block as `blocked: true`; both keep the AT-URI Bluesky reported
 - AT-URIs come from `bsky_search_posts` or `bsky_get_author_feed`
@@ -98,8 +104,9 @@ Fetch the conversation for a post by AT-URI.
 Fetch social graph edges for an account.
 
 - `direction`: `followers` (who follows the actor) or `following` (who the actor follows)
-- Returns paginated profiles with handle, DID, displayName, description, and follower count
-- Includes the subject's profile summary at the top level
+- Returns paginated profiles with handle, DID, displayName, description, pronouns when the account set them, and follower count
+- Includes the subject's profile summary at the top level, pronouns included
+- No `website` — the view these two endpoints return does not carry it; resolve the account with `bsky_get_profile` when it matters
 
 ---
 
@@ -144,9 +151,11 @@ Agent-friendly output:
 - AT-URIs on every post and resource — chain `bsky_search_posts` → `bsky_get_post_thread` without extra steps
 - Discriminated embed union (`type: "images" | "external" | "record" | "video" | "unknown"`) — branch on data, not `$type` strings; an unmapped lexicon type arrives as `unknown` with its raw `$type` rather than vanishing
 - Unreadable and non-post quotes discriminated by `recordKind` — an agent can tell a deleted or blocked quote from one whose text was simply not returned
-- Text Bluesky users wrote — post bodies, quoted-post bodies, profile bios, image alt text, and link-card titles and descriptions — is rendered as a markdown blockquote, every line prefixed with `>` and blank lines kept as a bare `>`. A post carrying its own `###` heading, `---` rule, or fenced code block stays inside the quote instead of merging with the server's own section structure, so third-party content never reaches a model in the same channel as the server's labels. Values that render inside a line rather than as a block — display names, topic names, moderation label values — have their line breaks folded to spaces for the same reason. `structuredContent` carries every string unchanged
+- Attachments a quote nested past the mapped depth would have carried are counted in `omittedEmbeds` rather than dropped, so the bound on embed recursion is visible in both channels
+- Text Bluesky users wrote — post bodies, quoted-post bodies, profile bios, pronouns, image alt text, and link-card titles and descriptions — is rendered as a markdown blockquote, every line prefixed with `>` and blank lines kept as a bare `>`. A post carrying its own `###` heading, `---` rule, or fenced code block stays inside the quote instead of merging with the server's own section structure, so third-party content never reaches a model in the same channel as the server's labels. Values that render inside a line rather than as a block — display names, pronouns, topic names, moderation label values — have their line breaks folded to spaces for the same reason. `structuredContent` carries every string unchanged
+- Nothing in the rendered output indents past three spaces. Four leading spaces open a markdown code block, which would render that framing as literal characters instead of a quote — so nesting is carried by labels and headings, and both thread depth and embed depth are bounded by that budget rather than spending it
 - `hitsTotal` on search results, framed as a lower bound at Bluesky's 10,000 cap — communicate result scale without reporting a ceiling as a measurement
-- Truncation signals on thread nodes (`truncated`, `unreturnedReplies`, `truncationReason`) plus a thread-wide total, stated as a bound rather than a cause — agents can tell how much of a conversation may be missing, which part another request can still reach, and how much of the gap the thread author explains
+- Truncation signals on thread nodes (`truncated`, `unreturnedReplies`, `truncationReason`, `parentChainTruncated`) plus a thread-wide total, stated as a bound rather than a cause — agents can tell how much of a conversation may be missing at either end, which part another request can still reach, and how much of the gap the thread author explains
 
 ## Getting started
 
