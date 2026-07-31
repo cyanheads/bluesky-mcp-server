@@ -246,6 +246,73 @@ describe('bskyGetAuthorFeed', () => {
     expect(text).not.toContain('Reposted by');
   });
 
+  // --- Original-vs-repost split ---
+
+  /**
+   * The measured shape of the problem: 30 items from pfrazee.com at the default filter came back
+   * as 10 posts of his own and 20 reposts, so the limit says three times what the caller wanted.
+   */
+  it('reports the split when the page mixes originals and reposts', async () => {
+    mockGetAuthorFeed.mockResolvedValue({
+      feed: [
+        ...Array.from({ length: 10 }, (_, i) =>
+          makePost({ uri: `at://did:plc:abc/app.bsky.feed.post/own${i}` }),
+        ),
+        ...Array.from({ length: 20 }, (_, i) => ({
+          ...REPOSTED_POST,
+          uri: `at://did:plc:orta/app.bsky.feed.post/rp${i}`,
+        })),
+      ],
+    });
+
+    const ctx = createMockContext();
+    const input = bskyGetAuthorFeed.input.parse({ actor: 'pfrazee.com', limit: 30 });
+    await bskyGetAuthorFeed.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalReturned).toBe(30);
+    expect(enrichment.originalPosts).toBe(10);
+    expect(enrichment.reposts).toBe(20);
+  });
+
+  it('reports the split on a page that is entirely reposts', async () => {
+    mockGetAuthorFeed.mockResolvedValue({ feed: [REPOSTED_POST, REPOSTED_POST] });
+
+    const ctx = createMockContext();
+    const input = bskyGetAuthorFeed.input.parse({ actor: 'pfrazee.com' });
+    await bskyGetAuthorFeed.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.originalPosts).toBe(0);
+    expect(enrichment.reposts).toBe(2);
+  });
+
+  /** A pair of numbers that never varies carries nothing — totalReturned already says it. */
+  it('stays silent when every item on the page is the actor own writing', async () => {
+    mockGetAuthorFeed.mockResolvedValue({ feed: [makePost(), makePost()] });
+
+    const ctx = createMockContext();
+    const input = bskyGetAuthorFeed.input.parse({ actor: 'cyanheads.bsky.social' });
+    await bskyGetAuthorFeed.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalReturned).toBe(2);
+    expect(enrichment.originalPosts).toBeUndefined();
+    expect(enrichment.reposts).toBeUndefined();
+  });
+
+  it('stays silent on an empty page', async () => {
+    mockGetAuthorFeed.mockResolvedValue({ feed: [] });
+
+    const ctx = createMockContext();
+    const input = bskyGetAuthorFeed.input.parse({ actor: 'alice.bsky.social' });
+    await bskyGetAuthorFeed.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.originalPosts).toBeUndefined();
+    expect(enrichment.reposts).toBeUndefined();
+  });
+
   // --- Actor validation (schema layer, before the upstream call) ---
 
   it.each([

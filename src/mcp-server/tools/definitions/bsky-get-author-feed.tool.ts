@@ -1,5 +1,7 @@
 /**
  * @fileoverview Get a Bluesky user's recent feed — their own posts and their reposts, newest-first.
+ * No upstream filter excludes reposts, so `limit` counts both; the enrichment reports the split
+ * rather than leaving a caller after the actor's own writing to page blind for it.
  * @module mcp-server/tools/definitions/bsky-get-author-feed
  */
 
@@ -19,8 +21,13 @@ const EmbedSchema = z
       'type: "images" | "external" | "record" | "video" | "unknown". ' +
       'images: array of { url, alt, aspectRatio? } — also carries app.bsky.embed.gallery embeds. ' +
       'external: { uri, title, description, thumb? }. ' +
-      'record: { uri, cid, text?, authorHandle?, media?, recordKind? } — media is the image/video/link attached ' +
-      'alongside the quote on a recordWithMedia embed, itself an embed of one of these shapes. ' +
+      'record: { uri, cid, text?, authorHandle?, embeds?, media?, omittedEmbeds?, recordKind? } — embeds is the ' +
+      "quoted post's own attachments, so a quote of an image post carries those images here; media is the " +
+      'image/video/link attached alongside the quote by the post doing the quoting, on a recordWithMedia ' +
+      'embed. Both are embeds of these same shapes. Bluesky fills embeds for the post being quoted and no ' +
+      'deeper, so a quote nested inside another quote ordinarily carries none; omittedEmbeds counts any it ' +
+      'did carry that were past the nesting this server follows, so an unattached quote and one whose ' +
+      'attachments are missing are never the same value. Fetch the quote uri as its own post to read them. ' +
       'recordKind is absent for an ordinary quoted post and otherwise names what stood in for one: ' +
       '"notFound" | "blocked" | "detached" (the quote exists but cannot be read) or ' +
       '"generator" | "list" | "starterPack" | "labeler" | "unknown" (the quoted record is not a post). ' +
@@ -108,7 +115,10 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
     'post type: "posts_with_replies" (everything), "posts_no_replies" (excludes replies), ' +
     '"posts_with_media" (posts with images or links), or "posts_and_author_threads" ' +
     '(posts the author started). Returns posts with full text, engagement counts, embeds, ' +
-    'and AT-URIs for drilling into threads via bsky_get_post_thread. Supports cursor pagination.',
+    'and AT-URIs for drilling into threads via bsky_get_post_thread. Because "limit" counts reposts ' +
+    "too, a page from an account that reposts heavily holds far fewer of that account's own posts " +
+    'than the limit suggests; the enrichment fields report the split, so read "originalPosts" rather ' +
+    "than the limit when you want the actor's own writing. Supports cursor pagination.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     actor: z
@@ -170,6 +180,21 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
 
   enrichment: {
     totalReturned: z.number().describe('Number of posts in this response page.'),
+    originalPosts: z
+      .number()
+      .optional()
+      .describe(
+        'How many items on this page the requested actor wrote. Present whenever the page carries ' +
+          "at least one repost — the number a caller asking for the actor's own writing is after, " +
+          'since "limit" counts reposts too and no filter excludes them.',
+      ),
+    reposts: z
+      .number()
+      .optional()
+      .describe(
+        'How many items on this page are posts the requested actor reposted rather than wrote. ' +
+          'Present only when there is at least one; these items carry "repostedBy".',
+      ),
     truncated: z
       .boolean()
       .optional()
@@ -213,6 +238,16 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
       throw err;
     }
     ctx.enrich({ totalReturned: result.feed.length });
+    /**
+     * The split is what a caller after the actor's own writing actually asked for, and it costs no
+     * second request — every item already carries its repost marker. Reported only when a repost is
+     * present: on a page that is entirely original posts, `totalReturned` already says it, and a
+     * pair of numbers that never varies carries no information.
+     */
+    const reposts = result.feed.filter((post) => post.repostedBy).length;
+    if (reposts > 0) {
+      ctx.enrich({ originalPosts: result.feed.length - reposts, reposts });
+    }
     if (result.cursor) {
       ctx.enrich.truncated({
         shown: result.feed.length,
