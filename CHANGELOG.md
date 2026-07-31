@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.1](changelog/0.2.x/0.2.1.md) — 2026-07-31 · 🛡️ Security
+
+Bluesky user-generated text renders as markdown blockquotes instead of bare strings; bsky_search_posts reports its hitsTotal cap as a bound, fixes truncation disclosure, and validates language input locally
+
 ## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-07-31 · ⚠️ Breaking
 
 bsky_get_post_thread discloses reply truncation and the author's threadgate, previously invisible; depth's maximum drops from 1000 to 10 and parent_height's from 1000 to 100 — BREAKING for callers passing larger values
