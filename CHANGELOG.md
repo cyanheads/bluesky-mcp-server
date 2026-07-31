@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-07-31 · ⚠️ Breaking
+
+structuredContent drops embed aspectRatio/thumb, never rendered in content[]; content[] gains a quoted post's CID and each label's src/cts; bsky_get_post_thread's post author narrows to four fields
+
 ## [0.2.2](changelog/0.2.x/0.2.2.md) — 2026-07-31
 
 Quoted posts carry their own embeds, the parent chain discloses when it's cut short, reply depth no longer breaks markdown rendering, and profiles gain pronouns/website
