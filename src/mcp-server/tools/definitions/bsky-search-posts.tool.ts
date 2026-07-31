@@ -62,8 +62,13 @@ const EmbedSchema = z
       'type: "images" | "external" | "record" | "video" | "unknown". ' +
       'images: array of { url, alt, aspectRatio? } — also carries app.bsky.embed.gallery embeds. ' +
       'external: { uri, title, description, thumb? }. ' +
-      'record: { uri, cid, text?, authorHandle?, media?, recordKind? } — media is the image/video/link attached ' +
-      'alongside the quote on a recordWithMedia embed, itself an embed of one of these shapes. ' +
+      'record: { uri, cid, text?, authorHandle?, embeds?, media?, omittedEmbeds?, recordKind? } — embeds is the ' +
+      "quoted post's own attachments, so a quote of an image post carries those images here; media is the " +
+      'image/video/link attached alongside the quote by the post doing the quoting, on a recordWithMedia ' +
+      'embed. Both are embeds of these same shapes. Bluesky fills embeds for the post being quoted and no ' +
+      'deeper, so a quote nested inside another quote ordinarily carries none; omittedEmbeds counts any it ' +
+      'did carry that were past the nesting this server follows, so an unattached quote and one whose ' +
+      'attachments are missing are never the same value. Fetch the quote uri as its own post to read them. ' +
       'recordKind is absent for an ordinary quoted post and otherwise names what stood in for one: ' +
       '"notFound" | "blocked" | "detached" (the quote exists but cannot be read) or ' +
       '"generator" | "list" | "starterPack" | "labeler" | "unknown" (the quoted record is not a post). ' +
