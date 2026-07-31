@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-07-31 · ⚠️ Breaking
+
+bsky_get_post_thread discloses reply truncation and the author's threadgate, previously invisible; depth's maximum drops from 1000 to 10 and parent_height's from 1000 to 100 — BREAKING for callers passing larger values
+
 ## [0.1.7](changelog/0.1.x/0.1.7.md) — 2026-07-31
 
 Embed normalization fixes for recordWithMedia, gallery, and unavailable quoted records; reposts marked in the author feed; trending actors surfaced; thread format() no longer double-renders; a shared post renderer replaces three drifted copies; outbound User-Agent now derives from the package manifest
