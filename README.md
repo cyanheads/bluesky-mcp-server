@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.7-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/bluesky-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/bluesky-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/bluesky-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.2.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/bluesky-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/bluesky-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/bluesky-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -36,7 +36,7 @@ Seven tools for read-only access to the public Bluesky/AT Protocol AppView — n
 | `bsky_search_posts` | Full-text search across public Bluesky posts, with author, language, tag, date, and sort filters |
 | `bsky_get_profile` | Fetch a Bluesky actor's public profile by handle or DID — the handle↔DID resolver |
 | `bsky_get_author_feed` | A user's recent posts ordered newest-first, filterable by post type |
-| `bsky_get_post_thread` | Fetch the full conversation for a post by AT-URI — parent chain upward and reply tree downward |
+| `bsky_get_post_thread` | Fetch the conversation for a post by AT-URI — parent chain upward and reply tree downward, with what Bluesky counted but did not return |
 | `bsky_search_actors` | Find Bluesky accounts by name or handle fragment |
 | `bsky_get_follows` | Paginated social graph edges — who a user follows or who follows them |
 | `bsky_get_trending` | Real-time trending topics on Bluesky with post count, category, status, and the accounts driving each topic |
@@ -78,11 +78,14 @@ A user's recent feed ordered newest-first — their own posts and their reposts.
 
 ### `bsky_get_post_thread`
 
-Fetch the full conversation for a post by AT-URI.
+Fetch the conversation for a post by AT-URI.
 
 - Returns the root post, parent chain (upward), and nested reply tree (downward)
-- Configurable `depth` (reply tree depth, default 6) and `parent_height` (parent chain height, default 80)
-- Truncated subtrees surface `truncated: true`; deleted posts surface as `notFound: true`
+- Configurable `depth` (reply tree depth, default 6, max 10 — Bluesky returns no more than 10 levels however deep the request) and `parent_height` (parent chain height, default 80, max 100)
+- Bluesky holds replies back past a per-post limit and exposes no way to page the rest, so a thread with thousands of replies commonly comes back with a few hundred. Any node returning fewer replies than its own `replyCount` carries `truncated: true` with `unreturnedReplies` and a `truncationReason`: `"depth"` (the tree ends there — fetch that node's AT-URI as its own thread to continue) or `"unavailable"` (no request closes the gap). The response totals the difference for the whole thread
+- Read those totals as an upper bound on what is missing, not a count of readable replies — Bluesky's reply counter keeps including replies that have left the index, so a difference of one or two often means nothing is left to fetch
+- Surfaces the author's reply gate when one is set: who may reply, and the AT-URIs of replies the author hid
+- Deleted posts surface as `notFound: true` and posts hidden by a block as `blocked: true`; both keep the AT-URI Bluesky reported
 - AT-URIs come from `bsky_search_posts` or `bsky_get_author_feed`
 
 ---
@@ -139,7 +142,7 @@ Agent-friendly output:
 - Discriminated embed union (`type: "images" | "external" | "record" | "video" | "unknown"`) — branch on data, not `$type` strings; an unmapped lexicon type arrives as `unknown` with its raw `$type` rather than vanishing
 - Unreadable and non-post quotes discriminated by `recordKind` — an agent can tell a deleted or blocked quote from one whose text was simply not returned
 - `hitsTotal` on search results — communicate result scale to users without extra round trips
-- Truncation signals (`truncated: true`) on thread nodes — agents know where the tree ends and why
+- Truncation signals on thread nodes (`truncated`, `unreturnedReplies`, `truncationReason`) plus a thread-wide total, stated as a bound rather than a cause — agents can tell how much of a conversation may be missing, which part another request can still reach, and how much of the gap the thread author explains
 
 ## Getting started
 

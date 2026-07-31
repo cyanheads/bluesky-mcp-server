@@ -1,7 +1,7 @@
 # Developer Protocol
 
 **Server:** bluesky-mcp-server
-**Version:** 0.1.7
+**Version:** 0.2.0
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.11.0`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/sdk` ^1.29.0
@@ -188,7 +188,7 @@ src/
         bsky-search-posts.tool.ts       # Full-text post search with filters
         bsky-get-profile.tool.ts        # Actor profile lookup by handle or DID
         bsky-get-author-feed.tool.ts    # User's own posts + their reposts (filtered by type)
-        bsky-get-post-thread.tool.ts    # Full conversation thread by AT-URI
+        bsky-get-post-thread.tool.ts    # Conversation thread by AT-URI, with truncation and threadgate disclosure
         bsky-search-actors.tool.ts      # Actor discovery by name/handle fragment
         bsky-get-follows.tool.ts        # Social graph edges (followers/following)
         bsky-get-trending.tool.ts       # Real-time trending topics
