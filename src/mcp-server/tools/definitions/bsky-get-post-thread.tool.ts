@@ -1,6 +1,9 @@
 /**
- * @fileoverview Fetch a Bluesky post conversation thread by AT-URI, disclosing how far the
- * AppView's reply counts run ahead of the replies it returned.
+ * @fileoverview Fetch a Bluesky post conversation thread by AT-URI, disclosing both ways the
+ * response falls short of the conversation: how far the AppView's reply counts run ahead of the
+ * replies it returned, and whether the parent chain stopped at the requested height rather than at
+ * the start of the thread. Reply depth rides the author heading rather than the left margin, so no
+ * line of a nested node crosses the four-space threshold that would turn it into a code block.
  * @module mcp-server/tools/definitions/bsky-get-post-thread
  */
 
@@ -48,29 +51,58 @@ function truncationLine(node: ThreadPost): string {
     : `*[${count} below this post ${n === 1 ? 'was' : 'were'} not returned — the reply tree ends at this level; fetch this post's AT-URI with bsky_get_post_thread to read them]*`;
 }
 
+/** @internal The line that discloses that the parent chain stops short of the conversation root. */
+function parentChainLine(node: ThreadPost): string {
+  return `*[Not the start of the conversation — the parent chain stops here at the requested parent_height, and this post replies to \`${node.post.replyToUri}\`, which is not in this response. Fetch this post's AT-URI with bsky_get_post_thread to continue upward]*`;
+}
+
+/**
+ * @internal How a reply's depth is shown. It rides the author heading rather than the left margin:
+ * indenting two spaces per level put every line of a node at depth 2 or below past four leading
+ * spaces, which CommonMark reads as an indented code block — turning headings, blockquotes, and the
+ * truncation notices of the whole nested half of a thread into literal preformatted text. The
+ * detail lines under an embed already sit at the three-space limit, so the margin has no room left
+ * to carry depth as well.
+ *
+ * The number is written out rather than repeated as a glyph. A reply can sit nine levels below the
+ * one it descends from, and a run of nine identical arrows has to be counted to be read — the same
+ * failure as an indent, one channel over.
+ */
+function depthMarker(depth: number): string {
+  return depth > 0 ? `↳${depth} ` : '';
+}
+
 /** @internal Recursively format a thread tree into readable markdown lines. */
 function formatThreadNode(node: ThreadPost, depth: number, lines: string[]): void {
-  const indent = '  '.repeat(depth);
+  const marker = depthMarker(depth);
   const uriSuffix = node.post.uri ? ` \`${node.post.uri}\`` : '';
   if (node.notFound) {
-    lines.push(`${indent}*[Post not found or deleted]*${uriSuffix}`);
+    lines.push(`${marker}*[Post not found or deleted]*${uriSuffix}`);
     return;
   }
   if (node.blocked) {
-    lines.push(`${indent}*[Post hidden — its author blocks this view]*${uriSuffix}`);
+    lines.push(`${marker}*[Post hidden — its author blocks this view]*${uriSuffix}`);
     return;
   }
-  for (const line of renderPostLines(node.post)) {
-    lines.push(`${indent}${line}`);
+  /** Above the node it belongs to, since the posts it names sit above it in the conversation. */
+  if (node.parentChainTruncated) {
+    lines.push(`${marker}${parentChainLine(node)}`);
   }
-  if (node.replies?.length) {
-    lines.push(`${indent}---`);
-    for (const reply of node.replies) {
-      formatThreadNode(reply, depth + 1, lines);
-    }
+  lines.push(...renderPostLines(node.post, marker));
+  /**
+   * A blank line before each child: without it a `---` or an emphasis line would attach to the
+   * paragraph above and render as a setext heading rather than as its own block.
+   */
+  for (const reply of node.replies ?? []) {
+    lines.push('');
+    formatThreadNode(reply, depth + 1, lines);
   }
+  /**
+   * Blank-line separated for the same reason: an emphasis line following the post body directly
+   * would be read as a continuation of the blockquote it sits under rather than as its own note.
+   */
   if (node.truncated) {
-    lines.push(`${indent}${truncationLine(node)}`);
+    lines.push('', `${marker}${truncationLine(node)}`);
   }
 }
 
@@ -82,6 +114,11 @@ interface ThreadSurvey {
   depthLimitedNodes: number;
   /** Every node in the response — the target, its parent chain, and every reply. */
   nodes: number;
+  /**
+   * AT-URI of the topmost node returned in the parent direction when the chain was cut there.
+   * Empty when the chain reached the conversation root, which is the ordinary case.
+   */
+  parentChainTopUri: string;
   /** Nodes whose missing replies no further request can reach. */
   unavailableNodes: number;
   /** How far the AppView's reply counts run ahead of the replies returned, totalled. */
@@ -99,6 +136,7 @@ function surveyThread(thread: ThreadPost, gate: ThreadGate | undefined): ThreadS
     authorHidden: 0,
     depthLimitedNodes: 0,
     nodes: 0,
+    parentChainTopUri: '',
     unavailableNodes: 0,
     unreturnedReplies: 0,
   };
@@ -106,6 +144,7 @@ function surveyThread(thread: ThreadPost, gate: ThreadGate | undefined): ThreadS
   const visit = (node: ThreadPost): void => {
     survey.nodes++;
     if (node.post.uri) returned.add(node.post.uri);
+    if (node.parentChainTruncated) survey.parentChainTopUri = node.post.uri;
     if (node.truncated) {
       survey.unreturnedReplies += node.unreturnedReplies ?? 0;
       if (node.truncationReason === 'unavailable') survey.unavailableNodes++;
@@ -124,24 +163,36 @@ function postCountLabel(n: number): string {
   return `${n.toLocaleString()} ${n === 1 ? 'post' : 'posts'}`;
 }
 
-/** @internal Spell out what the response is missing and which part of it is still reachable. */
+/**
+ * @internal Spell out what the response is missing and which part of it is still reachable.
+ * Two independent shortfalls feed it — the reply tree below the target and the parent chain above —
+ * and either alone is enough to make the notice worth sending.
+ */
 function truncationNotice(survey: ThreadSurvey): string {
-  const parts = [
-    `This thread is partial — Bluesky's reply counts run ${replyCountLabel(survey.unreturnedReplies)} ahead of what it returned.`,
-  ];
-  if (survey.depthLimitedNodes > 0) {
+  const parts: string[] = [];
+  if (survey.unreturnedReplies > 0) {
     parts.push(
-      `${postCountLabel(survey.depthLimitedNodes)} ${survey.depthLimitedNodes === 1 ? 'sits' : 'sit'} at the edge of the reply tree — call bsky_get_post_thread with such a post's AT-URI to read below it.`,
+      `This thread is partial — Bluesky's reply counts run ${replyCountLabel(survey.unreturnedReplies)} ahead of what it returned.`,
     );
+    if (survey.depthLimitedNodes > 0) {
+      parts.push(
+        `${postCountLabel(survey.depthLimitedNodes)} ${survey.depthLimitedNodes === 1 ? 'sits' : 'sit'} at the edge of the reply tree — call bsky_get_post_thread with such a post's AT-URI to read below it.`,
+      );
+    }
+    if (survey.unavailableNodes > 0) {
+      parts.push(
+        `On ${postCountLabel(survey.unavailableNodes)} the difference is not retrievable by any request: Bluesky holds replies back past a per-post limit, and its counts also keep including replies that have left the index, so treat the number as an upper bound on what is missing rather than a count of readable replies.`,
+      );
+    }
+    if (survey.authorHidden > 0) {
+      parts.push(
+        `${replyCountLabel(survey.authorHidden)} in that difference ${survey.authorHidden === 1 ? 'is' : 'are'} accounted for: the thread author hid ${survey.authorHidden === 1 ? 'it' : 'them'}.`,
+      );
+    }
   }
-  if (survey.unavailableNodes > 0) {
+  if (survey.parentChainTopUri) {
     parts.push(
-      `On ${postCountLabel(survey.unavailableNodes)} the difference is not retrievable by any request: Bluesky holds replies back past a per-post limit, and its counts also keep including replies that have left the index, so treat the number as an upper bound on what is missing rather than a count of readable replies.`,
-    );
-  }
-  if (survey.authorHidden > 0) {
-    parts.push(
-      `${replyCountLabel(survey.authorHidden)} in that difference ${survey.authorHidden === 1 ? 'is' : 'are'} accounted for: the thread author hid ${survey.authorHidden === 1 ? 'it' : 'them'}.`,
+      `The conversation also continues above what was returned: the topmost post in the parent chain, \`${survey.parentChainTopUri}\`, is itself a reply, so it is not the start of the thread. This part is fully recoverable — unlike the reply shortfall, parent_height is honored level for level, so calling bsky_get_post_thread with that AT-URI walks further up.`,
     );
   }
   parts.push('Treat any summary of this conversation as covering only what was returned.');
@@ -206,7 +257,12 @@ const ThreadNodeSchema: z.ZodType<unknown> = z
       'request closes the gap). unreturnedReplies is an upper bound on what is missing, not a count of ' +
       "readable replies: Bluesky's counter keeps including replies that have left the index, so a node " +
       'reporting one unreturned reply often has none left to fetch. Only reply-tree nodes carry these; a ' +
-      'parent-chain node is linear by construction and never reports a shortfall. ' +
+      'parent-chain node is linear by construction and never reports a reply shortfall. ' +
+      'parentChainTruncated?: true on the topmost node above the target when the chain stopped at ' +
+      'parent_height rather than at the start of the conversation — that node is a reply to a post this ' +
+      "response does not contain, so it is not the conversation root. Fetch that node's post.uri as its " +
+      'own thread to continue upward; parent_height is honored level for level, so the ancestors above ' +
+      'it are one request away. Set on the target itself when no parent was returned at all. ' +
       'notFound?: true when the post was deleted or never existed. blocked?: true when its author blocks ' +
       'this view. Both stubs carry the reported AT-URI on post.uri and no content — a blocked node also ' +
       'carries the author DID on post.author.did.',
@@ -251,8 +307,12 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
     'that node\'s AT-URI as its own thread continues below it, "unavailable" means no request closes the gap. ' +
     'Read "unreturnedReplies" as an upper bound on what is missing rather than a count of readable replies: ' +
     "Bluesky's counter also includes replies that have left the index, so a small difference often means " +
-    'nothing is left to fetch. The enrichment fields total the difference for the whole thread; check them ' +
-    'before describing a conversation as complete.',
+    'nothing is left to fetch. The parent chain is disclosed the same way: when it stops at parent_height ' +
+    'instead of at the start of the conversation, the topmost node carries "parentChainTruncated: true" and ' +
+    'fetching its AT-URI as its own thread continues upward. The enrichment fields total the difference for ' +
+    'the whole thread; check them before describing a conversation as complete or naming its first post. ' +
+    "In the rendered text nothing is indented: a reply's author heading carries how far it sits below the " +
+    'top-level reply it descends from ("### ↳2"), and every post also names its own parent on a "Reply to" line.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     uri: z
@@ -285,7 +345,9 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
       .describe(
         `How many parent posts to include in the parent chain above the target post. Default 80, maximum ${MAX_PARENT_HEIGHT}. ` +
           'The chain is returned level for level up to this many posts and stops early at the conversation root. ' +
-          'To read above a chain longer than this, fetch the topmost parent returned as its own thread.',
+          'When it stops at this bound instead, the topmost node carries "parentChainTruncated: true" — fetch ' +
+          "that node's AT-URI as its own thread to read above it. Set to 0 to skip the chain entirely; a reply " +
+          'target then reports the same marker on itself, since its own parent was not returned either.',
       ),
   }),
   output: z.object({
@@ -304,6 +366,15 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
       .optional()
       .describe(
         'True when at least one post in the reply tree returned fewer replies than Bluesky counts for it.',
+      ),
+    parentChainTruncated: z
+      .boolean()
+      .optional()
+      .describe(
+        'True when the parent chain stopped at parent_height instead of reaching the start of the ' +
+          'conversation, so the topmost post returned above the target is not the conversation root. ' +
+          'Independent of "truncated", which covers the reply tree, and unlike it fully recoverable: ' +
+          "fetch the topmost parent's AT-URI as its own thread to continue upward.",
       ),
     unreturnedReplies: z
       .number()
@@ -373,6 +444,11 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
     ctx.enrich({ totalReturned: survey.nodes });
     if (survey.unreturnedReplies > 0) {
       ctx.enrich({ truncated: true, unreturnedReplies: survey.unreturnedReplies });
+    }
+    if (survey.parentChainTopUri) {
+      ctx.enrich({ parentChainTruncated: true });
+    }
+    if (survey.unreturnedReplies > 0 || survey.parentChainTopUri) {
       ctx.enrich.notice(truncationNotice(survey));
     }
 

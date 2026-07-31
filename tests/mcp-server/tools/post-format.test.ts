@@ -296,4 +296,123 @@ describe('renderEmbedLines', () => {
     });
     expect(lines.some((l) => l.trimStart().startsWith('>'))).toBe(false);
   });
+
+  it("renders the quoted post's own images so a quote of an image post is not text-only", () => {
+    const lines = renderEmbedLines({
+      type: 'record',
+      uri: 'at://did:plc:x/app.bsky.feed.post/q1',
+      cid: 'bafyrq1',
+      text: 'AAAAAAAA',
+      authorHandle: 'quoted.bsky.social',
+      embeds: [
+        { type: 'images', images: [{ url: 'https://cdn/quoted.jpg', alt: 'the quoted image' }] },
+      ],
+    });
+
+    expect(lines).toContain('   Attached to the quoted post:');
+    expect(lines).toContain('   📷 1 image(s):');
+    expect(lines).toContain('   https://cdn/quoted.jpg');
+    expect(lines).toContain('   > the quoted image');
+  });
+
+  /** Two image blocks under one quote heading, one per post — unlabelled they read as one set. */
+  it('names which post each attachment block belongs to', () => {
+    const lines = renderEmbedLines({
+      type: 'record',
+      uri: 'at://did:plc:x/app.bsky.feed.post/q1',
+      cid: 'bafyrq1',
+      text: 'quoted body',
+      embeds: [{ type: 'images', images: [{ url: 'https://cdn/theirs.jpg', alt: '' }] }],
+      media: { type: 'images', images: [{ url: 'https://cdn/mine.jpg', alt: '' }] },
+    });
+    const theirs = lines.indexOf('   Attached to the quoted post:');
+    const mine = lines.indexOf('   Attached to the post that quoted it:');
+
+    expect(theirs).toBeGreaterThan(-1);
+    expect(mine).toBeGreaterThan(theirs);
+    expect(lines.slice(theirs, mine)).toContain('   https://cdn/theirs.jpg');
+    expect(lines.slice(mine)).toContain('   https://cdn/mine.jpg');
+  });
+
+  it('omits each attachment label when that post has nothing attached', () => {
+    const lines = renderEmbedLines({
+      type: 'record',
+      uri: 'at://did:plc:x/app.bsky.feed.post/q1',
+      cid: 'bafyrq1',
+      text: 'quoted body',
+    });
+
+    expect(lines.join('\n')).not.toContain('Attached to');
+    expect(lines.join('\n')).not.toContain('not returned');
+  });
+
+  /**
+   * A quote at the deepest nesting the service follows. Without the line it reads as a quote that
+   * had nothing attached, which is the one thing it is not.
+   */
+  it('states the attachments a quote at the nesting bound did not carry through', () => {
+    const lines = renderEmbedLines({
+      type: 'record',
+      uri: 'at://did:plc:x/app.bsky.feed.post/deep',
+      cid: 'bafyrdeep',
+      text: 'quoted body',
+      omittedEmbeds: 2,
+    });
+
+    expect(lines).toContain(
+      '   *[2 attachments on this quote were not returned — quotes nested this deep are not followed. Fetch the AT-URI above to read them]*',
+    );
+    expect(lines[0]).toContain('at://did:plc:x/app.bsky.feed.post/deep');
+  });
+
+  it('says it in the singular for one', () => {
+    const lines = renderEmbedLines({
+      type: 'record',
+      uri: 'at://did:plc:x/app.bsky.feed.post/deep',
+      cid: 'bafyrdeep',
+      omittedEmbeds: 1,
+    });
+
+    expect(lines.join('\n')).toContain('1 attachment on this quote was not returned');
+  });
+
+  /**
+   * Four leading spaces open an indented code block, which would render the blockquote framing
+   * around every piece of user text below it as literal characters.
+   */
+  it('holds every nested line at the three-space limit', () => {
+    const lines = renderEmbedLines({
+      type: 'record',
+      uri: 'at://did:plc:x/app.bsky.feed.post/q1',
+      cid: 'bafyrq1',
+      text: 'outer quote',
+      embeds: [
+        {
+          type: 'record',
+          uri: 'at://did:plc:y/app.bsky.feed.post/q2',
+          cid: 'bafyrq2',
+          text: MARKDOWN_COLLISION,
+          embeds: [
+            { type: 'images', images: [{ url: 'https://cdn/deep.jpg', alt: FENCE_COLLISION }] },
+          ],
+        },
+      ],
+      media: {
+        type: 'external',
+        uri: 'https://example.com',
+        title: 'Example',
+        description: MARKDOWN_COLLISION,
+      },
+    });
+
+    expect(lines.filter((l) => /^ {4}/.test(l))).toEqual([]);
+    /** Every line of every nested user-authored value is still a blockquote at column three. */
+    expect(lines).toContain('   > ### Why It Matters');
+    expect(lines).toContain('   > ```markdown');
+    expect(lines).not.toContain('### Why It Matters');
+    expect(lines).not.toContain('```markdown');
+    /** And the deepest content still renders — depth cost no fields. */
+    expect(lines).toContain('   https://cdn/deep.jpg');
+    expect(lines).toContain('   > Example');
+  });
 });

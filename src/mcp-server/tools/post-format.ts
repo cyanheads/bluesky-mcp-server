@@ -8,6 +8,11 @@
  * descriptions — and {@link inlineUserText} for the values that render inside a line
  * the server writes, such as a display name in a heading. Either way, third-party text
  * never contributes structure to the markdown around it.
+ *
+ * Nothing here indents past three spaces. CommonMark reads four leading spaces as an
+ * indented code block, and a code block would render the blockquote framing as literal
+ * characters — so depth is carried by labels and by the emoji that introduce each block,
+ * and callers with a tree to render put it in the author heading rather than the margin.
  * @module mcp-server/tools/post-format
  */
 
@@ -101,18 +106,32 @@ export function actorLabel(actor: { displayName?: string | undefined; handle: st
   return name ? `${name} (@${actor.handle})` : `@${actor.handle}`;
 }
 
-/** @internal Indent an embed's detail lines under the line that introduces them. */
-function indent(lines: string[]): string[] {
-  return lines.map((line) => `   ${line}`);
-}
+/**
+ * @internal Column the detail lines under an embed sit at. Three spaces is the deepest a line can
+ * go and still read as markdown: CommonMark opens an indented code block at four, and a code block
+ * renders the blockquote framing around user text as literal characters instead of a quote.
+ */
+const DETAIL_INDENT = '   ';
 
 /**
- * Render a normalized embed into markdown lines. Recurses one level for the media
- * attached to a quote-with-media post; returns no lines when there is no embed.
+ * Render a normalized embed into markdown lines; returns no lines when there is no embed.
+ *
+ * Recurses for the media attached alongside a quote and for the quoted post's own embeds, both of
+ * which the service normalizes under the `record` variant. Pass `nested: true` when rendering into
+ * a block the caller will indent, so the detail column is not applied twice.
  */
-export function renderEmbedLines(embed: unknown): string[] {
+export function renderEmbedLines(embed: unknown, nested = false): string[] {
   if (!embed || typeof embed !== 'object') return [];
   const e = embed as Record<string, unknown>;
+  /**
+   * The one column shift, and the whole depth budget: an embed rendered inside another has already
+   * been shifted by its caller, so it adds nothing further and its own details land in the same
+   * column. Nesting is carried by the `📷` / `🔗` / `💬` line that introduces each block and by the
+   * label above it, never by the margin — stacking indents would push a quote of an image post past
+   * the code-block threshold on its second level.
+   */
+  const detail = (out: string[]): string[] =>
+    nested ? out : out.map((line) => `${DETAIL_INDENT}${line}`);
   switch (e.type) {
     /**
      * Alt text is the poster's own writing and the lexicon puts no length or character
@@ -126,8 +145,8 @@ export function renderEmbedLines(embed: unknown): string[] {
       if (images.length === 0) return [];
       const lines = [`📷 ${images.length} image(s):`];
       for (const img of images) {
-        lines.push(`   ${img.url}`);
-        if (img.alt) lines.push(...indent(quoteUserText(img.alt)));
+        lines.push(...detail([`${img.url}`]));
+        if (img.alt) lines.push(...detail(quoteUserText(img.alt)));
       }
       return lines;
     }
@@ -141,30 +160,57 @@ export function renderEmbedLines(embed: unknown): string[] {
     case 'external': {
       const lines = [`🔗 Link card: ${e.uri}`];
       if (typeof e.title === 'string' && e.title.trim()) {
-        lines.push('   Title:', ...indent(quoteUserText(e.title)));
+        lines.push(...detail(['Title:', ...quoteUserText(e.title)]));
       }
       if (typeof e.description === 'string' && e.description.trim()) {
-        lines.push('   Description:', ...indent(quoteUserText(e.description)));
+        lines.push(...detail(['Description:', ...quoteUserText(e.description)]));
       }
       return lines;
     }
+    /**
+     * The two attachment blocks under a quote belong to different posts — `embeds` to the post
+     * being quoted, `media` to the post doing the quoting — so each is named. Unlabelled they
+     * render as two image blocks under one `💬` heading with nothing to say whose they are.
+     */
     case 'record': {
       const kind = typeof e.recordKind === 'string' ? e.recordKind : undefined;
       const label = kind
         ? (QUOTED_RECORD_LABELS[kind] ?? QUOTED_RECORD_LABELS.unknown)
         : 'Quoted post';
       const lines = [`💬 ${label}: \`${e.uri}\``];
-      if (e.authorHandle) lines.push(`   by @${e.authorHandle}`);
+      if (e.authorHandle) lines.push(...detail([`by @${e.authorHandle}`]));
       if (typeof e.text === 'string') {
-        lines.push(...indent(quoteUserText(e.text)));
+        lines.push(...detail(quoteUserText(e.text)));
       }
-      lines.push(...indent(renderEmbedLines(e.media)));
+      const quotedEmbeds = (Array.isArray(e.embeds) ? e.embeds : []).flatMap((inner) =>
+        renderEmbedLines(inner, true),
+      );
+      if (quotedEmbeds.length) {
+        lines.push(...detail(['Attached to the quoted post:', ...quotedEmbeds]));
+      }
+      const attachedMedia = renderEmbedLines(e.media, true);
+      if (attachedMedia.length) {
+        lines.push(...detail(['Attached to the post that quoted it:', ...attachedMedia]));
+      }
+      /**
+       * A quote at the deepest level of nesting the service follows. Stating the shortfall keeps it
+       * from reading as a quote that simply had nothing attached — the same disclosure the reply
+       * tree and the parent chain make about what a response does not contain.
+       */
+      const omitted = typeof e.omittedEmbeds === 'number' ? e.omittedEmbeds : 0;
+      if (omitted > 0) {
+        lines.push(
+          ...detail([
+            `*[${omitted} attachment${omitted === 1 ? '' : 's'} on this quote ${omitted === 1 ? 'was' : 'were'} not returned — quotes nested this deep are not followed. Fetch the AT-URI above to read them]*`,
+          ]),
+        );
+      }
       return lines;
     }
     case 'video': {
       const label = e.presentation === 'gif' ? '🎞 GIF' : '🎬 Video';
       const lines = [e.thumbnail ? `${label}: ${e.thumbnail}` : label];
-      if (e.playlist) lines.push(`   Playlist: ${e.playlist}`);
+      if (e.playlist) lines.push(...detail([`Playlist: ${e.playlist}`]));
       return lines;
     }
     case 'unknown':
@@ -175,16 +221,20 @@ export function renderEmbedLines(embed: unknown): string[] {
 }
 
 /**
- * Render one post as markdown lines. Callers own the surrounding structure —
- * separators, headings, and thread indentation.
+ * Render one post as markdown lines, every line at column zero. Callers own the surrounding
+ * structure — separators, headings, and the position of the post within a thread.
+ *
+ * `headingPrefix` is inserted into the author heading, which is where a caller with a tree to
+ * render puts the depth: nothing this renderer emits may be shifted right, since the detail lines
+ * under an embed already sit at the three-space limit an indented code block leaves.
  */
-export function renderPostLines(post: RenderablePost): string[] {
+export function renderPostLines(post: RenderablePost, headingPrefix = ''): string[] {
   const lines: string[] = [];
   if (post.repostedBy) {
     const when = post.repostedAt ? ` · ${post.repostedAt}` : '';
     lines.push(`🔁 Reposted by ${actorLabel(post.repostedBy)} \`${post.repostedBy.did}\`${when}`);
   }
-  lines.push(`### ${actorLabel(post.author)}`);
+  lines.push(`### ${headingPrefix}${actorLabel(post.author)}`);
   lines.push(`**AT-URI:** \`${post.uri}\` | **CID:** \`${post.cid}\``);
   lines.push(`**Author DID:** \`${post.author.did}\``);
   lines.push(...quoteUserText(post.text));
