@@ -5,6 +5,7 @@
  */
 
 import type { Context } from '@cyanheads/mcp-ts-core';
+import { config } from '@cyanheads/mcp-ts-core/config';
 import { serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import type {
@@ -14,6 +15,7 @@ import type {
   GraphResult,
   Label,
   PostView,
+  QuotedRecordKind,
   SearchActorsResult,
   SearchPostsResult,
   ThreadPost,
@@ -26,8 +28,11 @@ const BASE_URL = 'https://api.bsky.app';
 /** @internal Request timeout in milliseconds. */
 const TIMEOUT_MS = 15_000;
 
-/** @internal User-Agent header sent on every request. */
-const USER_AGENT = '@cyanheads/bluesky-mcp-server/0.1.6';
+/**
+ * @internal User-Agent header sent on every request, derived from the package
+ * manifest so a release cannot ship a stale version string.
+ */
+const USER_AGENT = `${config.mcpServerName}/${config.mcpServerVersion}`;
 
 // ---------------------------------------------------------------------------
 // Raw upstream response shapes
@@ -60,8 +65,32 @@ interface RawActorView {
 /** @internal Raw post record (lexicon fields). */
 interface RawPostRecord {
   createdAt?: string;
-  reply?: { parent?: { uri?: string } };
+  reply?: { parent?: { uri?: string }; root?: { uri?: string } };
   text: string;
+}
+
+/**
+ * @internal Raw image view. `app.bsky.embed.images#view` names the small variant `thumb`;
+ * `app.bsky.embed.gallery#viewImage` names it `thumbnail`.
+ */
+interface RawImageView {
+  alt?: string;
+  aspectRatio?: { width?: number; height?: number };
+  fullsize?: string;
+  thumb?: string;
+  thumbnail?: string;
+}
+
+/**
+ * @internal Raw quoted record — the `record` slot of `app.bsky.embed.record#view`. `$type` names
+ * which union member arrived; only `#viewRecord` carries `author` and `value`.
+ */
+interface RawViewRecord {
+  $type?: string;
+  author?: RawActorView;
+  cid?: string;
+  uri?: string;
+  value?: { text?: string };
 }
 
 /** @internal Raw embed from AppView — $type discriminated. */
@@ -70,16 +99,19 @@ interface RawEmbed {
   aspectRatio?: { width?: number; height?: number };
   cid?: string;
   external?: { uri?: string; title?: string; description?: string; thumb?: string };
-  images?: Array<{
-    fullsize?: string;
-    thumb?: string;
-    alt?: string;
-    aspectRatio?: { width?: number; height?: number };
-  }>;
+  images?: RawImageView[];
+  /** Gallery embed images (app.bsky.embed.gallery#view). */
+  items?: RawImageView[];
+  /** Media attached alongside the quote (app.bsky.embed.recordWithMedia#view) — itself a $type-tagged view. */
+  media?: RawEmbed;
   /** Video embed fields (app.bsky.embed.video#view). */
   playlist?: string;
   presentation?: string;
-  record?: { uri?: string; cid?: string; author?: RawActorView; value?: { text?: string } };
+  /**
+   * record#view carries the quoted post directly; recordWithMedia#view nests an
+   * embed.record#view here, so the quoted post sits one level deeper at `record.record`.
+   */
+  record?: RawViewRecord & { record?: RawViewRecord };
   thumbnail?: string;
 }
 
@@ -107,9 +139,21 @@ interface RawThreadNode {
   replies?: RawThreadNode[];
 }
 
-/** @internal Raw feed item (post + optional reply context). */
+/** @internal Raw repost/pin marker attached to a feed item (app.bsky.feed.defs#reasonRepost). */
+interface RawFeedReason {
+  $type?: string;
+  by?: RawActorView;
+  indexedAt?: string;
+}
+
+/**
+ * @internal Raw feed item — a post plus why it appears in this feed.
+ * `reply` carries full parent/root post views; the same AT-URIs already reach
+ * `PostView.replyToUri` / `replyRootUri` via the post record, so it is not mapped.
+ */
 interface RawFeedItem {
   post: RawPostView;
+  reason?: RawFeedReason;
   reply?: { parent?: RawPostView; root?: RawPostView };
 }
 
@@ -138,51 +182,108 @@ function normalizeActor(r: RawActorView): ActorProfile {
   };
 }
 
-function normalizeEmbed(r: RawEmbed | undefined): Embed | undefined {
-  if (!r) return;
-  const type = r.$type ?? '';
-  if (type.includes('embed.images') || r.images) {
-    const images = (r.images ?? []).map((img) => ({
-      url: img.fullsize ?? img.thumb ?? '',
+/** @internal NSID prefix every Bluesky embed view shares. */
+const EMBED_NSID_PREFIX = 'app.bsky.embed.';
+
+/**
+ * @internal Embed family from a `$type`, e.g. `app.bsky.embed.gallery#view` → `gallery`.
+ * Matching the NSID exactly keeps `recordWithMedia` from being swallowed by the `record` branch.
+ */
+function embedKind(type: string): string {
+  const nsid = type.split('#')[0] ?? '';
+  return nsid.startsWith(EMBED_NSID_PREFIX) ? nsid.slice(EMBED_NSID_PREFIX.length) : '';
+}
+
+/** @internal Map either an `images#view` or a `gallery#view` image list onto the `images` variant. */
+function normalizeImages(items: RawImageView[] | undefined): Embed {
+  return {
+    type: 'images',
+    images: (items ?? []).map((img) => ({
+      url: img.fullsize ?? img.thumb ?? img.thumbnail ?? '',
       alt: img.alt ?? '',
       ...(img.aspectRatio?.width != null && img.aspectRatio?.height != null
         ? { aspectRatio: { width: img.aspectRatio.width, height: img.aspectRatio.height } }
         : {}),
-    }));
-    return { type: 'images', images };
+    })),
+  };
+}
+
+/** @internal The one `app.bsky.embed.record#view` union member that is an ordinary quoted post. */
+const VIEW_RECORD_TYPE = 'app.bsky.embed.record#viewRecord';
+
+/** @internal Every other member of that union, keyed by `$type`. */
+const QUOTED_RECORD_KINDS: Record<string, QuotedRecordKind> = {
+  'app.bsky.embed.record#viewNotFound': 'notFound',
+  'app.bsky.embed.record#viewBlocked': 'blocked',
+  'app.bsky.embed.record#viewDetached': 'detached',
+  'app.bsky.feed.defs#generatorView': 'generator',
+  'app.bsky.graph.defs#listView': 'list',
+  'app.bsky.graph.defs#starterPackViewBasic': 'starterPack',
+  'app.bsky.labeler.defs#labelerView': 'labeler',
+};
+
+/**
+ * @internal Classify what arrived in the quote slot. Undefined means an ordinary quoted post,
+ * so the discriminant stays off the normalized embed for the common case.
+ */
+function quotedRecordKind(type: string | undefined): QuotedRecordKind | undefined {
+  if (!type || type === VIEW_RECORD_TYPE) return;
+  return QUOTED_RECORD_KINDS[type] ?? 'unknown';
+}
+
+/**
+ * @internal Map a quoted post onto the `record` variant, optionally carrying attached media.
+ * A deleted, blocked, detached, or non-post record carries `recordKind` instead of text and author —
+ * those variants have no such fields, and without the discriminant they read as an empty quote.
+ */
+function normalizeQuote(rec: RawViewRecord | undefined, media: Embed | undefined): Embed {
+  const kind = quotedRecordKind(rec?.$type);
+  return {
+    type: 'record',
+    uri: rec?.uri ?? '',
+    cid: rec?.cid ?? '',
+    ...(kind ? { recordKind: kind } : {}),
+    ...(rec?.value?.text ? { text: rec.value.text } : {}),
+    ...(rec?.author?.handle ? { authorHandle: rec.author.handle } : {}),
+    ...(media ? { media } : {}),
+  };
+}
+
+function normalizeEmbed(r: RawEmbed | undefined): Embed | undefined {
+  if (!r) return;
+  const type = r.$type ?? '';
+  switch (embedKind(type)) {
+    case 'images':
+      return normalizeImages(r.images);
+    case 'gallery':
+      return normalizeImages(r.items);
+    case 'external': {
+      const ext = r.external ?? {};
+      return {
+        type: 'external',
+        uri: ext.uri ?? '',
+        title: ext.title ?? '',
+        description: ext.description ?? '',
+        ...(ext.thumb ? { thumb: ext.thumb } : {}),
+      };
+    }
+    case 'record':
+      return normalizeQuote(r.record, undefined);
+    case 'recordWithMedia':
+      return normalizeQuote(r.record?.record, normalizeEmbed(r.media));
+    case 'video':
+      return {
+        type: 'video',
+        ...(r.playlist ? { playlist: r.playlist } : {}),
+        ...(r.thumbnail ? { thumbnail: r.thumbnail } : {}),
+        ...(r.presentation ? { presentation: r.presentation } : {}),
+        ...(r.aspectRatio?.width != null && r.aspectRatio?.height != null
+          ? { aspectRatio: { width: r.aspectRatio.width, height: r.aspectRatio.height } }
+          : {}),
+      };
+    default:
+      return { type: 'unknown', raw: type };
   }
-  if (type.includes('embed.external') || r.external) {
-    const ext = r.external ?? {};
-    return {
-      type: 'external',
-      uri: ext.uri ?? '',
-      title: ext.title ?? '',
-      description: ext.description ?? '',
-      ...(ext.thumb ? { thumb: ext.thumb } : {}),
-    };
-  }
-  if (type.includes('embed.record') || r.record) {
-    const rec = r.record ?? {};
-    return {
-      type: 'record',
-      uri: rec.uri ?? '',
-      cid: rec.cid ?? '',
-      ...(rec.value?.text ? { text: rec.value.text } : {}),
-      ...(rec.author?.handle ? { authorHandle: rec.author.handle } : {}),
-    };
-  }
-  if (type.includes('embed.video')) {
-    return {
-      type: 'video',
-      ...(r.playlist ? { playlist: r.playlist } : {}),
-      ...(r.thumbnail ? { thumbnail: r.thumbnail } : {}),
-      ...(r.presentation ? { presentation: r.presentation } : {}),
-      ...(r.aspectRatio?.width != null && r.aspectRatio?.height != null
-        ? { aspectRatio: { width: r.aspectRatio.width, height: r.aspectRatio.height } }
-        : {}),
-    };
-  }
-  return { type: 'unknown', raw: type };
 }
 
 function normalizePost(r: RawPostView): PostView {
@@ -209,6 +310,23 @@ function normalizePost(r: RawPostView): PostView {
       : {}),
     ...(embed ? { embed } : {}),
     ...(r.record.reply?.parent?.uri ? { replyToUri: r.record.reply.parent.uri } : {}),
+    ...(r.record.reply?.root?.uri ? { replyRootUri: r.record.reply.root.uri } : {}),
+  };
+}
+
+/** @internal Normalize a feed item, carrying the repost marker through when the item is a repost. */
+function normalizeFeedItem(item: RawFeedItem): PostView {
+  const post = normalizePost(item.post);
+  const by = item.reason?.by;
+  if (!by || !(item.reason?.$type ?? '').endsWith('#reasonRepost')) return post;
+  return {
+    ...post,
+    repostedBy: {
+      did: by.did,
+      handle: by.handle,
+      ...(by.displayName ? { displayName: by.displayName } : {}),
+    },
+    ...(item.reason?.indexedAt ? { repostedAt: item.reason.indexedAt } : {}),
   };
 }
 
@@ -359,7 +477,7 @@ export class BlueskyService {
       ctx,
     );
     return {
-      feed: (raw.feed ?? []).map((item) => normalizePost(item.post)),
+      feed: (raw.feed ?? []).map(normalizeFeedItem),
       ...(raw.cursor ? { cursor: raw.cursor } : {}),
     };
   }
@@ -474,6 +592,7 @@ export class BlueskyService {
         ...(typeof t.postCount === 'number' ? { postCount: t.postCount } : {}),
         ...(t.status ? { status: t.status } : {}),
         ...(t.category ? { category: t.category } : {}),
+        ...(t.actors?.length ? { actors: t.actors.map(normalizeActor) } : {}),
       })),
     };
   }

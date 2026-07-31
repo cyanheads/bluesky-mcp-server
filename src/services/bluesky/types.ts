@@ -10,14 +10,48 @@ export interface Label {
   val: string;
 }
 
-/** Normalized embed union — images, external link cards, quoted posts, or videos. */
+/**
+ * Which member of the `app.bsky.embed.record#view` union stood in for an ordinary quoted post.
+ * The first three mean the quote exists but cannot be read; the rest mean the quoted record is
+ * not a post at all. `unknown` covers a union member added upstream after this mapping was written.
+ */
+export type QuotedRecordKind =
+  | 'notFound'
+  | 'blocked'
+  | 'detached'
+  | 'generator'
+  | 'list'
+  | 'starterPack'
+  | 'labeler'
+  | 'unknown';
+
+/**
+ * Normalized embed union — images, external link cards, quoted posts, or videos.
+ * `app.bsky.embed.gallery#view` maps onto the `images` variant; `app.bsky.embed.recordWithMedia#view`
+ * maps onto the `record` variant with its attached media nested under `media`.
+ */
 export type Embed =
   | {
       type: 'images';
       images: Array<{ url: string; alt: string; aspectRatio?: { width: number; height: number } }>;
     }
   | { type: 'external'; uri: string; title: string; description: string; thumb?: string }
-  | { type: 'record'; uri: string; cid: string; text?: string; authorHandle?: string }
+  | {
+      type: 'record';
+      uri: string;
+      cid: string;
+      text?: string;
+      authorHandle?: string;
+      /** Media attached alongside the quote on a recordWithMedia embed. */
+      media?: Embed;
+      /**
+       * Absent for an ordinary quoted post. Set when the AppView returned something else in the
+       * quote slot — an unreadable post or a non-post record. Those variants carry no text or author,
+       * so `text` and `authorHandle` are absent, and `cid` is often the empty string; only `uri` is
+       * dependable. `notFound`, `blocked`, and `detached` still identify a real post by `uri`.
+       */
+      recordKind?: QuotedRecordKind;
+    }
   | {
       type: 'video';
       playlist?: string;
@@ -55,9 +89,15 @@ export interface PostView {
   likeCount?: number;
   quoteCount?: number;
   replyCount?: number;
+  /** For replies: the AT-URI of the post the thread started from. */
+  replyRootUri?: string;
   /** For replies: the immediate parent AT-URI. */
   replyToUri?: string;
   repostCount?: number;
+  /** For feed items: when the repost was indexed. Absent unless this item is a repost. */
+  repostedAt?: string;
+  /** For feed items: who reposted this post. Absent when the item is the actor's own writing. */
+  repostedBy?: { did: string; displayName?: string; handle: string };
   text: string;
   uri: string;
 }
@@ -101,6 +141,8 @@ export interface GraphResult {
 
 /** A single trending topic. */
 export interface TrendingTopic {
+  /** Representative accounts posting about this topic. */
+  actors?: ActorProfile[];
   category?: string;
   displayName: string;
   link?: string;
