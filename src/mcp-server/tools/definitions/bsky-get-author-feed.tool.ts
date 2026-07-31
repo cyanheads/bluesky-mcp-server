@@ -12,15 +12,19 @@ import { AT_IDENTIFIER_MESSAGE, AT_IDENTIFIER_REGEX } from '@/services/bluesky/a
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 import type { AuthorFeedResult } from '@/services/bluesky/types.js';
 
-/** Embed uses passthrough so all sub-fields flow through structuredContent while format() renders the key data. */
+/**
+ * Embed uses passthrough so the normalized union flows through structuredContent whole; the fields
+ * it names are the fields renderEmbedLines() emits, so both channels carry the same embed. The
+ * linter cannot walk past a passthrough, so this list and that renderer are kept in step by hand.
+ */
 const EmbedSchema = z
   .object({})
   .passthrough()
   .describe(
     'Media or link embed attached to this post. ' +
       'type: "images" | "external" | "record" | "video" | "unknown". ' +
-      'images: array of { url, alt, aspectRatio? } — also carries app.bsky.embed.gallery embeds. ' +
-      'external: { uri, title, description, thumb? }. ' +
+      'images: array of { url, alt } — also carries app.bsky.embed.gallery embeds. ' +
+      'external: { uri, title, description }. ' +
       'record: { uri, cid, text?, authorHandle?, embeds?, media?, omittedEmbeds?, recordKind? } — embeds is the ' +
       "quoted post's own attachments, so a quote of an image post carries those images here; media is the " +
       'image/video/link attached alongside the quote by the post doing the quoting, on a recordWithMedia ' +
@@ -33,7 +37,7 @@ const EmbedSchema = z
       '"generator" | "list" | "starterPack" | "labeler" | "unknown" (the quoted record is not a post). ' +
       'When recordKind is set, text and authorHandle are absent because that variant does not carry them — ' +
       'do not read the quote as an empty post. ' +
-      'video: { playlist?, thumbnail?, presentation?, aspectRatio? }. ' +
+      'video: { playlist?, thumbnail?, presentation? }. ' +
       'unknown: { raw } — raw is the upstream $type this server has no mapping for.',
   );
 
@@ -71,8 +75,16 @@ const PostSchema = z
             val: z
               .string()
               .describe('Label value (content warning or moderation tag, e.g. "porn", "spam").'),
+            src: z
+              .string()
+              .optional()
+              .describe(
+                'DID of the labeler that applied this label. Equal to the post author DID when the ' +
+                  'account labelled its own post, and a labeler service DID otherwise.',
+              ),
+            cts: z.string().optional().describe('ISO 8601 timestamp when the label was applied.'),
           })
-          .describe('A moderation label.'),
+          .describe('A moderation label applied by the AppView or a labeler service.'),
       )
       .optional()
       .describe('Moderation labels on this post.'),

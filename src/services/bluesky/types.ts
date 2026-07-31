@@ -29,16 +29,27 @@ export type QuotedRecordKind =
  * Normalized embed union — images, external link cards, quoted posts, or videos.
  * `app.bsky.embed.gallery#view` maps onto the `images` variant; `app.bsky.embed.recordWithMedia#view`
  * maps onto the `record` variant with its attached media nested under `media`.
+ *
+ * Every field here is one a reader can act on: a URL that leads to the attachment itself, the
+ * address of a quoted record, or text a person wrote. Three upstream fields are deliberately not
+ * mapped, so neither response channel carries what the other cannot — pixel dimensions on an image
+ * or video (`aspectRatio`), which describe an asset the reader cannot see and which the asset itself
+ * carries, and a link card's `thumb`, a preview of a page whose own URL, title, and description are
+ * already here.
  */
 export type Embed =
   | {
       type: 'images';
-      images: Array<{ url: string; alt: string; aspectRatio?: { width: number; height: number } }>;
+      images: Array<{ url: string; alt: string }>;
     }
-  | { type: 'external'; uri: string; title: string; description: string; thumb?: string }
+  | { type: 'external'; uri: string; title: string; description: string }
   | {
       type: 'record';
       uri: string;
+      /**
+       * Content Identifier of the quoted record — the revision the quoting post points at. Empty on
+       * the union members that carry no record of their own (see `recordKind`).
+       */
       cid: string;
       text?: string;
       authorHandle?: string;
@@ -72,7 +83,6 @@ export type Embed =
       playlist?: string;
       thumbnail?: string;
       presentation?: string;
-      aspectRatio?: { width: number; height: number };
     }
   | { type: 'unknown'; raw: string };
 
@@ -103,9 +113,26 @@ export interface ActorProfile {
   website?: string;
 }
 
+/**
+ * Who wrote a post, as a post view carries them. Deliberately narrower than {@link ActorProfile}:
+ * the AppView attaches an `app.bsky.actor.defs#profileViewBasic` to every post, which also carries
+ * the account's own `createdAt`, its account-level moderation labels, and its pronouns. None of
+ * those describe the post, no post schema declares them, and no formatter renders them — carried
+ * through they would reach a `structuredContent` reader and no other.
+ *
+ * Account-level detail is a profile lookup: `bsky_get_profile` and the `bsky://profile/{actor}`
+ * resource serve the full {@link ActorProfile} for any handle or DID on a post.
+ */
+export interface PostAuthor {
+  avatar?: string;
+  did: string;
+  displayName?: string;
+  handle: string;
+}
+
 /** A single post view (feed items + search results share this shape). */
 export interface PostView {
-  author: ActorProfile;
+  author: PostAuthor;
   cid: string;
   createdAt?: string;
   embed?: Embed;

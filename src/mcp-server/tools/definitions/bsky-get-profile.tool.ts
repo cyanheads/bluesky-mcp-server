@@ -1,15 +1,16 @@
 /**
  * @fileoverview Fetch a Bluesky actor's public profile by handle or DID. The bio is
  * rendered through the shared blockquote framing, since it is text the account holder
- * wrote and can carry its own markdown structure; the display name, pronouns, and label
- * values, which render inside lines this file writes, go through the inline framing
- * instead. The avatar and website URLs are left bare — the lexicon types both as URIs.
+ * wrote and can carry its own markdown structure; the display name and pronouns, which
+ * render inside lines this file writes, go through the inline framing instead, and the
+ * label values take it inside the shared label renderer. The avatar and website URLs are
+ * left bare — the lexicon types both as URIs.
  * @module mcp-server/tools/definitions/bsky-get-profile
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
-import { inlineUserText, quoteUserText } from '@/mcp-server/tools/post-format.js';
+import { inlineUserText, quoteUserText, renderLabelList } from '@/mcp-server/tools/post-format.js';
 import { AT_IDENTIFIER_MESSAGE, AT_IDENTIFIER_REGEX } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
@@ -145,15 +146,7 @@ export const bskyGetProfile = tool('bsky_get_profile', {
     if (result.avatar) urls.push(`**Avatar:** ${result.avatar}`);
     if (urls.length) lines.push('', ...urls);
     if (result.pinnedPostUri) lines.push(`**Pinned post AT-URI:** \`${result.pinnedPostUri}\``);
-    if (result.labels?.length) {
-      const labelParts = result.labels.map((l) => {
-        const parts = [inlineUserText(l.val)];
-        if (l.src) parts.push(`src:${l.src}`);
-        if (l.cts) parts.push(`cts:${l.cts}`);
-        return parts.join(' ');
-      });
-      lines.push(`**Labels:** ${labelParts.join(', ')}`);
-    }
+    if (result.labels?.length) lines.push(`**Labels:** ${renderLabelList(result.labels)}`);
     if (result.createdAt) lines.push(`**Joined:** ${result.createdAt}`);
     if (result.indexedAt) lines.push(`**Indexed:** ${result.indexedAt}`);
     return [{ type: 'text', text: lines.join('\n') }];

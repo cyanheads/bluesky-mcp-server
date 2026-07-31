@@ -181,6 +181,25 @@ describe('renderPostLines', () => {
     expect(lines).not.toContain('### @admin');
   });
 
+  /**
+   * `src` and `cts` are normalized onto every label the service returns, so a renderer that
+   * emitted the value alone would leave them to `structuredContent` — the shape `bsky_get_profile`
+   * already avoids on a profile's own labels.
+   */
+  it('names the labeler that applied a post label and when', () => {
+    const lines = renderPostLines(
+      makePost({
+        labels: [
+          { val: 'porn', src: 'did:plc:labeler', cts: '2026-01-02T03:04:05.000Z' },
+          { val: 'spam' },
+        ],
+      }),
+    );
+    expect(lines).toContain(
+      '**Labels:** porn src:did:plc:labeler cts:2026-01-02T03:04:05.000Z, spam',
+    );
+  });
+
   it('still renders the metadata the formatters depend on', () => {
     const text = renderPostLines(
       makePost({ likeCount: 5, repostCount: 2, createdAt: '2025-01-01T00:00:00Z' }),
@@ -262,6 +281,52 @@ describe('renderEmbedLines', () => {
       description: '',
     });
     expect(lines).toEqual(['🔗 Link card: https://example.com']);
+  });
+
+  it("names the quoted record's CID beside its AT-URI, as a post names its own", () => {
+    const lines = renderEmbedLines({
+      type: 'record',
+      uri: 'at://did:plc:x/app.bsky.feed.post/q1',
+      cid: 'bafyrq1',
+      text: 'quoted text',
+    });
+    expect(lines[0]).toBe(
+      '💬 Quoted post: `at://did:plc:x/app.bsky.feed.post/q1` | CID: `bafyrq1`',
+    );
+  });
+
+  /** The unreadable and non-post members of the quote slot carry no record of their own. */
+  it('omits the CID pair for a quoted record that has none', () => {
+    const lines = renderEmbedLines({
+      type: 'record',
+      uri: 'at://did:plc:x/app.bsky.feed.post/gone',
+      cid: '',
+      recordKind: 'notFound',
+    });
+    expect(lines[0]).toBe(
+      '💬 Quoted post unavailable — deleted or never existed: `at://did:plc:x/app.bsky.feed.post/gone`',
+    );
+  });
+
+  it("carries the CID of a quote nested inside another quote's attachments", () => {
+    const lines = renderEmbedLines({
+      type: 'record',
+      uri: 'at://did:plc:x/app.bsky.feed.post/q1',
+      cid: 'bafyrq1',
+      text: 'outer quote',
+      embeds: [
+        {
+          type: 'record',
+          uri: 'at://did:plc:y/app.bsky.feed.post/q2',
+          cid: 'bafyrq2',
+          text: 'inner quote',
+        },
+      ],
+    });
+    expect(lines).toContain(
+      '   💬 Quoted post: `at://did:plc:y/app.bsky.feed.post/q2` | CID: `bafyrq2`',
+    );
+    expect(lines.filter((l) => /^ {4}/.test(l))).toEqual([]);
   });
 
   it('frames quoted-post text as an indented blockquote', () => {

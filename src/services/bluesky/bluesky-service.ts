@@ -14,6 +14,7 @@ import type {
   Embed,
   GraphResult,
   Label,
+  PostAuthor,
   PostThreadResult,
   PostView,
   QuotedRecordKind,
@@ -76,11 +77,11 @@ interface RawPostRecord {
 
 /**
  * @internal Raw image view. `app.bsky.embed.images#view` names the small variant `thumb`;
- * `app.bsky.embed.gallery#viewImage` names it `thumbnail`.
+ * `app.bsky.embed.gallery#viewImage` names it `thumbnail`. Both stand in for `fullsize` when it is
+ * absent; neither is carried alongside it.
  */
 interface RawImageView {
   alt?: string;
-  aspectRatio?: { width?: number; height?: number };
   fullsize?: string;
   thumb?: string;
   thumbnail?: string;
@@ -103,9 +104,8 @@ interface RawViewRecord {
 /** @internal Raw embed from AppView — $type discriminated. */
 interface RawEmbed {
   $type?: string;
-  aspectRatio?: { width?: number; height?: number };
   cid?: string;
-  external?: { uri?: string; title?: string; description?: string; thumb?: string };
+  external?: { uri?: string; title?: string; description?: string };
   images?: RawImageView[];
   /** Gallery embed images (app.bsky.embed.gallery#view). */
   items?: RawImageView[];
@@ -210,6 +210,21 @@ function normalizeActor(r: RawActorView): ActorProfile {
   };
 }
 
+/**
+ * @internal Who wrote a post. The AppView attaches a `profileViewBasic` to every post view, which
+ * also carries the account's own `createdAt`, its account-level moderation labels, and its pronouns
+ * — account facts rather than post facts, declared by no post schema and rendered by no formatter.
+ * Kept, they would reach a `structuredContent` reader alone. `bsky_get_profile` serves the rest.
+ */
+function normalizePostAuthor(r: RawActorView): PostAuthor {
+  return {
+    did: r.did,
+    handle: r.handle,
+    ...(r.displayName ? { displayName: r.displayName } : {}),
+    ...(r.avatar ? { avatar: r.avatar } : {}),
+  };
+}
+
 /** @internal NSID prefix every Bluesky embed view shares. */
 const EMBED_NSID_PREFIX = 'app.bsky.embed.';
 
@@ -229,9 +244,6 @@ function normalizeImages(items: RawImageView[] | undefined): Embed {
     images: (items ?? []).map((img) => ({
       url: img.fullsize ?? img.thumb ?? img.thumbnail ?? '',
       alt: img.alt ?? '',
-      ...(img.aspectRatio?.width != null && img.aspectRatio?.height != null
-        ? { aspectRatio: { width: img.aspectRatio.width, height: img.aspectRatio.height } }
-        : {}),
     })),
   };
 }
@@ -328,7 +340,6 @@ function normalizeEmbed(r: RawEmbed | undefined, depth = 0): Embed | undefined {
         uri: ext.uri ?? '',
         title: ext.title ?? '',
         description: ext.description ?? '',
-        ...(ext.thumb ? { thumb: ext.thumb } : {}),
       };
     }
     case 'record':
@@ -341,9 +352,6 @@ function normalizeEmbed(r: RawEmbed | undefined, depth = 0): Embed | undefined {
         ...(r.playlist ? { playlist: r.playlist } : {}),
         ...(r.thumbnail ? { thumbnail: r.thumbnail } : {}),
         ...(r.presentation ? { presentation: r.presentation } : {}),
-        ...(r.aspectRatio?.width != null && r.aspectRatio?.height != null
-          ? { aspectRatio: { width: r.aspectRatio.width, height: r.aspectRatio.height } }
-          : {}),
       };
     default:
       return { type: 'unknown', raw: type };
@@ -356,7 +364,7 @@ function normalizePost(r: RawPostView): PostView {
     uri: r.uri,
     cid: r.cid,
     text: r.record.text,
-    author: normalizeActor(r.author),
+    author: normalizePostAuthor(r.author),
     ...(typeof r.replyCount === 'number' ? { replyCount: r.replyCount } : {}),
     ...(typeof r.repostCount === 'number' ? { repostCount: r.repostCount } : {}),
     ...(typeof r.likeCount === 'number' ? { likeCount: r.likeCount } : {}),

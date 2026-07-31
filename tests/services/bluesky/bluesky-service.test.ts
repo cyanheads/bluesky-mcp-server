@@ -175,7 +175,7 @@ describe('BlueskyService — embed normalization', () => {
     return result.posts[0]?.embed;
   }
 
-  it('maps images#view, preferring fullsize and carrying alt + aspectRatio', async () => {
+  it('maps images#view, preferring fullsize and carrying alt', async () => {
     const embed = await normalize({
       $type: 'app.bsky.embed.images#view',
       images: [
@@ -194,7 +194,6 @@ describe('BlueskyService — embed normalization', () => {
         {
           url: 'https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:x/aaa',
           alt: 'a painting',
-          aspectRatio: { width: 1080, height: 1350 },
         },
       ],
     });
@@ -236,16 +235,8 @@ describe('BlueskyService — embed normalization', () => {
     expect(embed).toEqual({
       type: 'images',
       images: [
-        {
-          url: 'https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:y/bbb',
-          alt: '',
-          aspectRatio: { width: 1065, height: 947 },
-        },
-        {
-          url: 'https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:y/ccc',
-          alt: 'second',
-          aspectRatio: { width: 1199, height: 883 },
-        },
+        { url: 'https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:y/bbb', alt: '' },
+        { url: 'https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:y/ccc', alt: 'second' },
       ],
     });
   });
@@ -278,7 +269,6 @@ describe('BlueskyService — embed normalization', () => {
       uri: 'https://youtu.be/noLPhZvcBpw',
       title: 'Dokken - Dream Warriors (Official Music Video)',
       description: 'YouTube video by RHINO',
-      thumb: 'https://cdn/ext-thumb.jpg',
     });
   });
 
@@ -488,13 +478,7 @@ describe('BlueskyService — embed normalization', () => {
       authorHandle: 'thefatnerd.bsky.social',
       media: {
         type: 'images',
-        images: [
-          {
-            url: 'https://cdn/rwm-full.jpg',
-            alt: 'attached image',
-            aspectRatio: { width: 894, height: 894 },
-          },
-        ],
+        images: [{ url: 'https://cdn/rwm-full.jpg', alt: 'attached image' }],
       },
     });
   });
@@ -551,7 +535,6 @@ describe('BlueskyService — embed normalization', () => {
       playlist: 'https://video.bsky.app/watch/did%3Aplc%3Alvk3/bafkrei/playlist.m3u8',
       thumbnail: 'https://video.bsky.app/watch/did%3Aplc%3Alvk3/bafkrei/thumbnail.jpg',
       presentation: 'default',
-      aspectRatio: { width: 720, height: 720 },
     });
   });
 
@@ -709,6 +692,216 @@ describe('BlueskyService — embed normalization', () => {
     );
     const result = await service.searchPosts({ q: 'test' }, createMockContext());
     expect(result.posts[0]?.embed).toBeUndefined();
+  });
+
+  /**
+   * The normalized embed is what both response channels carry, so a field mapped here but not
+   * rendered would reach a `structuredContent` reader alone. These three are left upstream: the
+   * pixel dimensions of an image or video the reader cannot see, and a preview of a page whose
+   * own URL, title, and description are already on the card.
+   */
+  describe('fields left upstream', () => {
+    it('drops aspectRatio from an images#view item', async () => {
+      const embed = (await normalize({
+        $type: 'app.bsky.embed.images#view',
+        images: [
+          {
+            fullsize: 'https://cdn/one.jpg',
+            alt: 'a painting',
+            aspectRatio: { height: 1350, width: 1080 },
+          },
+        ],
+      })) as { images: Array<Record<string, unknown>> };
+
+      expect(embed.images[0]).toEqual({ url: 'https://cdn/one.jpg', alt: 'a painting' });
+    });
+
+    it('drops aspectRatio from a gallery#view item', async () => {
+      const embed = (await normalize({
+        $type: 'app.bsky.embed.gallery#view',
+        items: [
+          { fullsize: 'https://cdn/two.jpg', alt: '', aspectRatio: { height: 947, width: 1065 } },
+        ],
+      })) as { images: Array<Record<string, unknown>> };
+
+      expect(embed.images[0]).toEqual({ url: 'https://cdn/two.jpg', alt: '' });
+    });
+
+    it('drops the preview thumbnail from a link card', async () => {
+      const embed = (await normalize({
+        $type: 'app.bsky.embed.external#view',
+        external: {
+          uri: 'https://example.com/article',
+          title: 'Example',
+          description: 'An example page',
+          thumb: 'https://cdn/ext-thumb.jpg',
+        },
+      })) as Record<string, unknown>;
+
+      expect(embed).not.toHaveProperty('thumb');
+      expect(embed.uri).toBe('https://example.com/article');
+    });
+
+    it('drops aspectRatio from a video#view but keeps its thumbnail', async () => {
+      const embed = (await normalize({
+        $type: 'app.bsky.embed.video#view',
+        playlist: 'https://video.bsky.app/watch/did/bafkrei/playlist.m3u8',
+        thumbnail: 'https://video.bsky.app/watch/did/bafkrei/thumbnail.jpg',
+        aspectRatio: { height: 720, width: 720 },
+      })) as Record<string, unknown>;
+
+      expect(embed).not.toHaveProperty('aspectRatio');
+      expect(embed.thumbnail).toBe('https://video.bsky.app/watch/did/bafkrei/thumbnail.jpg');
+    });
+
+    it("keeps the quoted record's CID, which addresses a record rather than describing one", async () => {
+      const embed = (await normalize({
+        $type: 'app.bsky.embed.record#view',
+        record: {
+          $type: 'app.bsky.embed.record#viewRecord',
+          uri: 'at://did:plc:quoted/app.bsky.feed.post/q1',
+          cid: 'bafyrquoted',
+          author: { did: 'did:plc:quoted', handle: 'quoted.bsky.social' },
+          value: { text: 'the quoted text' },
+        },
+      })) as Record<string, unknown>;
+
+      expect(embed.cid).toBe('bafyrquoted');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Post authors — the four fields a post view commits to.
+// ---------------------------------------------------------------------------
+
+/**
+ * A `profileViewBasic` as the AppView attaches it to every post view. Its account-level fields
+ * describe the account, not the post: no post schema declares them and no formatter renders them,
+ * so carrying them through would put them in `structuredContent` alone.
+ */
+const RAW_POST_AUTHOR = {
+  did: 'did:plc:author',
+  handle: 'author.bsky.social',
+  displayName: 'Author',
+  avatar: 'https://cdn.bsky.app/img/avatar/plain/did:plc:author/aaa',
+  associated: { chat: { allowIncoming: 'following' } },
+  labels: [{ src: 'did:plc:mod', val: 'spam' }],
+  createdAt: '2023-04-10T19:03:12.744Z',
+  pronouns: 'they/them',
+  verification: { verifiedStatus: 'none' },
+};
+
+describe('BlueskyService — post author normalization', () => {
+  let service: BlueskyService;
+
+  beforeEach(() => {
+    service = new BlueskyService();
+    mockFetch.mockReset();
+  });
+
+  it('carries exactly the four fields the post schemas declare', async () => {
+    mockFetch.mockImplementation(() =>
+      fakeResponse({
+        posts: [
+          {
+            uri: 'at://did:plc:author/app.bsky.feed.post/rkey1',
+            cid: 'bafyrpost',
+            author: RAW_POST_AUTHOR,
+            record: { text: 'post text' },
+          },
+        ],
+      }),
+    );
+
+    const result = await service.searchPosts({ q: 'test' }, createMockContext());
+
+    expect(result.posts[0]?.author).toEqual({
+      did: 'did:plc:author',
+      handle: 'author.bsky.social',
+      displayName: 'Author',
+      avatar: 'https://cdn.bsky.app/img/avatar/plain/did:plc:author/aaa',
+    });
+  });
+
+  /**
+   * A post's own label is the counterpart to the author's: `src` and `cts` describe the label on
+   * this post rather than the account behind it, so they are carried and rendered rather than
+   * dropped. Both post schemas declare them, which is what puts them under `format-parity`.
+   */
+  it("keeps the labeler and timestamp on a post's own labels", async () => {
+    mockFetch.mockImplementation(() =>
+      fakeResponse({
+        posts: [
+          {
+            uri: 'at://did:plc:author/app.bsky.feed.post/rkey1',
+            cid: 'bafyrpost',
+            author: RAW_POST_AUTHOR,
+            record: { text: 'post text' },
+            labels: [
+              { val: 'porn', src: 'did:plc:labeler', cts: '2026-01-02T03:04:05.000Z' },
+              { val: 'spam' },
+            ],
+          },
+        ],
+      }),
+    );
+
+    const result = await service.searchPosts({ q: 'test' }, createMockContext());
+
+    expect(result.posts[0]?.labels).toEqual([
+      { val: 'porn', src: 'did:plc:labeler', cts: '2026-01-02T03:04:05.000Z' },
+      { val: 'spam' },
+    ]);
+  });
+
+  /**
+   * The thread tool declares its node tree as a passthrough, so an extra author field survives
+   * there where the sibling tools' closed post schemas strip it. Narrowing at the service is what
+   * keeps the three tools carrying one author shape.
+   */
+  it('narrows the author on a thread node, which no schema strips', async () => {
+    mockFetch.mockImplementation(() =>
+      fakeResponse({
+        thread: {
+          $type: 'app.bsky.feed.defs#threadViewPost',
+          post: {
+            uri: 'at://did:plc:author/app.bsky.feed.post/rkey1',
+            cid: 'bafyrpost',
+            author: RAW_POST_AUTHOR,
+            record: { text: 'post text' },
+          },
+        },
+      }),
+    );
+
+    const result = await service.getPostThread(
+      { uri: 'at://did:plc:author/app.bsky.feed.post/rkey1' },
+      createMockContext(),
+    );
+
+    expect(Object.keys(result.thread.post.author).sort()).toEqual([
+      'avatar',
+      'did',
+      'displayName',
+      'handle',
+    ]);
+  });
+
+  it('leaves the profile tools their full actor profile', async () => {
+    mockFetch.mockImplementation(() =>
+      fakeResponse({ ...RAW_POST_AUTHOR, description: 'a bio', followersCount: 12 }),
+    );
+
+    const profile = await service.getProfile('author.bsky.social', createMockContext());
+
+    expect(profile).toMatchObject({
+      createdAt: '2023-04-10T19:03:12.744Z',
+      description: 'a bio',
+      followersCount: 12,
+      labels: [{ src: 'did:plc:mod', val: 'spam' }],
+      pronouns: 'they/them',
+    });
   });
 });
 

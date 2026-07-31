@@ -243,13 +243,18 @@ function gateAudience(gate: ThreadGateView): string {
  * createdAt, labels, embed, replyToUri, replyRootUri) and thread structure (parent, replies, truncated,
  * truncationReason, unreturnedReplies, notFound, blocked) flow through structuredContent without
  * format-parity constraints on the recursive tree shape.
+ *
+ * Passthrough is why the node this describes must be normalized down to what it names: the sibling
+ * tools declare their post shape as a closed object, so an extra field is stripped there and
+ * survives here. The author fields listed below are the four the service carries and the four the
+ * renderer emits — widening the normalized author again would put fields in this channel alone.
  */
 const ThreadNodeSchema: z.ZodType<unknown> = z
   .object({})
   .passthrough()
   .describe(
     'The conversation thread rooted at the requested post — a recursive node tree. Each node has: ' +
-      'post: { uri, cid, text, author: { did, handle, displayName?, avatar? }, replyCount?, repostCount?, likeCount?, quoteCount?, indexedAt?, createdAt?, labels?, embed?, replyToUri?, replyRootUri? }. ' +
+      'post: { uri, cid, text, author: { did, handle, displayName?, avatar? }, replyCount?, repostCount?, likeCount?, quoteCount?, indexedAt?, createdAt?, labels?: [{ val, src?, cts? }], embed?, replyToUri?, replyRootUri? }. ' +
       'parent?: parent thread node. replies?: array of child thread nodes. ' +
       "truncated?: true when the node's own post.replyCount exceeds the replies returned for it, with " +
       'unreturnedReplies: the size of that difference, and truncationReason: "depth" (the reply tree ends ' +

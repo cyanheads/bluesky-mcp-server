@@ -963,11 +963,7 @@ describe('bskyGetPostThread', () => {
         embed: {
           type: 'images',
           images: [
-            {
-              url: 'https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:jwj/aaa',
-              alt: 'a photo',
-              aspectRatio: { width: 1080, height: 1080 },
-            },
+            { url: 'https://cdn.bsky.app/img/feed_fullsize/plain/did:plc:jwj/aaa', alt: 'a photo' },
           ],
         },
       },
@@ -1001,6 +997,7 @@ describe('bskyGetPostThread', () => {
     expect(text).toContain('at://did:plc:x/app.bsky.feed.post/quoted1');
     expect(text).toContain('quoted.bsky.social');
     expect(text).toContain('the quoted text');
+    expect(text).toContain('CID: `bafyrquoted`');
   });
 
   it('renders replyToUri and replyRootUri on a thread node', () => {

@@ -339,6 +339,7 @@ describe('bskySearchPosts', () => {
     const blocks = bskySearchPosts.format!({ posts: [post] });
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('at://did:plc:x/app.bsky.feed.post/q1');
+    expect(text).toContain('CID: `bafyrq1`');
   });
 
   it('renders the quoted post author handle', () => {

@@ -1,7 +1,11 @@
 /**
  * @fileoverview Shared markdown rendering for a normalized Bluesky post.
  * Every tool that emits posts into content[] renders through here, so the search,
- * author-feed, and thread formatters carry the same fields structuredContent does.
+ * author-feed, and thread formatters carry the same fields structuredContent does —
+ * every field of a normalized post and of its embed, with nothing left to one channel.
+ * {@link renderLabelList} is here for the same reason, since a moderation label reads
+ * the same on a post as on a profile.
+ *
  * Also home to the two framings every formatter on this server puts around
  * Bluesky-authored text: {@link quoteUserText} for text that gets lines of its own —
  * post bodies, quoted-post bodies, profile bios, image alt text, link-card titles and
@@ -68,7 +72,7 @@ export interface RenderablePost {
   /** Normalized embed union — narrowed at render time, since tool schemas type it as passthrough. */
   embed?: unknown;
   indexedAt?: string | undefined;
-  labels?: Array<{ val: string }> | undefined;
+  labels?: Array<{ val: string; src?: string | undefined; cts?: string | undefined }> | undefined;
   likeCount?: number | undefined;
   quoteCount?: number | undefined;
   replyCount?: number | undefined;
@@ -107,6 +111,29 @@ export function actorLabel(actor: { displayName?: string | undefined; handle: st
 }
 
 /**
+ * Render a moderation label list into the text of one line — each label's value, then the labeler
+ * that applied it and when, keyed rather than positional. Shared so a label reads the same on a
+ * post as on a profile.
+ *
+ * Only the value takes the inline framing: `label.val` is bounded at 128 characters with no
+ * pattern and is written by third-party labelers, so a line break in one would carry the rest of
+ * the list out of the line. `src` is a DID and `cts` an ISO 8601 timestamp, neither of which a
+ * labeler chooses the shape of.
+ */
+export function renderLabelList(
+  labels: ReadonlyArray<{ val: string; src?: string | undefined; cts?: string | undefined }>,
+): string {
+  return labels
+    .map((l) => {
+      const parts = [inlineUserText(l.val)];
+      if (l.src) parts.push(`src:${l.src}`);
+      if (l.cts) parts.push(`cts:${l.cts}`);
+      return parts.join(' ');
+    })
+    .join(', ');
+}
+
+/**
  * @internal Column the detail lines under an embed sit at. Three spaces is the deepest a line can
  * go and still read as markdown: CommonMark opens an indented code block at four, and a code block
  * renders the blockquote framing around user text as literal characters instead of a quote.
@@ -115,6 +142,11 @@ const DETAIL_INDENT = '   ';
 
 /**
  * Render a normalized embed into markdown lines; returns no lines when there is no embed.
+ *
+ * Every field of every variant lands in these lines. The normalized `Embed` union carries only what
+ * a reader can act on — the URL of each attachment, the address and revision of a quoted record,
+ * and the text a person wrote — so a field reaching `structuredContent` and not `content[]` is a
+ * gap here rather than a value worth leaving out.
  *
  * Recurses for the media attached alongside a quote and for the quoted post's own embeds, both of
  * which the service normalizes under the `record` variant. Pass `nested: true` when rendering into
@@ -177,7 +209,14 @@ export function renderEmbedLines(embed: unknown, nested = false): string[] {
       const label = kind
         ? (QUOTED_RECORD_LABELS[kind] ?? QUOTED_RECORD_LABELS.unknown)
         : 'Quoted post';
-      const lines = [`💬 ${label}: \`${e.uri}\``];
+      /**
+       * The quoted record's address and revision on one line, the same pair `renderPostLines`
+       * emits for the post doing the quoting — a quote is a post-shaped block, and it was the one
+       * such block that named no CID. Absent on the union members that carry no record of their
+       * own, where an empty pair would read as a CID that failed to load.
+       */
+      const cid = typeof e.cid === 'string' ? e.cid : '';
+      const lines = [`💬 ${label}: \`${e.uri}\`${cid ? ` | CID: \`${cid}\`` : ''}`];
       if (e.authorHandle) lines.push(...detail([`by @${e.authorHandle}`]));
       if (typeof e.text === 'string') {
         lines.push(...detail(quoteUserText(e.text)));
@@ -250,7 +289,6 @@ export function renderPostLines(post: RenderablePost, headingPrefix = ''): strin
   if (post.replyToUri) lines.push(`↩ Reply to \`${post.replyToUri}\``);
   if (post.replyRootUri) lines.push(`🧵 Thread root: \`${post.replyRootUri}\``);
   if (post.author.avatar) lines.push(`**Avatar:** ${post.author.avatar}`);
-  if (post.labels?.length)
-    lines.push(`**Labels:** ${post.labels.map((l) => inlineUserText(l.val)).join(', ')}`);
+  if (post.labels?.length) lines.push(`**Labels:** ${renderLabelList(post.labels)}`);
   return lines;
 }
