@@ -1,6 +1,6 @@
 # bluesky-mcp-server - Directory Structure
 
-Generated on: 2026-07-31 16:54:47
+Generated on: 2026-07-31 17:47:03
 
 ```text
 bluesky-mcp-server/
@@ -136,14 +136,15 @@ bluesky-mcp-server/
 │   │   │   └── definitions/
 │   │   │       └── bsky-profile.resource.ts
 │   │   └── tools/
-│   │       └── definitions/
-│   │           ├── bsky-get-author-feed.tool.ts
-│   │           ├── bsky-get-follows.tool.ts
-│   │           ├── bsky-get-post-thread.tool.ts
-│   │           ├── bsky-get-profile.tool.ts
-│   │           ├── bsky-get-trending.tool.ts
-│   │           ├── bsky-search-actors.tool.ts
-│   │           └── bsky-search-posts.tool.ts
+│   │       ├── definitions/
+│   │       │   ├── bsky-get-author-feed.tool.ts
+│   │       │   ├── bsky-get-follows.tool.ts
+│   │       │   ├── bsky-get-post-thread.tool.ts
+│   │       │   ├── bsky-get-profile.tool.ts
+│   │       │   ├── bsky-get-trending.tool.ts
+│   │       │   ├── bsky-search-actors.tool.ts
+│   │       │   └── bsky-search-posts.tool.ts
+│   │       └── post-format.ts
 │   ├── services/
 │   │   └── bluesky/
 │   │       ├── at-syntax.ts

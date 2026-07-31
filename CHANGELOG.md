@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.7](changelog/0.1.x/0.1.7.md) — 2026-07-31
+
+Embed normalization fixes for recordWithMedia, gallery, and unavailable quoted records; reposts marked in the author feed; trending actors surfaced; thread format() no longer double-renders; a shared post renderer replaces three drifted copies; outbound User-Agent now derives from the package manifest
+
 ## [0.1.6](changelog/0.1.x/0.1.6.md) — 2026-07-31
 
 Local validation for blank/malformed tool inputs (#4) — new at-syntax.ts patterns catch bad handles, AT-URIs, and dates before they hit the AppView; framework upgrade to mcp-ts-core ^0.11.0, typescript ^7.0.2, Socket security scanner
