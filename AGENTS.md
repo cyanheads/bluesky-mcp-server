@@ -182,14 +182,16 @@ src/
       bluesky-service.ts                # AT Protocol AppView HTTP client (retry, timeout, User-Agent)
       types.ts                          # Domain types: Post, Actor, Thread, Trend, Embed
   mcp-server/
-    tools/definitions/
-      bsky-search-posts.tool.ts         # Full-text post search with filters
-      bsky-get-profile.tool.ts          # Actor profile lookup by handle or DID
-      bsky-get-author-feed.tool.ts      # User's recent posts (filtered by type)
-      bsky-get-post-thread.tool.ts      # Full conversation thread by AT-URI
-      bsky-search-actors.tool.ts        # Actor discovery by name/handle fragment
-      bsky-get-follows.tool.ts          # Social graph edges (followers/following)
-      bsky-get-trending.tool.ts         # Real-time trending topics
+    tools/
+      post-format.ts                    # Shared markdown renderer for a post — used by every format() that emits posts
+      definitions/
+        bsky-search-posts.tool.ts       # Full-text post search with filters
+        bsky-get-profile.tool.ts        # Actor profile lookup by handle or DID
+        bsky-get-author-feed.tool.ts    # User's own posts + their reposts (filtered by type)
+        bsky-get-post-thread.tool.ts    # Full conversation thread by AT-URI
+        bsky-search-actors.tool.ts      # Actor discovery by name/handle fragment
+        bsky-get-follows.tool.ts        # Social graph edges (followers/following)
+        bsky-get-trending.tool.ts       # Real-time trending topics
     resources/definitions/
       bsky-profile.resource.ts          # bsky://profile/{actor} — actor profile by handle or DID
 ```

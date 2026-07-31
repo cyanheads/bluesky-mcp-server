@@ -39,7 +39,7 @@ Seven tools for read-only access to the public Bluesky/AT Protocol AppView — n
 | `bsky_get_post_thread` | Fetch the full conversation for a post by AT-URI — parent chain upward and reply tree downward |
 | `bsky_search_actors` | Find Bluesky accounts by name or handle fragment |
 | `bsky_get_follows` | Paginated social graph edges — who a user follows or who follows them |
-| `bsky_get_trending` | Real-time trending topics on Bluesky with post count, category, and status |
+| `bsky_get_trending` | Real-time trending topics on Bluesky with post count, category, status, and the accounts driving each topic |
 
 ### `bsky_search_posts`
 
@@ -50,7 +50,8 @@ Full-text search across public Bluesky posts.
 - Returns posts with text, author, engagement counts (likes/reposts/replies/quotes), embeds, AT-URIs, and timestamps
 - `hitsTotal` when available — total matching posts, not just the current page
 - Pagination via opaque cursor; up to 100 results per call
-- Embeds normalized into a flat union: `images`, `external` (link cards), `record` (quoted posts), `video`, `unknown`
+- Embeds normalized into a flat union: `images` (also covers `app.bsky.embed.gallery`), `external` (link cards), `record` (quoted posts, carrying any attached `media`), `video`, `unknown`
+- A quote that cannot be read — deleted, blocked, detached — or that points at a feed generator, list, starter pack, or labeler rather than a post carries `recordKind` naming the case, instead of arriving as an empty quote
 - Moderation labels surfaced as-is — not filtered
 
 ---
@@ -66,9 +67,10 @@ Fetch a Bluesky actor's public profile by handle or DID.
 
 ### `bsky_get_author_feed`
 
-A user's recent posts ordered newest-first.
+A user's recent feed ordered newest-first — their own posts and their reposts.
 
-- Filter by post type: `posts_with_replies`, `posts_no_replies`, `posts_with_media`, or `posts_and_author_threads`
+- Filter by post type: `posts_with_replies`, `posts_no_replies` (excludes replies), `posts_with_media`, or `posts_and_author_threads`. None of them exclude reposts — the AppView has no repost filter
+- Reposts carry `repostedBy` and `repostedAt`; `author` always names whoever wrote the post
 - Returns posts with full text, engagement counts, embeds, and AT-URIs for thread drilling
 - Pagination via cursor
 
@@ -100,6 +102,7 @@ Fetch social graph edges for an account.
 Fetch real-time trending topics on Bluesky.
 
 - Returns topics with display name, post count, category (politics, sports, pop-culture, etc.), status (hot/rising), and start time
+- Each topic carries the representative accounts driving it, so "who is talking about this" costs no follow-up search
 - No cursor — returns the current snapshot up to `limit`
 - Uses `app.bsky.unspecced.getTrends` — Bluesky may change this endpoint without notice
 
@@ -133,7 +136,8 @@ Bluesky-specific:
 Agent-friendly output:
 
 - AT-URIs on every post and resource — chain `bsky_search_posts` → `bsky_get_post_thread` without extra steps
-- Discriminated embed union (`type: "images" | "external" | "record" | "video" | "unknown"`) — branch on data, not `$type` strings
+- Discriminated embed union (`type: "images" | "external" | "record" | "video" | "unknown"`) — branch on data, not `$type` strings; an unmapped lexicon type arrives as `unknown` with its raw `$type` rather than vanishing
+- Unreadable and non-post quotes discriminated by `recordKind` — an agent can tell a deleted or blocked quote from one whose text was simply not returned
 - `hitsTotal` on search results — communicate result scale to users without extra round trips
 - Truncation signals (`truncated: true`) on thread nodes — agents know where the tree ends and why
 
