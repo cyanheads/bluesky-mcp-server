@@ -1,9 +1,12 @@
 /**
- * @fileoverview Fetch real-time trending topics on Bluesky.
+ * @fileoverview Fetch real-time trending topics on Bluesky. Topic names and the display
+ * names of the accounts driving them render inside lines this file writes, so both go
+ * through the shared inline framing.
  * @module mcp-server/tools/definitions/bsky-get-trending
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { actorLabel, inlineUserText } from '@/mcp-server/tools/post-format.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
 const TrendSchema = z
@@ -102,7 +105,7 @@ export const bskyGetTrending = tool('bsky_get_trending', {
       return [{ type: 'text', text: 'No trending topics available at this time.' }];
     }
     const lines = result.trends.map((t, i) => {
-      const parts = [`${i + 1}. **${t.displayName}**`];
+      const parts = [`${i + 1}. **${inlineUserText(t.displayName)}**`];
       const meta: string[] = [];
       if (t.postCount != null) meta.push(`${t.postCount.toLocaleString()} posts`);
       if (t.category) meta.push(t.category);
@@ -114,8 +117,7 @@ export const bskyGetTrending = tool('bsky_get_trending', {
       if (t.actors?.length) {
         parts.push('   Voices:');
         for (const a of t.actors) {
-          const name = a.displayName ? `${a.displayName} (@${a.handle})` : `@${a.handle}`;
-          parts.push(`     - ${name} \`${a.did}\``);
+          parts.push(`     - ${actorLabel(a)} \`${a.did}\``);
         }
       }
       return parts.join('\n');

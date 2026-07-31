@@ -183,7 +183,7 @@ src/
       types.ts                          # Domain types: Post, Actor, Thread, Trend, Embed
   mcp-server/
     tools/
-      post-format.ts                    # Shared markdown renderer for a post — used by every format() that emits posts
+      post-format.ts                    # Shared post renderer + the quoted/inline framings every format() puts around Bluesky-authored text
       definitions/
         bsky-search-posts.tool.ts       # Full-text post search with filters
         bsky-get-profile.tool.ts        # Actor profile lookup by handle or DID

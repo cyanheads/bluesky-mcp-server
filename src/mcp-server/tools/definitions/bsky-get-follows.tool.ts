@@ -1,10 +1,14 @@
 /**
  * @fileoverview Fetch social graph edges for a Bluesky account — followers or following.
+ * Each bio is rendered through the shared blockquote framing, since it is text the
+ * account holder wrote and can carry its own markdown structure; display names and label
+ * values, which render inside lines this file writes, go through the inline framing.
  * @module mcp-server/tools/definitions/bsky-get-follows
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { actorLabel, inlineUserText, quoteUserText } from '@/mcp-server/tools/post-format.js';
 import { AT_IDENTIFIER_MESSAGE, AT_IDENTIFIER_REGEX } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 import type { GraphResult } from '@/services/bluesky/types.js';
@@ -166,10 +170,7 @@ export const bskyGetFollows = tool('bsky_get_follows', {
   },
 
   format: (result) => {
-    const subjectLabel = result.subject.displayName
-      ? `${result.subject.displayName} (@${result.subject.handle})`
-      : `@${result.subject.handle}`;
-    const header: string[] = [`## Subject: ${subjectLabel}`];
+    const header: string[] = [`## Subject: ${actorLabel(result.subject)}`];
     header.push(`**DID:** \`${result.subject.did}\``);
     if (result.subject.followersCount != null)
       header.push(`Followers: ${result.subject.followersCount.toLocaleString()}`);
@@ -183,11 +184,12 @@ export const bskyGetFollows = tool('bsky_get_follows', {
     const actorLines = result.actors.map((a) => {
       const parts = [`### @${a.handle}`];
       parts.push(`**DID:** \`${a.did}\``);
-      if (a.displayName) parts.push(`**Name:** ${a.displayName}`);
-      if (a.description) parts.push(a.description);
+      if (a.displayName) parts.push(`**Name:** ${inlineUserText(a.displayName)}`);
+      if (a.description) parts.push(...quoteUserText(a.description));
       if (a.followersCount != null)
         parts.push(`**Followers:** ${a.followersCount.toLocaleString()}`);
-      if (a.labels?.length) parts.push(`**Labels:** ${a.labels.map((l) => l.val).join(', ')}`);
+      if (a.labels?.length)
+        parts.push(`**Labels:** ${a.labels.map((l) => inlineUserText(l.val)).join(', ')}`);
       if (a.avatar) parts.push(`**Avatar:** ${a.avatar}`);
       return parts.join('\n');
     });

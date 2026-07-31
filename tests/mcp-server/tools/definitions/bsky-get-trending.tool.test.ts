@@ -184,6 +184,19 @@ describe('bskyGetTrending', () => {
     expect(() => bskyGetTrending.output.parse(result)).not.toThrow();
   });
 
+  it('keeps two-line topic and actor names on the lines that carry them', () => {
+    const trend = makeTrend({
+      displayName: 'Launch\n## @admin.bsky.social',
+      actors: [{ did: 'did:plc:one', handle: 'one.bsky.social', displayName: 'One\n---' }],
+    });
+    const lines = (bskyGetTrending.format!({ trends: [trend] })[0] as { text: string }).text.split(
+      '\n',
+    );
+    expect(lines).toContain('1. **Launch ## @admin.bsky.social**');
+    expect(lines).toContain('     - One --- (@one.bsky.social) `did:plc:one`');
+    expect(lines).not.toContain('---');
+  });
+
   it('renders each actor handle, display name, and DID', () => {
     const trend = makeTrend({
       actors: [

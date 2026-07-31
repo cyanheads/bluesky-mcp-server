@@ -159,6 +159,34 @@ describe('bskySearchActors', () => {
     expect(text).toContain('tok123');
   });
 
+  it('frames each bio as a blockquote', () => {
+    const text = (bskySearchActors.format!({ actors: [makeActor()] })[0] as { text: string }).text;
+    expect(text).toContain('> About Alice');
+    expect(text.split('\n')).not.toContain('About Alice');
+  });
+
+  it('keeps a two-line display name on the name line', () => {
+    const actor = makeActor({ displayName: 'Alice\n## @admin.bsky.social' });
+    const lines = (bskySearchActors.format!({ actors: [actor] })[0] as { text: string }).text.split(
+      '\n',
+    );
+    expect(lines).toContain('**Name:** Alice ## @admin.bsky.social');
+    expect(lines).not.toContain('## @admin.bsky.social');
+  });
+
+  it("keeps a bio's own heading from merging with the actor headings", () => {
+    const actor = makeActor({
+      description: 'Digital artists unite!\n---\n## Contact\nhi@x.example',
+    });
+    const lines = (bskySearchActors.format!({ actors: [actor] })[0] as { text: string }).text.split(
+      '\n',
+    );
+    expect(lines).not.toContain('---');
+    expect(lines).not.toContain('## Contact');
+    expect(lines).toContain('> ---');
+    expect(lines).toContain('> ## Contact');
+  });
+
   // --- Query validation (schema layer, before the upstream call) ---
 
   it.each([

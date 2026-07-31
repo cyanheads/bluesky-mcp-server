@@ -1,9 +1,13 @@
 /**
- * @fileoverview Search Bluesky accounts by name or handle fragment.
+ * @fileoverview Search Bluesky accounts by name or handle fragment. Each bio is
+ * rendered through the shared blockquote framing, since it is text the account holder
+ * wrote and can carry its own markdown structure; display names and label values,
+ * which render inside lines this file writes, go through the inline framing instead.
  * @module mcp-server/tools/definitions/bsky-search-actors
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { inlineUserText, quoteUserText } from '@/mcp-server/tools/post-format.js';
 import { NON_BLANK_MESSAGE, NON_BLANK_REGEX } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
@@ -117,12 +121,15 @@ export const bskySearchActors = tool('bsky_search_actors', {
     const lines = result.actors.map((a) => {
       const parts = [`## @${a.handle}`];
       parts.push(`**DID:** \`${a.did}\``);
-      if (a.displayName) parts.push(`**Name:** ${a.displayName}`);
-      if (a.description) parts.push(a.description);
+      if (a.displayName) parts.push(`**Name:** ${inlineUserText(a.displayName)}`);
+      if (a.description) parts.push(...quoteUserText(a.description));
       if (a.followersCount != null)
         parts.push(`**Followers:** ${a.followersCount.toLocaleString()}`);
       if (a.labels?.length) {
-        const labelParts = a.labels.map((l) => (l.src ? `${l.val} (src:${l.src})` : l.val));
+        const labelParts = a.labels.map((l) => {
+          const val = inlineUserText(l.val);
+          return l.src ? `${val} (src:${l.src})` : val;
+        });
         parts.push(`**Labels:** ${labelParts.join(', ')}`);
       }
       if (a.avatar) parts.push(`**Avatar:** ${a.avatar}`);
