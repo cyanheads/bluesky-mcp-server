@@ -46,9 +46,11 @@ Seven tools for read-only access to the public Bluesky/AT Protocol AppView — n
 Full-text search across public Bluesky posts.
 
 - Filters: author handle, language (BCP-47), hashtag, date range (`since`/`until`), and sort order (`top` or `latest`)
-- Identifier and date inputs are pattern-validated before the upstream call — a malformed handle, DID, AT-URI, or date fails locally with the expected shape instead of a generic upstream 400
+- Identifier, language, and date inputs are pattern-validated before the upstream call — a malformed handle, DID, AT-URI, language tag, or date fails locally with the expected shape instead of a generic upstream 400. Language is checked for BCP-47 *shape* only, matching Bluesky itself: a well-formed tag naming no indexed language returns unfiltered results rather than an error, and the field description says so
+- When Bluesky rejects a parameter anyway, its own explanation is surfaced as the error reason and recovery hint instead of a bare `Status: 400`
 - Returns posts with text, author, engagement counts (likes/reposts/replies/quotes), embeds, AT-URIs, and timestamps
-- `hitsTotal` when available — total matching posts, not just the current page
+- `hitsTotal` when available, reported as the bound it is — Bluesky caps the count at 10,000, so exactly 10,000 means "at least 10,000" and both the field description and the rendered header say so
+- Truncation is disclosed (`truncated`, `shown`, `cap`, and guidance) in both `structuredContent` and the `content[]` trailer when more posts match than came back. A returned cursor alone does not trigger it — Bluesky sends one on every non-empty response, exhausted or not, so `hitsTotal` is what settles whether the page was cut short
 - Pagination via opaque cursor; up to 100 results per call
 - Embeds normalized into a flat union: `images` (also covers `app.bsky.embed.gallery`), `external` (link cards), `record` (quoted posts, carrying any attached `media`), `video`, `unknown`
 - A quote that cannot be read — deleted, blocked, detached — or that points at a feed generator, list, starter pack, or labeler rather than a post carries `recordKind` naming the case, instead of arriving as an empty quote
@@ -61,6 +63,7 @@ Full-text search across public Bluesky posts.
 Fetch a Bluesky actor's public profile by handle or DID.
 
 - Returns displayName, handle, DID, description, follower/following/post counts, avatar URL, moderation labels, and pinned post AT-URI
+- The bio is rendered as a blockquote — it is text the account holder wrote, and can carry markdown of its own. The display name renders in the heading with its line breaks folded to spaces, so it cannot open a heading of its own either
 - The resolution step for handle↔DID — use before tools that require a DID or AT-URI when you only have a handle
 
 ---
@@ -141,7 +144,8 @@ Agent-friendly output:
 - AT-URIs on every post and resource — chain `bsky_search_posts` → `bsky_get_post_thread` without extra steps
 - Discriminated embed union (`type: "images" | "external" | "record" | "video" | "unknown"`) — branch on data, not `$type` strings; an unmapped lexicon type arrives as `unknown` with its raw `$type` rather than vanishing
 - Unreadable and non-post quotes discriminated by `recordKind` — an agent can tell a deleted or blocked quote from one whose text was simply not returned
-- `hitsTotal` on search results — communicate result scale to users without extra round trips
+- Text Bluesky users wrote — post bodies, quoted-post bodies, profile bios, image alt text, and link-card titles and descriptions — is rendered as a markdown blockquote, every line prefixed with `>` and blank lines kept as a bare `>`. A post carrying its own `###` heading, `---` rule, or fenced code block stays inside the quote instead of merging with the server's own section structure, so third-party content never reaches a model in the same channel as the server's labels. Values that render inside a line rather than as a block — display names, topic names, moderation label values — have their line breaks folded to spaces for the same reason. `structuredContent` carries every string unchanged
+- `hitsTotal` on search results, framed as a lower bound at Bluesky's 10,000 cap — communicate result scale without reporting a ceiling as a measurement
 - Truncation signals on thread nodes (`truncated`, `unreturnedReplies`, `truncationReason`) plus a thread-wide total, stated as a bound rather than a cause — agents can tell how much of a conversation may be missing, which part another request can still reach, and how much of the gap the thread author explains
 
 ## Getting started
