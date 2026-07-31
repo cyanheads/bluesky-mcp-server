@@ -303,6 +303,158 @@ describe('BlueskyService — embed normalization', () => {
     });
   });
 
+  it("carries the quoted post's own embeds so a quote of an image post is not text-only", async () => {
+    const embed = await normalize({
+      $type: 'app.bsky.embed.record#view',
+      record: {
+        $type: 'app.bsky.embed.record#viewRecord',
+        uri: 'at://did:plc:quoted/app.bsky.feed.post/q1',
+        cid: 'bafyrquoted',
+        author: { did: 'did:plc:quoted', handle: 'quoted.bsky.social' },
+        value: { text: 'AAAAAAAA' },
+        embeds: [
+          {
+            $type: 'app.bsky.embed.images#view',
+            images: [{ fullsize: 'https://cdn/quoted.jpg', alt: 'the image being quoted' }],
+          },
+        ],
+      },
+    });
+
+    expect(embed).toMatchObject({
+      type: 'record',
+      embeds: [
+        {
+          type: 'images',
+          images: [{ url: 'https://cdn/quoted.jpg', alt: 'the image being quoted' }],
+        },
+      ],
+    });
+  });
+
+  it('omits embeds when the quoted post carries none', async () => {
+    const embed = await normalize({
+      $type: 'app.bsky.embed.record#view',
+      record: {
+        $type: 'app.bsky.embed.record#viewRecord',
+        uri: 'at://did:plc:quoted/app.bsky.feed.post/q1',
+        cid: 'bafyrquoted',
+        author: { did: 'did:plc:quoted', handle: 'quoted.bsky.social' },
+        value: { text: 'text only' },
+        embeds: [],
+      },
+    });
+
+    expect(embed).not.toHaveProperty('embeds');
+  });
+
+  /**
+   * `viewRecord.embeds` is a union that readmits `record#view`, so the lexicon bounds nothing. The
+   * AppView fills the field for the post being quoted and stops — but the mapping carries its own
+   * ceiling rather than trusting that, since an upstream that hydrated deeper would recurse without
+   * one.
+   */
+  /** A quote chain far deeper than anything the AppView sends. */
+  const quoteChain = (levels: number): Record<string, unknown> => ({
+    $type: 'app.bsky.embed.record#viewRecord',
+    uri: `at://did:plc:q/app.bsky.feed.post/level${levels}`,
+    cid: `bafyr-level${levels}`,
+    author: { did: 'did:plc:q', handle: 'q.bsky.social' },
+    value: { text: `level ${levels}` },
+    ...(levels > 0
+      ? { embeds: [{ $type: 'app.bsky.embed.record#view', record: quoteChain(levels - 1) }] }
+      : {}),
+  });
+
+  it('follows a quote of a quote and stops before the recursion can run away', async () => {
+    const embed = (await normalize({
+      $type: 'app.bsky.embed.record#view',
+      record: quoteChain(8),
+    })) as Record<string, unknown>;
+
+    let depth = 0;
+    let cursor: Record<string, unknown> | undefined = embed;
+    while (cursor) {
+      depth++;
+      cursor = (cursor.embeds as Record<string, unknown>[] | undefined)?.[0];
+    }
+    expect(embed.text).toBe('level 8');
+    expect(depth).toBe(4);
+  });
+
+  /**
+   * Stopping is fine; stopping silently is the defect this server spent four releases removing.
+   * The quote at the bound says how much it left behind, so a quote with attachments is never
+   * presented as a quote without.
+   */
+  it('counts what the nesting bound left behind rather than dropping it silently', async () => {
+    const embed = (await normalize({
+      $type: 'app.bsky.embed.record#view',
+      record: quoteChain(8),
+    })) as Record<string, unknown>;
+
+    const quoted = (e: Record<string, unknown>): Record<string, unknown> =>
+      (e.embeds as Record<string, unknown>[])[0] as Record<string, unknown>;
+    const atBound = quoted(quoted(quoted(embed)));
+
+    expect(atBound.text).toBe('level 5');
+    expect(atBound.embeds).toBeUndefined();
+    expect(atBound.omittedEmbeds).toBe(1);
+    /** Every level above it mapped what it carried, so none of them claims a shortfall. */
+    expect([embed, quoted(embed), quoted(quoted(embed))].map((e) => e.omittedEmbeds)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it('counts the media attached alongside a quote that sits at the bound', async () => {
+    const withMedia = {
+      $type: 'app.bsky.embed.recordWithMedia#view',
+      record: { record: quoteChain(0) },
+      media: {
+        $type: 'app.bsky.embed.images#view',
+        images: [{ fullsize: 'https://cdn/deep.jpg', alt: 'past the bound' }],
+      },
+    };
+    const carrying = (view: unknown): Record<string, unknown> => ({
+      ...quoteChain(0),
+      embeds: [view],
+    });
+    const quoting = (rec: unknown) => ({ $type: 'app.bsky.embed.record#view', record: rec });
+    const embed = (await normalize(
+      quoting(carrying(quoting(carrying(quoting(carrying(withMedia)))))),
+    )) as Record<string, unknown>;
+
+    const quoted = (e: Record<string, unknown>): Record<string, unknown> =>
+      (e.embeds as Record<string, unknown>[])[0] as Record<string, unknown>;
+    const atBound = quoted(quoted(quoted(embed)));
+
+    expect(atBound.media).toBeUndefined();
+    expect(atBound.omittedEmbeds).toBe(1);
+  });
+
+  it('leaves the marker off every quote the AppView actually sends', async () => {
+    const embed = (await normalize({
+      $type: 'app.bsky.embed.record#view',
+      record: {
+        $type: 'app.bsky.embed.record#viewRecord',
+        uri: 'at://did:plc:quoted/app.bsky.feed.post/q1',
+        cid: 'bafyrquoted',
+        author: { did: 'did:plc:quoted', handle: 'quoted.bsky.social' },
+        value: { text: 'AAAAAAAA' },
+        embeds: [
+          {
+            $type: 'app.bsky.embed.images#view',
+            images: [{ fullsize: 'https://cdn/quoted.jpg', alt: 'the image being quoted' }],
+          },
+        ],
+      },
+    })) as Record<string, unknown>;
+
+    expect(embed.omittedEmbeds).toBeUndefined();
+  });
+
   it('unwraps recordWithMedia#view to the nested quote and recurses into its media', async () => {
     const embed = await normalize({
       $type: 'app.bsky.embed.recordWithMedia#view',
@@ -840,6 +992,77 @@ describe('BlueskyService.getPostThread — thread node normalization', () => {
     expect(thread.parent?.unreturnedReplies).toBeUndefined();
     expect(thread.parent?.parent?.truncated).toBeUndefined();
   });
+
+  // --- Parent-chain cut ---
+
+  /** A parent node that is itself a reply — measured live at parentHeight 3 on a 39-post chain. */
+  const replyingParent = (rkey: string, parentUri: string) => {
+    const node = threadPostNode(rkey, 0);
+    return {
+      ...node,
+      post: {
+        ...node.post,
+        record: { ...node.post.record, reply: { parent: { uri: parentUri } } },
+      },
+    };
+  };
+
+  it('marks the topmost parent as a cut when it still replies to something absent', async () => {
+    const { thread } = await fetchThread({
+      ...threadPostNode('root1', 0),
+      replies: [],
+      parent: {
+        ...threadPostNode('p1', 0),
+        parent: replyingParent('p2', 'at://did:plc:abc/app.bsky.feed.post/ancestor9'),
+      },
+    });
+
+    expect(thread.parent?.parent?.parentChainTruncated).toBe(true);
+    expect(thread.parent?.parent?.post.replyToUri).toBe(
+      'at://did:plc:abc/app.bsky.feed.post/ancestor9',
+    );
+    /** Only the topmost node is the cut — the ones below it have a parent in the response. */
+    expect(thread.parent?.parentChainTruncated).toBeUndefined();
+    expect(thread.parentChainTruncated).toBeUndefined();
+  });
+
+  it('leaves the topmost parent unmarked when it is the conversation root', async () => {
+    const { thread } = await fetchThread({
+      ...threadPostNode('root1', 0),
+      replies: [],
+      parent: { ...threadPostNode('p1', 0), parent: threadPostNode('p2', 0) },
+    });
+
+    expect(thread.parent?.parent?.parentChainTruncated).toBeUndefined();
+  });
+
+  /**
+   * Every reply in the tree is a reply to something and carries no `parent` of its own, so the same
+   * test applied off the parent spine would mark the whole tree as cut.
+   */
+  it('never marks a reply-tree node, however it replies', async () => {
+    const { thread } = await fetchThread({
+      ...threadPostNode('root1', 1),
+      replies: [replyingParent('r1', 'at://did:plc:abc/app.bsky.feed.post/root1')],
+    });
+
+    expect(thread.replies?.[0]?.parentChainTruncated).toBeUndefined();
+  });
+
+  it('marks the target itself when a reply came back with no parent at all', async () => {
+    const { thread } = await fetchThread({
+      ...replyingParent('root1', 'at://did:plc:abc/app.bsky.feed.post/ancestor9'),
+      replies: [],
+    });
+
+    expect(thread.parentChainTruncated).toBe(true);
+  });
+
+  it('leaves a target that starts its own conversation unmarked', async () => {
+    const { thread } = await fetchThread({ ...threadPostNode('root1', 0), replies: [] });
+
+    expect(thread.parentChainTruncated).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -923,5 +1146,49 @@ describe('BlueskyService.getPostThread — threadgate normalization', () => {
     const result = await fetchGate({ record: { hiddenReplies: [] } });
 
     expect(result.threadgate).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Actor normalization
+// ---------------------------------------------------------------------------
+
+describe('BlueskyService.getProfile — actor normalization', () => {
+  let service: BlueskyService;
+
+  beforeEach(() => {
+    service = new BlueskyService();
+    mockFetch.mockReset();
+  });
+
+  const fetchProfile = (raw: unknown) => {
+    mockFetch.mockImplementation(() => fakeResponse(raw));
+    return service.getProfile('nerdynanny.com', createMockContext());
+  };
+
+  /** Both fields are on `app.bsky.actor.defs#profileViewDetailed` and both come back live. */
+  it('carries pronouns and website off profileViewDetailed', async () => {
+    const profile = await fetchProfile({
+      did: 'did:plc:rhjecqsoxsuzmwxdtc5wi6p2',
+      handle: 'nerdynanny.com',
+      pronouns: 'they/he',
+      website: 'https://nerdynanny.com',
+    });
+
+    expect(profile.pronouns).toBe('they/he');
+    expect(profile.website).toBe('https://nerdynanny.com');
+  });
+
+  it('omits both for an account that set neither', async () => {
+    const profile = await fetchProfile({ did: 'did:plc:x', handle: 'bsky.app' });
+
+    expect(profile).not.toHaveProperty('pronouns');
+    expect(profile).not.toHaveProperty('website');
+  });
+
+  it('omits an empty pronouns string rather than reporting a blank value', async () => {
+    const profile = await fetchProfile({ did: 'did:plc:x', handle: 'a.bsky.social', pronouns: '' });
+
+    expect(profile).not.toHaveProperty('pronouns');
   });
 });

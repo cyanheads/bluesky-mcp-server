@@ -42,8 +42,23 @@ export type Embed =
       cid: string;
       text?: string;
       authorHandle?: string;
+      /**
+       * The quoted post's own embeds, from `app.bsky.embed.record#viewRecord.embeds`. A quote of an
+       * image post carries the images here; without them such a quote reads as a bare line of text.
+       * Absent for a quoted record that carries none, and for a quote nested inside another quote —
+       * the AppView hydrates this field one level down and no further.
+       */
+      embeds?: Embed[];
       /** Media attached alongside the quote on a recordWithMedia embed. */
       media?: Embed;
+      /**
+       * How many attachments on this quote were left unmapped because it sits at the deepest level
+       * of quote nesting this server follows. Absent — and, on everything the AppView has been
+       * observed to send, always absent — when nothing was left behind. It exists so a quote that
+       * had attachments is never presented as a quote that had none: fetch this record's `uri` as
+       * its own post to read them.
+       */
+      omittedEmbeds?: number;
       /**
        * Absent for an ordinary quoted post. Set when the AppView returned something else in the
        * quote slot — an unreadable post or a non-post record. Those variants carry no text or author,
@@ -76,6 +91,16 @@ export interface ActorProfile {
   /** AT-URI of pinned post, if present. */
   pinnedPostUri?: string;
   postsCount?: number;
+  /**
+   * Free-form pronouns the account set on its profile. `app.bsky.actor.profile` bounds it at 20
+   * graphemes and restricts no character, so it is account-authored text like the bio.
+   */
+  pronouns?: string;
+  /**
+   * The one outbound link a profile carries in a field of its own, rather than inside the bio.
+   * `format: "uri"` in the lexicon, so it is a URL by construction.
+   */
+  website?: string;
 }
 
 /** A single post view (feed items + search results share this shape). */
@@ -125,6 +150,15 @@ export interface ThreadPost {
   /** True when the AppView returned `app.bsky.feed.defs#notFoundPost` — deleted or never existed. */
   notFound?: boolean;
   parent?: ThreadPost;
+  /**
+   * True on the topmost node of the parent chain when that node is itself a reply — it carries a
+   * `post.replyToUri` pointing at a post the response does not contain, so the chain was cut at the
+   * requested parent height rather than reaching the start of the conversation. Set on the target
+   * post itself when no parent was returned at all. Unlike a reply-tree shortfall this one is fully
+   * recoverable: `parentHeight` is honored level for level, so re-rooting a request at this node's
+   * AT-URI walks further up.
+   */
+  parentChainTruncated?: boolean;
   post: PostView;
   replies?: ThreadPost[];
   /**

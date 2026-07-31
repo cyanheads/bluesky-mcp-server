@@ -63,6 +63,8 @@ interface RawActorView {
   labels?: RawLabel[];
   pinnedPost?: { uri?: string };
   postsCount?: number;
+  pronouns?: string;
+  website?: string;
 }
 
 /** @internal Raw post record (lexicon fields). */
@@ -86,12 +88,14 @@ interface RawImageView {
 
 /**
  * @internal Raw quoted record — the `record` slot of `app.bsky.embed.record#view`. `$type` names
- * which union member arrived; only `#viewRecord` carries `author` and `value`.
+ * which union member arrived; only `#viewRecord` carries `author`, `value`, and `embeds`.
  */
 interface RawViewRecord {
   $type?: string;
   author?: RawActorView;
   cid?: string;
+  /** The quoted post's own embeds — the same `$type`-tagged views as a post's top-level `embed`. */
+  embeds?: RawEmbed[];
   uri?: string;
   value?: { text?: string };
 }
@@ -201,6 +205,8 @@ function normalizeActor(r: RawActorView): ActorProfile {
     ...(r.indexedAt ? { indexedAt: r.indexedAt } : {}),
     ...(r.createdAt ? { createdAt: r.createdAt } : {}),
     ...(r.pinnedPost?.uri ? { pinnedPostUri: r.pinnedPost.uri } : {}),
+    ...(r.pronouns ? { pronouns: r.pronouns } : {}),
+    ...(r.website ? { website: r.website } : {}),
   };
 }
 
@@ -254,12 +260,46 @@ function quotedRecordKind(type: string | undefined): QuotedRecordKind | undefine
 }
 
 /**
- * @internal Map a quoted post onto the `record` variant, optionally carrying attached media.
- * A deleted, blocked, detached, or non-post record carries `recordKind` instead of text and author —
- * those variants have no such fields, and without the discriminant they read as an empty quote.
+ * @internal How many levels of quote nesting are mapped, counting the post's own embed as level 0.
+ *
+ * The lexicon bounds nothing: `app.bsky.embed.record#viewRecord.embeds` is a union that includes
+ * `record#view` and `recordWithMedia#view`, so a quoted post may declare a quoted post forever. The
+ * AppView hydrates far less. Across 797 live posts carrying 61 quotes, an `embeds` key appeared
+ * only on the record quoted directly by the post — never on a record nested below that. Two levels
+ * therefore cover everything it sends (a quoted post's `embeds` may itself hold a
+ * `recordWithMedia#view`, whose attached media sits at level 2); the third is headroom against the
+ * AppView hydrating deeper later.
+ *
+ * Nothing past it is followed — but nothing past it vanishes either. The quote at the bound counts
+ * what it did not map into `omittedEmbeds`, so an agent reading a quote sees the difference between
+ * one that carried no attachments and one whose attachments this response does not include.
  */
-function normalizeQuote(rec: RawViewRecord | undefined, media: Embed | undefined): Embed {
+const MAX_EMBED_DEPTH = 3;
+
+/**
+ * @internal Map a quoted post onto the `record` variant, carrying its own embeds and any media
+ * attached alongside the quote. A deleted, blocked, detached, or non-post record carries
+ * `recordKind` instead of text and author — those variants have no such fields, and without the
+ * discriminant they read as an empty quote.
+ *
+ * This is the only place the nesting depth advances, so it is where the bound is applied and where
+ * the count of what the bound cost is recorded.
+ */
+function normalizeQuote(
+  rec: RawViewRecord | undefined,
+  rawMedia: RawEmbed | undefined,
+  depth: number,
+): Embed {
   const kind = quotedRecordKind(rec?.$type);
+  const attachments = rec?.embeds ?? [];
+  const bounded = depth >= MAX_EMBED_DEPTH;
+  const embeds = bounded
+    ? []
+    : attachments
+        .map((e) => normalizeEmbed(e, depth + 1))
+        .filter((e): e is Embed => e !== undefined);
+  const media = bounded ? undefined : normalizeEmbed(rawMedia, depth + 1);
+  const omitted = attachments.length - embeds.length + (rawMedia && !media ? 1 : 0);
   return {
     type: 'record',
     uri: rec?.uri ?? '',
@@ -267,11 +307,13 @@ function normalizeQuote(rec: RawViewRecord | undefined, media: Embed | undefined
     ...(kind ? { recordKind: kind } : {}),
     ...(rec?.value?.text ? { text: rec.value.text } : {}),
     ...(rec?.author?.handle ? { authorHandle: rec.author.handle } : {}),
+    ...(embeds.length ? { embeds } : {}),
     ...(media ? { media } : {}),
+    ...(omitted > 0 ? { omittedEmbeds: omitted } : {}),
   };
 }
 
-function normalizeEmbed(r: RawEmbed | undefined): Embed | undefined {
+function normalizeEmbed(r: RawEmbed | undefined, depth = 0): Embed | undefined {
   if (!r) return;
   const type = r.$type ?? '';
   switch (embedKind(type)) {
@@ -290,9 +332,9 @@ function normalizeEmbed(r: RawEmbed | undefined): Embed | undefined {
       };
     }
     case 'record':
-      return normalizeQuote(r.record, undefined);
+      return normalizeQuote(r.record, undefined, depth);
     case 'recordWithMedia':
-      return normalizeQuote(r.record?.record, normalizeEmbed(r.media));
+      return normalizeQuote(r.record?.record, r.media, depth);
     case 'video':
       return {
         type: 'video',
@@ -368,11 +410,17 @@ function stubPost(uri: string | undefined, authorDid?: string): PostView {
 }
 
 /**
+ * @internal Where a node sits in the response, which decides which of the two shortfalls apply to
+ * it. `target` is the requested post, `parent` an ancestor above it, `reply` a descendant below.
+ */
+type ThreadNodePosition = 'target' | 'parent' | 'reply';
+
+/**
  * @internal Normalize one thread node.
  *
- * The shortfall is derived, not reported: the AppView emits no "more replies" marker, so a node's
- * own `replyCount` is compared against the replies it actually returned. The `replies` key tells
- * the two cases apart — the AppView omits it entirely at the deepest level it will return
+ * The reply shortfall is derived, not reported: the AppView emits no "more replies" marker, so a
+ * node's own `replyCount` is compared against the replies it actually returned. The `replies` key
+ * tells the two cases apart — the AppView omits it entirely at the deepest level it will return
  * (`depth`), and emits it (possibly short, possibly empty) at every level above.
  *
  * A shortfall under a present `replies` key is reported as `unavailable` rather than blamed on the
@@ -384,11 +432,17 @@ function stubPost(uri: string | undefined, authorDid?: string): PostView {
  * answers `hasOtherReplies: false` for them: nothing is being held back, the counter simply still
  * includes replies that have left the index.
  *
- * `inParentChain` suppresses the comparison while walking upward: every parent has replies the
+ * A `parent` position suppresses that comparison while walking upward: every parent has replies the
  * request never asked for, so flagging them would report a shortfall on every parent of every
  * thread. Parent nodes carry no `replies` key of their own, so nothing below them is skipped.
+ *
+ * The parent chain has its own shortfall, and the AppView gives no marker for that one either: it
+ * stops the chain at the requested `parentHeight` and the topmost node it returns looks exactly
+ * like a conversation root. A node on the parent spine that carries a `replyToUri` and no `parent`
+ * of its own is therefore a cut, not a root. The test is confined to the spine — every reply-tree
+ * node also has a `replyToUri` and no `parent`, and none of them is a cut.
  */
-function normalizeThread(node: RawThreadNode, inParentChain = false): ThreadPost {
+function normalizeThread(node: RawThreadNode, position: ThreadNodePosition = 'target'): ThreadPost {
   const typeStr = node.$type ?? '';
   if (typeStr === BLOCKED_POST_TYPE) {
     return { post: stubPost(node.uri, node.author?.did), blocked: true };
@@ -398,17 +452,20 @@ function normalizeThread(node: RawThreadNode, inParentChain = false): ThreadPost
   }
 
   const result: ThreadPost = { post: normalizePost(node.post) };
-  if (node.parent) result.parent = normalizeThread(node.parent, true);
-  // Wrapped rather than passed by reference: `map` would hand the index to `inParentChain`.
-  if (node.replies?.length) result.replies = node.replies.map((r) => normalizeThread(r));
+  if (node.parent) result.parent = normalizeThread(node.parent, 'parent');
+  // Wrapped rather than passed by reference: `map` would hand the index to `position`.
+  if (node.replies?.length) result.replies = node.replies.map((r) => normalizeThread(r, 'reply'));
 
-  if (!inParentChain) {
+  if (position !== 'parent') {
     const unreturned = (node.post.replyCount ?? 0) - (node.replies?.length ?? 0);
     if (unreturned > 0) {
       result.truncated = true;
       result.truncationReason = node.replies ? 'unavailable' : 'depth';
       result.unreturnedReplies = unreturned;
     }
+  }
+  if (position !== 'reply' && !result.parent && result.post.replyToUri) {
+    result.parentChainTruncated = true;
   }
   return result;
 }
