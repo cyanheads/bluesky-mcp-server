@@ -231,11 +231,17 @@ const GATE_AUDIENCE: Record<ThreadGateRule, string> = {
   unknown: 'an audience this server does not recognize',
 };
 
-/** @internal Plain-language rendering of who a threadgate lets reply. */
+/**
+ * @internal Plain-language rendering of who a threadgate lets reply. Each rule carries its own
+ * `allow` value beside the gloss: the gloss alone reaches a client reading `content[]` with no way
+ * back to the machine value `structuredContent` carries, and two of the five glosses do not contain
+ * their rule as a word at all.
+ */
 function gateAudience(gate: ThreadGateView): string {
   if (!gate.allow) return 'Replies are open to anyone';
   if (gate.allow.length === 0) return 'Replies are turned off';
-  return `Replies are limited to ${gate.allow.map((r) => GATE_AUDIENCE[r]).join(', ')}`;
+  const rules = gate.allow.map((r) => `${GATE_AUDIENCE[r]} (\`${r}\`)`).join(', ');
+  return `Replies are limited to ${rules}`;
 }
 
 /**

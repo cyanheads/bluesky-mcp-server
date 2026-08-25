@@ -3,6 +3,7 @@
  * @module tests/mcp-server/tools/definitions/bsky-get-post-thread.tool.test
  */
 
+import type { Context } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -40,7 +41,13 @@ const makeThread = (overrides: Partial<ThreadPost> = {}): ThreadPost => ({
 // Module mock
 // ---------------------------------------------------------------------------
 
-const mockGetPostThread = vi.fn<[], Promise<PostThreadResult>>();
+const mockGetPostThread =
+  vi.fn<
+    (
+      params: { uri: string; depth?: number; parentHeight?: number },
+      ctx: Context,
+    ) => Promise<PostThreadResult>
+  >();
 
 vi.mock('@/services/bluesky/bluesky-service.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('@/services/bluesky/bluesky-service.js')>();
@@ -621,6 +628,33 @@ describe('bskyGetPostThread', () => {
 
     expect(text).toContain(expected);
     expect(text).toContain('at://did:plc:abc/app.bsky.feed.threadgate/root1');
+  });
+
+  /**
+   * The rendered gate has to name the machine value, not only its plain-language gloss: a client
+   * reading content[] alone sees "the author's followers" and cannot map it back to the
+   * `allow: ["follower"]` that structuredContent carries.
+   */
+  it.each([
+    ['follower', "the author's followers"],
+    ['following', 'accounts the author follows'],
+    ['list', 'members of a list the author chose'],
+    ['mentioned', 'accounts mentioned in the post'],
+    ['unknown', 'an audience this server does not recognize'],
+  ] as const)('names the %s rule alongside its plain-language audience', (rule, audience) => {
+    const text = (
+      bskyGetPostThread.format!({
+        thread: makeThread(),
+        threadgate: {
+          uri: 'at://did:plc:abc/app.bsky.feed.threadgate/root1',
+          allow: [rule],
+          hiddenReplies: [],
+        },
+      })[0] as { text: string }
+    ).text;
+
+    expect(text).toContain(audience);
+    expect(text).toContain(`\`${rule}\``);
   });
 
   it('lists the hidden reply AT-URIs so they can be fetched individually', () => {
