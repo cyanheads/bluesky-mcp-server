@@ -3,6 +3,7 @@
  * @module tests/mcp-server/tools/definitions/bsky-get-trending.tool.test
  */
 
+import type { Context } from '@cyanheads/mcp-ts-core';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { bskyGetTrending } from '@/mcp-server/tools/definitions/bsky-get-trending.tool.js';
@@ -28,7 +29,7 @@ const makeTrend = (overrides: Partial<TrendingTopic> = {}): TrendingTopic => ({
 // Module mock
 // ---------------------------------------------------------------------------
 
-const mockGetTrends = vi.fn<[], Promise<TrendsResult>>();
+const mockGetTrends = vi.fn<(params: { limit?: number }, ctx: Context) => Promise<TrendsResult>>();
 
 vi.mock('@/services/bluesky/bluesky-service.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('@/services/bluesky/bluesky-service.js')>();
@@ -56,9 +57,11 @@ describe('bskyGetTrending', () => {
     const result = await bskyGetTrending.handler(input, ctx);
 
     expect(result.trends).toHaveLength(1);
-    expect(result.trends[0].topic).toBe('ailaunch2025');
-    expect(result.trends[0].displayName).toBe('AI Launch 2025');
-    expect(result.trends[0].postCount).toBe(5000);
+    expect(result.trends[0]).toMatchObject({
+      topic: 'ailaunch2025',
+      displayName: 'AI Launch 2025',
+      postCount: 5000,
+    });
   });
 
   it('applies default limit=10', () => {
@@ -113,8 +116,10 @@ describe('bskyGetTrending', () => {
     const input = bskyGetTrending.input.parse({});
     const result = await bskyGetTrending.handler(input, ctx);
 
-    expect(result.trends[0].postCount).toBeUndefined();
-    expect(result.trends[0].category).toBeUndefined();
+    const [trend] = result.trends;
+    expect(trend).toBeDefined();
+    expect(trend?.postCount).toBeUndefined();
+    expect(trend?.category).toBeUndefined();
     expect(() => bskyGetTrending.output.parse(result)).not.toThrow();
   });
 
@@ -180,7 +185,7 @@ describe('bskyGetTrending', () => {
     const ctx = createMockContext();
     const result = await bskyGetTrending.handler(bskyGetTrending.input.parse({}), ctx);
 
-    expect(result.trends[0].actors).toHaveLength(2);
+    expect(result.trends[0]?.actors).toHaveLength(2);
     expect(() => bskyGetTrending.output.parse(result)).not.toThrow();
   });
 

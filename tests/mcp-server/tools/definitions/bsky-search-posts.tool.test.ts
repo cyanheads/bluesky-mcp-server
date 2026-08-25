@@ -3,12 +3,13 @@
  * @module tests/mcp-server/tools/definitions/bsky-search-posts.tool.test
  */
 
+import type { Context } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { bskySearchPosts } from '@/mcp-server/tools/definitions/bsky-search-posts.tool.js';
 import { initBlueskyService } from '@/services/bluesky/bluesky-service.js';
-import type { PostView, SearchPostsResult } from '@/services/bluesky/types.js';
+import type { PostView, QuotedRecordKind, SearchPostsResult } from '@/services/bluesky/types.js';
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -36,7 +37,23 @@ const makePost = (overrides: Partial<PostView> = {}): PostView => ({
 // Module mock — intercept service calls
 // ---------------------------------------------------------------------------
 
-const mockSearchPosts = vi.fn<[], Promise<SearchPostsResult>>();
+const mockSearchPosts =
+  vi.fn<
+    (
+      params: {
+        q: string;
+        author?: string;
+        lang?: string;
+        tag?: string;
+        since?: string;
+        until?: string;
+        sort?: 'top' | 'latest';
+        limit?: number;
+        cursor?: string;
+      },
+      ctx: Context,
+    ) => Promise<SearchPostsResult>
+  >();
 
 vi.mock('@/services/bluesky/bluesky-service.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('@/services/bluesky/bluesky-service.js')>();
@@ -60,20 +77,19 @@ describe('bskySearchPosts', () => {
     const post = makePost();
     mockSearchPosts.mockResolvedValue({ posts: [post] });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskySearchPosts.errors });
     const input = bskySearchPosts.input.parse({ query: 'bluesky' });
     const result = await bskySearchPosts.handler(input, ctx);
 
     expect(result.posts).toHaveLength(1);
-    expect(result.posts[0].uri).toBe(post.uri);
-    expect(result.posts[0].text).toBe('Hello Bluesky');
+    expect(result.posts[0]).toMatchObject({ uri: post.uri, text: 'Hello Bluesky' });
     expect(result.cursor).toBeUndefined();
   });
 
   it('surfaces hitsTotal on the output without routing it through an undeclared enrichment key', async () => {
     mockSearchPosts.mockResolvedValue({ posts: [makePost()], hitsTotal: 1234 });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskySearchPosts.errors });
     const input = bskySearchPosts.input.parse({ query: 'test' });
     const result = await bskySearchPosts.handler(input, ctx);
 
@@ -90,7 +106,7 @@ describe('bskySearchPosts', () => {
     const nextCursor = 'opaque-cursor-abc';
     mockSearchPosts.mockResolvedValue({ posts: [makePost()], cursor: nextCursor });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskySearchPosts.errors });
     const input = bskySearchPosts.input.parse({ query: 'test', cursor: 'prev-cursor' });
     const result = await bskySearchPosts.handler(input, ctx);
 
@@ -100,7 +116,7 @@ describe('bskySearchPosts', () => {
   it('discloses truncation when a cursor returns but no hitsTotal', async () => {
     mockSearchPosts.mockResolvedValue({ posts: [makePost()], cursor: 'more-abc' });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskySearchPosts.errors });
     const input = bskySearchPosts.input.parse({ query: 'test', limit: 1 });
     await bskySearchPosts.handler(input, ctx);
 
@@ -121,7 +137,7 @@ describe('bskySearchPosts', () => {
       hitsTotal: 21,
     });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskySearchPosts.errors });
     const input = bskySearchPosts.input.parse({ query: 'quokka', limit: 2 });
     await bskySearchPosts.handler(input, ctx);
 
@@ -144,7 +160,7 @@ describe('bskySearchPosts', () => {
       hitsTotal: 3,
     });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskySearchPosts.errors });
     const input = bskySearchPosts.input.parse({ query: 'cyanheads', limit: 100 });
     await bskySearchPosts.handler(input, ctx);
 
@@ -156,7 +172,7 @@ describe('bskySearchPosts', () => {
   it('discloses truncation when a cursor returns and hitsTotal is absent', async () => {
     mockSearchPosts.mockResolvedValue({ posts: [makePost()], cursor: 'more-abc' });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskySearchPosts.errors });
     const input = bskySearchPosts.input.parse({ query: 'quokka', limit: 1 });
     await bskySearchPosts.handler(input, ctx);
 
@@ -166,7 +182,7 @@ describe('bskySearchPosts', () => {
   it('does not disclose truncation when no cursor returns', async () => {
     mockSearchPosts.mockResolvedValue({ posts: [makePost()], hitsTotal: 1 });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskySearchPosts.errors });
     const input = bskySearchPosts.input.parse({ query: 'test' });
     await bskySearchPosts.handler(input, ctx);
 
@@ -184,7 +200,7 @@ describe('bskySearchPosts', () => {
   it('returns empty posts array when no results', async () => {
     mockSearchPosts.mockResolvedValue({ posts: [] });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskySearchPosts.errors });
     const input = bskySearchPosts.input.parse({ query: 'xyznotfound999' });
     const result = await bskySearchPosts.handler(input, ctx);
 
@@ -192,33 +208,24 @@ describe('bskySearchPosts', () => {
     expect(result.hitsTotal).toBeUndefined();
   });
 
-  it('calls ctx.enrich.notice on empty results', async () => {
+  it('enriches an empty result with a notice naming the query', async () => {
     mockSearchPosts.mockResolvedValue({ posts: [] });
 
-    const ctx = createMockContext();
-    const noticeSpy = vi.spyOn(
-      ctx.enrich as unknown as { notice: (msg: string) => void },
-      'notice',
-    );
+    const ctx = createMockContext({ errors: bskySearchPosts.errors });
     const input = bskySearchPosts.input.parse({ query: 'xyznotfound999' });
     await bskySearchPosts.handler(input, ctx);
 
-    expect(noticeSpy).toHaveBeenCalledOnce();
-    expect(noticeSpy.mock.calls[0][0]).toContain('xyznotfound999');
+    expect(getEnrichment(ctx).notice).toContain('xyznotfound999');
   });
 
-  it('does not call ctx.enrich.notice when results are returned', async () => {
+  it('enriches no notice when results are returned', async () => {
     mockSearchPosts.mockResolvedValue({ posts: [makePost()] });
 
-    const ctx = createMockContext();
-    const noticeSpy = vi.spyOn(
-      ctx.enrich as unknown as { notice: (msg: string) => void },
-      'notice',
-    );
+    const ctx = createMockContext({ errors: bskySearchPosts.errors });
     const input = bskySearchPosts.input.parse({ query: 'bluesky' });
     await bskySearchPosts.handler(input, ctx);
 
-    expect(noticeSpy).not.toHaveBeenCalled();
+    expect(getEnrichment(ctx)).not.toHaveProperty('notice');
   });
 
   // --- Sparse upstream payload ---
@@ -232,13 +239,15 @@ describe('bskySearchPosts', () => {
     };
     mockSearchPosts.mockResolvedValue({ posts: [sparsePost] });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskySearchPosts.errors });
     const input = bskySearchPosts.input.parse({ query: 'sparse' });
     const result = await bskySearchPosts.handler(input, ctx);
 
-    expect(result.posts[0].likeCount).toBeUndefined();
-    expect(result.posts[0].replyCount).toBeUndefined();
-    expect(result.posts[0].embed).toBeUndefined();
+    const [parsedPost] = result.posts;
+    expect(parsedPost).toBeDefined();
+    expect(parsedPost?.likeCount).toBeUndefined();
+    expect(parsedPost?.replyCount).toBeUndefined();
+    expect(parsedPost?.embed).toBeUndefined();
     // Output must still validate against the output schema
     expect(() => bskySearchPosts.output.parse(result)).not.toThrow();
   });
@@ -377,7 +386,7 @@ describe('bskySearchPosts', () => {
     expect(text).toContain('attached image');
   });
 
-  it.each([
+  it.each<[QuotedRecordKind, string]>([
     ['notFound', 'deleted or never existed'],
     ['blocked', 'hidden by a block'],
     ['detached', 'detached by its author'],
@@ -401,7 +410,7 @@ describe('bskySearchPosts', () => {
     },
   );
 
-  it.each([
+  it.each<[QuotedRecordKind, string, string]>([
     ['generator', 'app.bsky.feed.generator/infreq', 'Quoted feed generator'],
     ['list', 'app.bsky.graph.list/3mrsmgz', 'Quoted list'],
     ['starterPack', 'app.bsky.graph.starterpack/3mrwv66', 'Quoted starter pack'],
@@ -555,7 +564,7 @@ describe('bskySearchPosts', () => {
      */
     mockSearchPosts.mockResolvedValue({ posts: [makePost()] });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskySearchPosts.errors });
     const input = bskySearchPosts.input.parse({ query: 'test', language: 'qqq' });
     const result = await bskySearchPosts.handler(input, ctx);
 
@@ -566,11 +575,13 @@ describe('bskySearchPosts', () => {
   it('omits the language filter entirely when passed an empty string', async () => {
     mockSearchPosts.mockResolvedValue({ posts: [makePost()] });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskySearchPosts.errors });
     const input = bskySearchPosts.input.parse({ query: 'test', language: '' });
     await bskySearchPosts.handler(input, ctx);
 
-    expect(mockSearchPosts.mock.calls[0][0]).not.toHaveProperty('lang');
+    const [params] = mockSearchPosts.mock.calls[0] ?? [];
+    expect(params).toBeDefined();
+    expect(params).not.toHaveProperty('lang');
   });
 
   // --- Upstream rejection ---
@@ -587,9 +598,9 @@ describe('bskySearchPosts', () => {
 
     const ctx = createMockContext({ errors: bskySearchPosts.errors });
     const input = bskySearchPosts.input.parse({ query: 'test' });
-    const err = await bskySearchPosts.handler(input, ctx).catch((e: unknown) => e as McpError);
+    const err = await Promise.resolve(bskySearchPosts.handler(input, ctx)).catch((e: unknown) => e);
 
-    expect(err).toBeInstanceOf(McpError);
+    if (!(err instanceof McpError)) throw new Error('Expected the handler to throw an McpError.');
     expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
     expect(err.message).toContain('Invalid language (got "english")');
     expect((err.data as { reason?: string }).reason).toBe('upstream_rejected_filter');
@@ -617,7 +628,7 @@ describe('bskySearchPosts', () => {
   it('forwards a validated since/until pair to the service', async () => {
     mockSearchPosts.mockResolvedValue({ posts: [makePost()] });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskySearchPosts.errors });
     const input = bskySearchPosts.input.parse({
       query: 'test',
       since: '2025-01-01',

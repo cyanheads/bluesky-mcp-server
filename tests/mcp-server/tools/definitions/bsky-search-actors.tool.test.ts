@@ -3,7 +3,8 @@
  * @module tests/mcp-server/tools/definitions/bsky-search-actors.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import type { Context } from '@cyanheads/mcp-ts-core';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { bskySearchActors } from '@/mcp-server/tools/definitions/bsky-search-actors.tool.js';
 import { initBlueskyService } from '@/services/bluesky/bluesky-service.js';
@@ -26,7 +27,13 @@ const makeActor = (overrides: Partial<ActorProfile> = {}): ActorProfile => ({
 // Module mock
 // ---------------------------------------------------------------------------
 
-const mockSearchActors = vi.fn<[], Promise<SearchActorsResult>>();
+const mockSearchActors =
+  vi.fn<
+    (
+      params: { q: string; limit?: number; cursor?: string },
+      ctx: Context,
+    ) => Promise<SearchActorsResult>
+  >();
 
 vi.mock('@/services/bluesky/bluesky-service.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('@/services/bluesky/bluesky-service.js')>();
@@ -54,8 +61,10 @@ describe('bskySearchActors', () => {
     const result = await bskySearchActors.handler(input, ctx);
 
     expect(result.actors).toHaveLength(1);
-    expect(result.actors[0].handle).toBe('alice.bsky.social');
-    expect(result.actors[0].did).toBe('did:plc:abc');
+    expect(result.actors[0]).toMatchObject({
+      handle: 'alice.bsky.social',
+      did: 'did:plc:abc',
+    });
   });
 
   it('applies default limit=25', () => {
@@ -75,33 +84,24 @@ describe('bskySearchActors', () => {
     expect(result.actors).toHaveLength(0);
   });
 
-  it('calls ctx.enrich.notice on empty results', async () => {
+  it('enriches an empty result with a notice naming the query', async () => {
     mockSearchActors.mockResolvedValue({ actors: [] });
 
     const ctx = createMockContext();
-    const noticeSpy = vi.spyOn(
-      ctx.enrich as unknown as { notice: (msg: string) => void },
-      'notice',
-    );
     const input = bskySearchActors.input.parse({ query: 'xyznotexist999' });
     await bskySearchActors.handler(input, ctx);
 
-    expect(noticeSpy).toHaveBeenCalledOnce();
-    expect(noticeSpy.mock.calls[0][0]).toContain('xyznotexist999');
+    expect(getEnrichment(ctx).notice).toContain('xyznotexist999');
   });
 
-  it('does not call ctx.enrich.notice when actors are returned', async () => {
+  it('enriches no notice when actors are returned', async () => {
     mockSearchActors.mockResolvedValue({ actors: [makeActor()] });
 
     const ctx = createMockContext();
-    const noticeSpy = vi.spyOn(
-      ctx.enrich as unknown as { notice: (msg: string) => void },
-      'notice',
-    );
     const input = bskySearchActors.input.parse({ query: 'alice' });
     await bskySearchActors.handler(input, ctx);
 
-    expect(noticeSpy).not.toHaveBeenCalled();
+    expect(getEnrichment(ctx)).not.toHaveProperty('notice');
   });
 
   // --- Cursor pagination ---
@@ -126,8 +126,10 @@ describe('bskySearchActors', () => {
     const input = bskySearchActors.input.parse({ query: 'sparse' });
     const result = await bskySearchActors.handler(input, ctx);
 
-    expect(result.actors[0].displayName).toBeUndefined();
-    expect(result.actors[0].followersCount).toBeUndefined();
+    const [actor] = result.actors;
+    expect(actor).toBeDefined();
+    expect(actor?.displayName).toBeUndefined();
+    expect(actor?.followersCount).toBeUndefined();
     expect(() => bskySearchActors.output.parse(result)).not.toThrow();
   });
 

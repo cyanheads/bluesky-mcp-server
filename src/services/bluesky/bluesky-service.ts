@@ -529,15 +529,10 @@ export class BlueskyService {
     const url = this.buildUrl(lexicon, params);
     return withRetry(
       async () => {
-        const response = await fetchWithTimeout(
-          url,
-          TIMEOUT_MS,
-          ctx as unknown as Parameters<typeof fetchWithTimeout>[2],
-          {
-            headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
-            signal: ctx.signal,
-          },
-        );
+        const response = await fetchWithTimeout(url, TIMEOUT_MS, ctx, {
+          headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+          signal: ctx.signal,
+        });
         const text = await response.text();
         if (/^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text)) {
           throw serviceUnavailable(
@@ -552,9 +547,7 @@ export class BlueskyService {
       },
       {
         operation: `BlueskyService.${lexicon}`,
-        // Context is a superset of RequestContext — the logger strips non-serializable fields.
-        // biome-ignore lint/suspicious/noExplicitAny: ctx is a superset of RequestContext; cast is intentional
-        context: ctx as any,
+        context: ctx,
         baseDelayMs: 500,
         signal: ctx.signal,
       },

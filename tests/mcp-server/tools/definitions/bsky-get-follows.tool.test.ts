@@ -3,8 +3,9 @@
  * @module tests/mcp-server/tools/definitions/bsky-get-follows.tool.test
  */
 
+import type { Context } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { bskyGetFollows } from '@/mcp-server/tools/definitions/bsky-get-follows.tool.js';
 import { initBlueskyService } from '@/services/bluesky/bluesky-service.js';
@@ -39,8 +40,13 @@ const makeGraphResult = (overrides: Partial<GraphResult> = {}): GraphResult => (
 // Module mock — supports both getFollowers and getFollows paths
 // ---------------------------------------------------------------------------
 
-const mockGetFollowers = vi.fn<[], Promise<GraphResult>>();
-const mockGetFollows = vi.fn<[], Promise<GraphResult>>();
+type GraphQuery = (
+  params: { actor: string; limit?: number; cursor?: string },
+  ctx: Context,
+) => Promise<GraphResult>;
+
+const mockGetFollowers = vi.fn<GraphQuery>();
+const mockGetFollows = vi.fn<GraphQuery>();
 
 vi.mock('@/services/bluesky/bluesky-service.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('@/services/bluesky/bluesky-service.js')>();
@@ -67,7 +73,7 @@ describe('bskyGetFollows', () => {
   it('returns followers list with subject summary', async () => {
     mockGetFollowers.mockResolvedValue(makeGraphResult());
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskyGetFollows.errors });
     const input = bskyGetFollows.input.parse({
       actor: 'alice.bsky.social',
       direction: 'followers',
@@ -75,7 +81,7 @@ describe('bskyGetFollows', () => {
     const result = await bskyGetFollows.handler(input, ctx);
 
     expect(result.actors).toHaveLength(1);
-    expect(result.actors[0].handle).toBe('bob.bsky.social');
+    expect(result.actors[0]).toMatchObject({ handle: 'bob.bsky.social' });
     expect(result.subject.did).toBe('did:plc:subject');
     expect(result.subject.handle).toBe('alice.bsky.social');
     expect(result.subject.followersCount).toBe(500);
@@ -84,7 +90,7 @@ describe('bskyGetFollows', () => {
   it('calls getFollowers service method for direction=followers', async () => {
     mockGetFollowers.mockResolvedValue(makeGraphResult());
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskyGetFollows.errors });
     const input = bskyGetFollows.input.parse({
       actor: 'alice.bsky.social',
       direction: 'followers',
@@ -100,7 +106,7 @@ describe('bskyGetFollows', () => {
   it('calls getFollows service method for direction=following', async () => {
     mockGetFollows.mockResolvedValue(makeGraphResult());
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskyGetFollows.errors });
     const input = bskyGetFollows.input.parse({
       actor: 'alice.bsky.social',
       direction: 'following',
@@ -116,7 +122,7 @@ describe('bskyGetFollows', () => {
   it('passes cursor through', async () => {
     mockGetFollowers.mockResolvedValue(makeGraphResult({ cursor: 'next-cursor' }));
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskyGetFollows.errors });
     const input = bskyGetFollows.input.parse({
       actor: 'alice.bsky.social',
       direction: 'followers',
@@ -155,7 +161,7 @@ describe('bskyGetFollows', () => {
   it('returns empty actors array when no connections', async () => {
     mockGetFollowers.mockResolvedValue(makeGraphResult({ actors: [] }));
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskyGetFollows.errors });
     const input = bskyGetFollows.input.parse({
       actor: 'alice.bsky.social',
       direction: 'followers',
@@ -165,39 +171,30 @@ describe('bskyGetFollows', () => {
     expect(result.actors).toHaveLength(0);
   });
 
-  it('calls ctx.enrich.notice on empty actors list', async () => {
+  it('enriches an empty actors list with a notice naming the subject', async () => {
     mockGetFollowers.mockResolvedValue(makeGraphResult({ actors: [] }));
 
-    const ctx = createMockContext();
-    const noticeSpy = vi.spyOn(
-      ctx.enrich as unknown as { notice: (msg: string) => void },
-      'notice',
-    );
+    const ctx = createMockContext({ errors: bskyGetFollows.errors });
     const input = bskyGetFollows.input.parse({
       actor: 'alice.bsky.social',
       direction: 'followers',
     });
     await bskyGetFollows.handler(input, ctx);
 
-    expect(noticeSpy).toHaveBeenCalledOnce();
-    expect(noticeSpy.mock.calls[0][0]).toContain('alice.bsky.social');
+    expect(getEnrichment(ctx).notice).toContain('alice.bsky.social');
   });
 
-  it('does not call ctx.enrich.notice when actors are returned', async () => {
+  it('enriches no notice when actors are returned', async () => {
     mockGetFollowers.mockResolvedValue(makeGraphResult());
 
-    const ctx = createMockContext();
-    const noticeSpy = vi.spyOn(
-      ctx.enrich as unknown as { notice: (msg: string) => void },
-      'notice',
-    );
+    const ctx = createMockContext({ errors: bskyGetFollows.errors });
     const input = bskyGetFollows.input.parse({
       actor: 'alice.bsky.social',
       direction: 'followers',
     });
     await bskyGetFollows.handler(input, ctx);
 
-    expect(noticeSpy).not.toHaveBeenCalled();
+    expect(getEnrichment(ctx)).not.toHaveProperty('notice');
   });
 
   // --- Sparse subject ---
@@ -206,7 +203,7 @@ describe('bskyGetFollows', () => {
     const sparseSubject: ActorProfile = { did: 'did:plc:sparse', handle: 'sparse.bsky.social' };
     mockGetFollowers.mockResolvedValue(makeGraphResult({ subject: sparseSubject }));
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskyGetFollows.errors });
     const input = bskyGetFollows.input.parse({
       actor: 'sparse.bsky.social',
       direction: 'followers',

@@ -3,6 +3,7 @@
  * @module tests/mcp-server/tools/definitions/bsky-get-profile.tool.test
  */
 
+import type { Context } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -33,7 +34,7 @@ const FULL_PROFILE: ActorProfile = {
 // Module mock
 // ---------------------------------------------------------------------------
 
-const mockGetProfile = vi.fn<[], Promise<ActorProfile>>();
+const mockGetProfile = vi.fn<(actor: string, ctx: Context) => Promise<ActorProfile>>();
 
 vi.mock('@/services/bluesky/bluesky-service.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('@/services/bluesky/bluesky-service.js')>();
@@ -56,7 +57,7 @@ describe('bskyGetProfile', () => {
   it('returns full profile for a valid handle', async () => {
     mockGetProfile.mockResolvedValue(FULL_PROFILE);
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskyGetProfile.errors });
     const input = bskyGetProfile.input.parse({ actor: 'bsky.app' });
     const result = await bskyGetProfile.handler(input, ctx);
 
@@ -71,7 +72,7 @@ describe('bskyGetProfile', () => {
   it('accepts DID as actor input', async () => {
     mockGetProfile.mockResolvedValue(FULL_PROFILE);
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskyGetProfile.errors });
     const input = bskyGetProfile.input.parse({ actor: 'did:plc:z72i7hdynmk6r22z27h6tvur' });
     const result = await bskyGetProfile.handler(input, ctx);
 
@@ -121,7 +122,7 @@ describe('bskyGetProfile', () => {
     };
     mockGetProfile.mockResolvedValue(sparse);
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskyGetProfile.errors });
     const input = bskyGetProfile.input.parse({ actor: 'sparse.bsky.social' });
     const result = await bskyGetProfile.handler(input, ctx);
 

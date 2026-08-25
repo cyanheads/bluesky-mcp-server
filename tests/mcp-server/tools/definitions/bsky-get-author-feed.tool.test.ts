@@ -3,6 +3,7 @@
  * @module tests/mcp-server/tools/definitions/bsky-get-author-feed.tool.test
  */
 
+import type { Context } from '@cyanheads/mcp-ts-core';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { bskyGetAuthorFeed } from '@/mcp-server/tools/definitions/bsky-get-author-feed.tool.js';
@@ -40,7 +41,13 @@ const REPOSTED_POST: PostView = {
 // Module mock
 // ---------------------------------------------------------------------------
 
-const mockGetAuthorFeed = vi.fn<[], Promise<AuthorFeedResult>>();
+const mockGetAuthorFeed =
+  vi.fn<
+    (
+      params: { actor: string; filter?: string; limit?: number; cursor?: string },
+      ctx: Context,
+    ) => Promise<AuthorFeedResult>
+  >();
 
 vi.mock('@/services/bluesky/bluesky-service.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('@/services/bluesky/bluesky-service.js')>();
@@ -63,12 +70,12 @@ describe('bskyGetAuthorFeed', () => {
   it('returns posts for a valid actor', async () => {
     mockGetAuthorFeed.mockResolvedValue({ feed: [makePost()] });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskyGetAuthorFeed.errors });
     const input = bskyGetAuthorFeed.input.parse({ actor: 'alice.bsky.social' });
     const result = await bskyGetAuthorFeed.handler(input, ctx);
 
     expect(result.posts).toHaveLength(1);
-    expect(result.posts[0].text).toBe('Hello from author feed');
+    expect(result.posts[0]).toMatchObject({ text: 'Hello from author feed' });
     expect(result.cursor).toBeUndefined();
   });
 
@@ -82,7 +89,7 @@ describe('bskyGetAuthorFeed', () => {
   it('passes cursor to next page and discloses truncation', async () => {
     mockGetAuthorFeed.mockResolvedValue({ feed: [makePost()], cursor: 'cursor-abc' });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskyGetAuthorFeed.errors });
     const input = bskyGetAuthorFeed.input.parse({
       actor: 'alice.bsky.social',
       cursor: 'prev-cursor',
@@ -100,7 +107,7 @@ describe('bskyGetAuthorFeed', () => {
   it('does not disclose truncation on the last page (no cursor)', async () => {
     mockGetAuthorFeed.mockResolvedValue({ feed: [makePost()] });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskyGetAuthorFeed.errors });
     const input = bskyGetAuthorFeed.input.parse({ actor: 'alice.bsky.social' });
     await bskyGetAuthorFeed.handler(input, ctx);
 
@@ -112,40 +119,31 @@ describe('bskyGetAuthorFeed', () => {
   it('returns empty posts array', async () => {
     mockGetAuthorFeed.mockResolvedValue({ feed: [] });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskyGetAuthorFeed.errors });
     const input = bskyGetAuthorFeed.input.parse({ actor: 'empty.bsky.social' });
     const result = await bskyGetAuthorFeed.handler(input, ctx);
 
     expect(result.posts).toHaveLength(0);
   });
 
-  it('calls ctx.enrich.notice on empty feed', async () => {
+  it('enriches an empty feed with a notice naming the actor', async () => {
     mockGetAuthorFeed.mockResolvedValue({ feed: [] });
 
-    const ctx = createMockContext();
-    const noticeSpy = vi.spyOn(
-      ctx.enrich as unknown as { notice: (msg: string) => void },
-      'notice',
-    );
+    const ctx = createMockContext({ errors: bskyGetAuthorFeed.errors });
     const input = bskyGetAuthorFeed.input.parse({ actor: 'empty.bsky.social' });
     await bskyGetAuthorFeed.handler(input, ctx);
 
-    expect(noticeSpy).toHaveBeenCalledOnce();
-    expect(noticeSpy.mock.calls[0][0]).toContain('empty.bsky.social');
+    expect(getEnrichment(ctx).notice).toContain('empty.bsky.social');
   });
 
-  it('does not call ctx.enrich.notice when posts are returned', async () => {
+  it('enriches no notice when posts are returned', async () => {
     mockGetAuthorFeed.mockResolvedValue({ feed: [makePost()] });
 
-    const ctx = createMockContext();
-    const noticeSpy = vi.spyOn(
-      ctx.enrich as unknown as { notice: (msg: string) => void },
-      'notice',
-    );
+    const ctx = createMockContext({ errors: bskyGetAuthorFeed.errors });
     const input = bskyGetAuthorFeed.input.parse({ actor: 'alice.bsky.social' });
     await bskyGetAuthorFeed.handler(input, ctx);
 
-    expect(noticeSpy).not.toHaveBeenCalled();
+    expect(getEnrichment(ctx)).not.toHaveProperty('notice');
   });
 
   // --- Error contract ---
@@ -214,17 +212,19 @@ describe('bskyGetAuthorFeed', () => {
   it('carries the repost marker into structuredContent', async () => {
     mockGetAuthorFeed.mockResolvedValue({ feed: [REPOSTED_POST] });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskyGetAuthorFeed.errors });
     const input = bskyGetAuthorFeed.input.parse({ actor: 'pfrazee.com' });
     const result = await bskyGetAuthorFeed.handler(input, ctx);
 
-    expect(result.posts[0].repostedBy).toEqual({
+    const [post] = result.posts;
+    expect(post).toBeDefined();
+    expect(post?.repostedBy).toEqual({
       did: 'did:plc:reposter',
       handle: 'pfrazee.com',
       displayName: 'Paul Frazee',
     });
-    expect(result.posts[0].repostedAt).toBe('2026-07-31T14:52:54.764Z');
-    expect(result.posts[0].author.handle).toBe('orta.io');
+    expect(post?.repostedAt).toBe('2026-07-31T14:52:54.764Z');
+    expect(post?.author.handle).toBe('orta.io');
     expect(() => bskyGetAuthorFeed.output.parse(result)).not.toThrow();
   });
 
@@ -265,7 +265,7 @@ describe('bskyGetAuthorFeed', () => {
       ],
     });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskyGetAuthorFeed.errors });
     const input = bskyGetAuthorFeed.input.parse({ actor: 'pfrazee.com', limit: 30 });
     await bskyGetAuthorFeed.handler(input, ctx);
 
@@ -278,7 +278,7 @@ describe('bskyGetAuthorFeed', () => {
   it('reports the split on a page that is entirely reposts', async () => {
     mockGetAuthorFeed.mockResolvedValue({ feed: [REPOSTED_POST, REPOSTED_POST] });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskyGetAuthorFeed.errors });
     const input = bskyGetAuthorFeed.input.parse({ actor: 'pfrazee.com' });
     await bskyGetAuthorFeed.handler(input, ctx);
 
@@ -291,7 +291,7 @@ describe('bskyGetAuthorFeed', () => {
   it('stays silent when every item on the page is the actor own writing', async () => {
     mockGetAuthorFeed.mockResolvedValue({ feed: [makePost(), makePost()] });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskyGetAuthorFeed.errors });
     const input = bskyGetAuthorFeed.input.parse({ actor: 'cyanheads.bsky.social' });
     await bskyGetAuthorFeed.handler(input, ctx);
 
@@ -304,7 +304,7 @@ describe('bskyGetAuthorFeed', () => {
   it('stays silent on an empty page', async () => {
     mockGetAuthorFeed.mockResolvedValue({ feed: [] });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskyGetAuthorFeed.errors });
     const input = bskyGetAuthorFeed.input.parse({ actor: 'alice.bsky.social' });
     await bskyGetAuthorFeed.handler(input, ctx);
 

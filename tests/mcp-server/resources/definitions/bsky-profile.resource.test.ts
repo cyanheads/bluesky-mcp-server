@@ -3,6 +3,7 @@
  * @module tests/mcp-server/resources/definitions/bsky-profile.resource.test
  */
 
+import type { Context } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -25,11 +26,45 @@ const PROFILE: ActorProfile = {
   createdAt: '2023-01-01T00:00:00Z',
 };
 
+/**
+ * `params` is optional on every `ResourceDefinition`; this resource declares it,
+ * so the schema is present on the definition object itself.
+ */
+const parseParams = (actor: string) => bskyProfileResource.params!.parse({ actor });
+
+/** The mock context every handler call in this file runs on, carrying the typed `ctx.fail`. */
+const handlerContext = () =>
+  createMockContext({ tenantId: 'test-tenant', errors: bskyProfileResource.errors });
+
+/**
+ * `list` receives the SDK's `ServerContext`, not a handler `Context`. This
+ * listing ignores it, so every sink is inert.
+ */
+const listContext = (): Parameters<NonNullable<typeof bskyProfileResource.list>>[0] => ({
+  mcpReq: {
+    id: 'test-request-id',
+    method: 'resources/list',
+    requestState: () => undefined,
+    signal: new AbortController().signal,
+    send: async () => {
+      throw new Error('send is not stubbed for resource listing.');
+    },
+    notify: async () => {},
+    log: async () => {},
+    elicitInput: async () => {
+      throw new Error('elicitInput is not stubbed for resource listing.');
+    },
+    requestSampling: async () => {
+      throw new Error('requestSampling is not stubbed for resource listing.');
+    },
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Module mock
 // ---------------------------------------------------------------------------
 
-const mockGetProfile = vi.fn<[], Promise<ActorProfile>>();
+const mockGetProfile = vi.fn<(actor: string, ctx: Context) => Promise<ActorProfile>>();
 
 vi.mock('@/services/bluesky/bluesky-service.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('@/services/bluesky/bluesky-service.js')>();
@@ -52,8 +87,8 @@ describe('bskyProfileResource', () => {
   it('returns profile data for a valid handle', async () => {
     mockGetProfile.mockResolvedValue(PROFILE);
 
-    const ctx = createMockContext({ tenantId: 'test-tenant' });
-    const params = bskyProfileResource.params.parse({ actor: 'bsky.app' });
+    const ctx = handlerContext();
+    const params = parseParams('bsky.app');
     const result = await bskyProfileResource.handler(params, ctx);
 
     expect((result as ActorProfile).did).toBe('did:plc:z72i7hdynmk6r22z27h6tvur');
@@ -64,8 +99,8 @@ describe('bskyProfileResource', () => {
   it('accepts DID as actor parameter', async () => {
     mockGetProfile.mockResolvedValue(PROFILE);
 
-    const ctx = createMockContext({ tenantId: 'test-tenant' });
-    const params = bskyProfileResource.params.parse({ actor: 'did:plc:z72i7hdynmk6r22z27h6tvur' });
+    const ctx = handlerContext();
+    const params = parseParams('did:plc:z72i7hdynmk6r22z27h6tvur');
     const result = await bskyProfileResource.handler(params, ctx);
 
     expect((result as ActorProfile).did).toBe('did:plc:z72i7hdynmk6r22z27h6tvur');
@@ -82,11 +117,8 @@ describe('bskyProfileResource', () => {
       }),
     );
 
-    const ctx = createMockContext({
-      tenantId: 'test-tenant',
-      errors: bskyProfileResource.errors,
-    });
-    const params = bskyProfileResource.params.parse({ actor: 'ghost.bsky.social' });
+    const ctx = handlerContext();
+    const params = parseParams('ghost.bsky.social');
 
     await expect(bskyProfileResource.handler(params, ctx)).rejects.toMatchObject({
       code: JsonRpcErrorCode.NotFound,
@@ -97,7 +129,7 @@ describe('bskyProfileResource', () => {
   // --- list() ---
 
   it('provides a non-empty resource listing', async () => {
-    const listing = await bskyProfileResource.list!();
+    const listing = await bskyProfileResource.list!(listContext());
     expect(listing.resources).toBeInstanceOf(Array);
     expect(listing.resources.length).toBeGreaterThan(0);
     for (const r of listing.resources) {
@@ -113,8 +145,8 @@ describe('bskyProfileResource', () => {
     const sparse: ActorProfile = { did: 'did:plc:sparse', handle: 'sparse.bsky.social' };
     mockGetProfile.mockResolvedValue(sparse);
 
-    const ctx = createMockContext({ tenantId: 'test-tenant' });
-    const params = bskyProfileResource.params.parse({ actor: 'sparse.bsky.social' });
+    const ctx = handlerContext();
+    const params = parseParams('sparse.bsky.social');
     const result = await bskyProfileResource.handler(params, ctx);
 
     expect((result as ActorProfile).did).toBe('did:plc:sparse');
@@ -130,8 +162,8 @@ describe('bskyProfileResource', () => {
       website: 'https://nerdynanny.com',
     });
 
-    const ctx = createMockContext({ tenantId: 'test-tenant' });
-    const params = bskyProfileResource.params.parse({ actor: 'nerdynanny.com' });
+    const ctx = handlerContext();
+    const params = parseParams('nerdynanny.com');
     const result = (await bskyProfileResource.handler(params, ctx)) as ActorProfile;
 
     expect(result.pronouns).toBe('they/he');
@@ -141,8 +173,8 @@ describe('bskyProfileResource', () => {
   it('omits both for an account that set neither', async () => {
     mockGetProfile.mockResolvedValue(PROFILE);
 
-    const ctx = createMockContext({ tenantId: 'test-tenant' });
-    const params = bskyProfileResource.params.parse({ actor: 'bsky.app' });
+    const ctx = handlerContext();
+    const params = parseParams('bsky.app');
     const result = (await bskyProfileResource.handler(params, ctx)) as ActorProfile;
 
     expect(result).not.toHaveProperty('pronouns');
@@ -157,7 +189,7 @@ describe('bskyProfileResource', () => {
     ['bare name without a dot', 'alice'],
     ['leading @', '@bsky.app'],
   ])('rejects a malformed actor (%s) at the params layer', (_label, actor) => {
-    expect(() => bskyProfileResource.params.parse({ actor })).toThrow();
+    expect(() => parseParams(actor)).toThrow();
     expect(mockGetProfile).not.toHaveBeenCalled();
   });
 
@@ -165,6 +197,6 @@ describe('bskyProfileResource', () => {
     ['handle', 'bsky.app'],
     ['did:plc', 'did:plc:z72i7hdynmk6r22z27h6tvur'],
   ])('accepts a valid actor (%s)', (_label, actor) => {
-    expect(bskyProfileResource.params.parse({ actor }).actor).toBe(actor);
+    expect(parseParams(actor).actor).toBe(actor);
   });
 });

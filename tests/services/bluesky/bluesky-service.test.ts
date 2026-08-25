@@ -54,7 +54,7 @@ describe('BlueskyService.getTrends — link normalization', () => {
 
     const ctx = createMockContext();
     const result = await service.getTrends({ limit: 1 }, ctx);
-    expect(result.trends[0].link).toBe('https://bsky.app/search?q=ailaunch');
+    expect(result.trends[0]?.link).toBe('https://bsky.app/search?q=ailaunch');
   });
 
   it('expands a relative path to https://bsky.app + path', async () => {
@@ -72,7 +72,9 @@ describe('BlueskyService.getTrends — link normalization', () => {
 
     const ctx = createMockContext();
     const result = await service.getTrends({ limit: 1 }, ctx);
-    expect(result.trends[0].link).toBe('https://bsky.app/profile/trending.bsky.app/feed/747851028');
+    expect(result.trends[0]?.link).toBe(
+      'https://bsky.app/profile/trending.bsky.app/feed/747851028',
+    );
   });
 
   it('omits link when API returns none', async () => {
@@ -84,7 +86,10 @@ describe('BlueskyService.getTrends — link normalization', () => {
 
     const ctx = createMockContext();
     const result = await service.getTrends({ limit: 1 }, ctx);
-    expect(result.trends[0].link).toBeUndefined();
+
+    const [trend] = result.trends;
+    expect(trend).toBeDefined();
+    expect(trend?.link).toBeUndefined();
   });
 });
 
@@ -125,13 +130,14 @@ describe('BlueskyService.getTrends — representative actors', () => {
     const ctx = createMockContext();
     const result = await service.getTrends({ limit: 1 }, ctx);
 
-    expect(result.trends[0].actors).toHaveLength(2);
-    expect(result.trends[0].actors?.[0]).toMatchObject({
+    const actors = result.trends[0]?.actors;
+    expect(actors).toHaveLength(2);
+    expect(actors?.[0]).toMatchObject({
       did: 'did:plc:pvpmts6cjce46y76iphrlj3w',
       handle: 'amandawtwong.bsky.social',
       displayName: 'Amanda Wong',
     });
-    expect(result.trends[0].actors?.[1]?.displayName).toBeUndefined();
+    expect(actors?.[1]?.displayName).toBeUndefined();
   });
 
   it('omits actors when the endpoint returns none', async () => {
@@ -141,7 +147,10 @@ describe('BlueskyService.getTrends — representative actors', () => {
 
     const ctx = createMockContext();
     const result = await service.getTrends({ limit: 1 }, ctx);
-    expect(result.trends[0].actors).toBeUndefined();
+
+    const [trend] = result.trends;
+    expect(trend).toBeDefined();
+    expect(trend?.actors).toBeUndefined();
   });
 });
 
