@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.1](changelog/0.3.x/0.3.1.md) — 2026-08-24 · ⚠️ Breaking
+
+Adopts mcp-ts-core's MCP SDK v2 migration: tool inputs are now strict and the advertised outputSchema declares the error envelope; bsky_get_post_thread's rendered threadgate names each rule's machine value
+
 ## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-07-31 · ⚠️ Breaking
 
 structuredContent drops embed aspectRatio/thumb, never rendered in content[]; content[] gains a quoted post's CID and each label's src/cts; bsky_get_post_thread's post author narrows to four fields
