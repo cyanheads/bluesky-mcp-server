@@ -27,9 +27,11 @@
 
 ---
 
-## Tools
+## Overview
 
-Seven tools for read-only access to the public Bluesky/AT Protocol AppView — no authentication required:
+Public Bluesky data over the AT Protocol AppView — no authentication required. Search posts, resolve profiles, walk feeds and threads, and track trending topics from any MCP client. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+
+### Tools
 
 | Tool | Description |
 |:-----|:------------|
@@ -41,122 +43,109 @@ Seven tools for read-only access to the public Bluesky/AT Protocol AppView — n
 | `bsky_get_follows` | Paginated social graph edges — who a user follows or who follows them |
 | `bsky_get_trending` | Real-time trending topics on Bluesky with post count, category, status, and the accounts driving each topic |
 
-### `bsky_search_posts`
+### Resources
 
-Full-text search across public Bluesky posts.
-
-- Filters: author handle, language (BCP-47), hashtag, date range (`since`/`until`), and sort order (`top` or `latest`)
-- Identifier, language, and date inputs are pattern-validated before the upstream call — a malformed handle, DID, AT-URI, language tag, or date fails locally with the expected shape instead of a generic upstream 400. Language is checked for BCP-47 *shape* only, matching Bluesky itself: a well-formed tag naming no indexed language returns unfiltered results rather than an error, and the field description says so
-- When Bluesky rejects a parameter anyway, its own explanation is surfaced as the error reason and recovery hint instead of a bare `Status: 400`
-- Returns posts with text, author, engagement counts (likes/reposts/replies/quotes), embeds, AT-URIs, and timestamps
-- `hitsTotal` when available, reported as the bound it is — Bluesky caps the count at 10,000, so exactly 10,000 means "at least 10,000" and both the field description and the rendered header say so
-- Truncation is disclosed (`truncated`, `shown`, `cap`, and guidance) in both `structuredContent` and the `content[]` trailer when more posts match than came back. A returned cursor alone does not trigger it — Bluesky sends one on every non-empty response, exhausted or not, so `hitsTotal` is what settles whether the page was cut short
-- Pagination via opaque cursor; up to 100 results per call
-- Embeds normalized into a flat union: `images` (also covers `app.bsky.embed.gallery`), `external` (link cards), `record` (quoted posts), `video`, `unknown`
-- A quoted post carries its own attachments under `embeds`, so a quote of an image post is not reduced to a line of text, alongside `media` for anything the quoting post attached beside the quote. The rendered output names which post each block belongs to, since the two belong to different accounts
-- Quote nesting is followed three levels down, which is deeper than the AppView has been seen to hydrate. A quote at that bound reports the attachments it did not carry through as `omittedEmbeds` and says so in the rendered text, so it never reads as a quote that had none
-- A quote that cannot be read — deleted, blocked, detached — or that points at a feed generator, list, starter pack, or labeler rather than a post carries `recordKind` naming the case, instead of arriving as an empty quote
-- Moderation labels surfaced as-is — not filtered
-
----
-
-### `bsky_get_profile`
-
-Fetch a Bluesky actor's public profile by handle or DID.
-
-- Returns displayName, handle, DID, description, pronouns, website, follower/following/post counts, avatar URL, moderation labels, and pinned post AT-URI
-- `website` is the one link a profile carries in a field of its own rather than inside the bio; both it and `pronouns` are absent for accounts that set neither
-- The bio is rendered as a blockquote — it is text the account holder wrote, and can carry markdown of its own. The display name and pronouns render inside lines the server writes, with their line breaks folded to spaces, so neither can open a heading of its own
-- The resolution step for handle↔DID — use before tools that require a DID or AT-URI when you only have a handle
-
----
-
-### `bsky_get_author_feed`
-
-A user's recent feed ordered newest-first — their own posts and their reposts.
-
-- Filter by post type: `posts_with_replies`, `posts_no_replies` (excludes replies), `posts_with_media`, or `posts_and_author_threads`. None of them exclude reposts — the AppView has no repost filter
-- Reposts carry `repostedBy` and `repostedAt`; `author` always names whoever wrote the post
-- Because `limit` counts reposts too, a page from an account that reposts heavily holds far fewer of that account's own posts than the limit suggests — 30 items from one such account came back as 10 originals and 20 reposts. The response reports `originalPosts` and `reposts` whenever a repost is present, so the yield is stated rather than reconstructed by counting
-- Returns posts with full text, engagement counts, embeds, and AT-URIs for thread drilling
-- Pagination via cursor
-
----
-
-### `bsky_get_post_thread`
-
-Fetch the conversation for a post by AT-URI.
-
-- Returns the root post, parent chain (upward), and nested reply tree (downward)
-- Configurable `depth` (reply tree depth, default 6, max 10 — Bluesky returns no more than 10 levels however deep the request) and `parent_height` (parent chain height, default 80, max 100)
-- Bluesky holds replies back past a per-post limit and exposes no way to page the rest, so a thread with thousands of replies commonly comes back with a few hundred. Any node returning fewer replies than its own `replyCount` carries `truncated: true` with `unreturnedReplies` and a `truncationReason`: `"depth"` (the tree ends there — fetch that node's AT-URI as its own thread to continue) or `"unavailable"` (no request closes the gap). The response totals the difference for the whole thread
-- Read those totals as an upper bound on what is missing, not a count of readable replies — Bluesky's reply counter keeps including replies that have left the index, so a difference of one or two often means nothing is left to fetch
-- The parent chain is disclosed the same way. Bluesky stops the chain at `parent_height` and gives no signal that it did, so the topmost post returned would otherwise be indistinguishable from the start of the conversation. When it is not, that node carries `parentChainTruncated: true` and the response names its AT-URI — unlike the reply shortfall this one is fully recoverable, since `parent_height` is honored level for level and fetching that node as its own thread walks further up
-- Reply depth rides the author heading (`### ↳2 Name (@handle)` — two levels below the top-level reply it descends from) rather than a left margin, so a nested reply stays readable markdown. Indenting instead would push every line below the second level past four spaces, which renders the whole nested half of a thread as a code block. The number is stated rather than repeated as a glyph, since a reply can sit nine levels down and a run of nine arrows has to be counted to be read
-- Surfaces the author's reply gate when one is set: who may reply, and the AT-URIs of replies the author hid
-- Deleted posts surface as `notFound: true` and posts hidden by a block as `blocked: true`; both keep the AT-URI Bluesky reported
-- AT-URIs come from `bsky_search_posts` or `bsky_get_author_feed`
-
----
-
-### `bsky_get_follows`
-
-Fetch social graph edges for an account.
-
-- `direction`: `followers` (who follows the actor) or `following` (who the actor follows)
-- Returns paginated profiles with handle, DID, displayName, description, pronouns when the account set them, and follower count
-- Includes the subject's profile summary at the top level, pronouns included
-- No `website` — the view these two endpoints return does not carry it; resolve the account with `bsky_get_profile` when it matters
-
----
-
-### `bsky_get_trending`
-
-Fetch real-time trending topics on Bluesky.
-
-- Returns topics with display name, post count, category (politics, sports, pop-culture, etc.), status (hot/rising), and start time
-- Each topic carries the representative accounts driving it, so "who is talking about this" costs no follow-up search
-- No cursor — returns the current snapshot up to `limit`
-- Uses `app.bsky.unspecced.getTrends` — Bluesky may change this endpoint without notice
-
-## Resource
-
-| Type | Name | Description |
-|:-----|:-----|:------------|
-| Resource | `bsky://profile/{actor}` | A Bluesky actor's public profile, addressable by handle or DID |
+| Resource | Description |
+|:---|:---|
+| `bsky://profile/{actor}` | A Bluesky actor's public profile, addressable by handle or DID |
 
 All resource data is also reachable via tools. Use `bsky_get_profile` for programmatic access or `bsky://profile/{actor}` to inject profile context directly.
 
+## Capability reference
+
+### `bsky_search_posts` <sub>tool</sub>
+
+- Filters: author handle or DID, BCP-47 language, hashtag, `since`/`until` date range, and `top`/`latest` sort; up to 100 results per call via opaque cursor pagination
+- Identifier, language, and date inputs are pattern-validated locally before the upstream call; a well-formed but unindexed language tag (e.g. `"qqq"`) returns unfiltered results rather than an error
+- When Bluesky rejects a parameter, its own explanation is surfaced via the `upstream_rejected_filter` error reason instead of a bare status code
+- `hitsTotal` is capped at 10,000 — a value of exactly 10,000 means "at least that many," not an exact count; `truncated`/`shown`/`cap` disclose when more posts matched than were returned (a cursor alone doesn't imply truncation — Bluesky returns one on every non-empty response)
+- Embeds normalize to a `type`-discriminated union (`images`, `external`, `record`, `video`, `unknown`); a quoted post carries its own attachments up to 3 nesting levels, with `omittedEmbeds` counting what went deeper and `recordKind` naming a quote that's deleted, blocked, detached, or not a post
+- Moderation labels are surfaced as-is, unfiltered
+
+---
+
+### `bsky_get_profile` <sub>tool</sub>
+
+- Accepts a handle or DID; returns displayName, handle, DID, bio, pronouns, website, follower/following/post counts, avatar, moderation labels, and pinned post AT-URI
+- `website` is the one link carried in its own field rather than inside the bio; both it and `pronouns` are absent when the account set neither
+- The bio renders as a markdown blockquote in `content[]`, since it's account-authored text that can carry its own markdown structure
+- `actor_not_found` when the handle doesn't resolve — resolve the handle with `bsky_search_actors` first
+- The primary handle↔DID resolver — use before tools that require a DID or AT-URI when only a handle is known
+
+---
+
+### `bsky_get_author_feed` <sub>tool</sub>
+
+- `filter`: `posts_with_replies`, `posts_no_replies` (default, excludes replies), `posts_with_media`, or `posts_and_author_threads` — none exclude reposts, since the AppView has no repost filter
+- Reposts carry `repostedBy` and `repostedAt`; `author` always names who actually wrote the post
+- `limit` counts reposts too, so a heavily-reposting account can return far fewer of its own posts than the limit suggests; `originalPosts`/`reposts` report the actual split whenever a repost is present
+- Up to 100 posts per call, paginated via cursor
+- `actor_not_found` when the handle or DID doesn't resolve
+
+---
+
+### `bsky_get_post_thread` <sub>tool</sub>
+
+- `depth` (reply levels, default 6, max 10 — Bluesky's own ceiling, however deep the request) and `parent_height` (parent chain height, default 80, max 100)
+- A node returning fewer replies than its own `replyCount` carries `truncated: true`, `unreturnedReplies` (an upper bound, not an exact shortfall), and `truncationReason` (`"depth"` — fetch that node's AT-URI to continue, or `"unavailable"` — no request closes the gap)
+- When the parent chain stops at `parent_height` short of the conversation root, the topmost node carries `parentChainTruncated: true` — recoverable by fetching that node's AT-URI as its own thread
+- Surfaces the author's reply gate when set (who may reply) and the AT-URIs of any replies the author hid; deleted posts return `notFound: true` and blocked posts `blocked: true`
+- Reply depth renders on the author heading (`### ↳2 Name`) rather than by indentation, so a deeply nested reply never crosses into a markdown code block
+- `invalid_at_uri` and `post_not_found` errors when the AT-URI doesn't resolve; AT-URIs come from `bsky_search_posts` or `bsky_get_author_feed`
+
+---
+
+### `bsky_search_actors` <sub>tool</sub>
+
+- Returns ranked profiles with handle, DID, displayName, bio, pronouns when set, and follower count — not `website`, which only `bsky_get_profile` returns
+- Bio renders as a markdown blockquote in `content[]`, since it's account-authored text
+- Up to 100 results per call, paginated via cursor — cursor pagination is unreliable for unauthenticated search on the public AppView and may return a 403
+- Use before `bsky_get_profile` or `bsky_get_author_feed` when you have a name but not a confirmed handle
+
+---
+
+### `bsky_get_follows` <sub>tool</sub>
+
+- `direction`: `followers` (who follows the actor) or `following` (who the actor follows)
+- Returns paginated profiles (handle, DID, displayName, bio, pronouns when set, follower count) plus the subject's own profile summary
+- No `website` field on this view — resolve with `bsky_get_profile` when it matters
+- Up to 100 per page, paginated via cursor
+- `actor_not_found` when the handle or DID doesn't resolve
+
+---
+
+### `bsky_get_trending` <sub>tool</sub>
+
+- Returns topics with display name, post count, category, status (`hot`/`rising`), start time, and up to 5 representative accounts driving each topic
+- No cursor — returns the current snapshot up to `limit` (default 10, max 25)
+- Uses `app.bsky.unspecced.getTrends`, an unstable endpoint Bluesky may change without notice
+
+---
+
+### `bsky://profile/{actor}` <sub>resource</sub>
+
+- Returns the same fields as `bsky_get_profile` in injectable-context form — displayName, handle, DID, bio, pronouns, website, follower/following/post counts, avatar, moderation labels, pinned post AT-URI
+- Addressable by handle or DID via `{actor}`
+- `actor_not_found` when the handle doesn't resolve
+
 ## Features
 
-Built on [`@cyanheads/mcp-ts-core`](https://www.npmjs.com/package/@cyanheads/mcp-ts-core):
-
-- Declarative tool and resource definitions — single file per primitive, framework handles registration and validation
-- Unified error handling — handlers throw, framework catches, classifies, and formats
-- Pluggable auth: `none`, `jwt`, `oauth`
-- Swappable storage backends: `in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`
-- Structured logging with optional OpenTelemetry tracing
-- STDIO and Streamable HTTP transports
+Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): stdio and Streamable HTTP transports, pluggable auth (`none` / `jwt` / `oauth`), swappable storage (`in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`), structured logging with optional OpenTelemetry tracing.
 
 Bluesky-specific:
 
 - No authentication required — all seven tools operate against `api.bsky.app` without credentials
-- Single `BlueskyService` wrapping the AT Protocol public AppView with retry (3 attempts, 500ms base), 15s timeout, and a versioned `User-Agent`
-- Embed normalization — raw nested AT Protocol embed objects flattened to a clean `type`-discriminated union
-- Moderation labels surfaced verbatim — the agent and its human decide what to do
-- AT Protocol identifier types (handle, DID, AT-URI) explained at first encounter in every tool description
+- Single `BlueskyService` wrapping the AT Protocol public AppView, with a 15s per-request timeout, retry (up to 3 retries, 500ms base delay), and a versioned `User-Agent`
+- Embed normalization — raw nested AT Protocol embed objects flattened into a clean `type`-discriminated union
+- Moderation labels surfaced verbatim and unfiltered
+- AT Protocol identifier types (handle, DID, AT-URI) explained at first encounter in each tool's description
 
 Agent-friendly output:
 
-- AT-URIs on every post and resource — chain `bsky_search_posts` → `bsky_get_post_thread` without extra steps
-- Discriminated embed union (`type: "images" | "external" | "record" | "video" | "unknown"`) — branch on data, not `$type` strings; an unmapped lexicon type arrives as `unknown` with its raw `$type` rather than vanishing
-- Unreadable and non-post quotes discriminated by `recordKind` — an agent can tell a deleted or blocked quote from one whose text was simply not returned
-- Attachments a quote nested past the mapped depth would have carried are counted in `omittedEmbeds` rather than dropped, so the bound on embed recursion is visible in both channels
-- Both response channels carry the same fields. A post and its embed normalize to exactly what the rendered `content[]` emits — image and video URLs, alt text, link-card title and description, the AT-URI and CID of a quoted post, the author's handle, DID, display name, and avatar, and each moderation label with the labeler that applied it and when — so a client reading `structuredContent` and one reading the rendered text see the same post. Pixel dimensions and a link card's preview thumbnail are left upstream rather than reaching one channel alone, and account-level detail is a `bsky_get_profile` lookup away
-- Text Bluesky users wrote — post bodies, quoted-post bodies, profile bios, pronouns, image alt text, and link-card titles and descriptions — is rendered as a markdown blockquote, every line prefixed with `>` and blank lines kept as a bare `>`. A post carrying its own `###` heading, `---` rule, or fenced code block stays inside the quote instead of merging with the server's own section structure, so third-party content never reaches a model in the same channel as the server's labels. Values that render inside a line rather than as a block — display names, pronouns, topic names, moderation label values — have their line breaks folded to spaces for the same reason. `structuredContent` carries every string unchanged
-- Nothing in the rendered output indents past three spaces. Four leading spaces open a markdown code block, which would render that framing as literal characters instead of a quote — so nesting is carried by labels and headings, and both thread depth and embed depth are bounded by that budget rather than spending it
-- `hitsTotal` on search results, framed as a lower bound at Bluesky's 10,000 cap — communicate result scale without reporting a ceiling as a measurement
-- Truncation signals on thread nodes (`truncated`, `unreturnedReplies`, `truncationReason`, `parentChainTruncated`) plus a thread-wide total, stated as a bound rather than a cause — agents can tell how much of a conversation may be missing at either end, which part another request can still reach, and how much of the gap the thread author explains
+- AT-URIs on every post — chain `bsky_search_posts` → `bsky_get_post_thread` without extra steps
+- Discriminated embed union — `type: "images" | "external" | "record" | "video" | "unknown"` lets callers branch on data instead of parsing `$type` strings; an unmapped lexicon type arrives as `unknown` with its raw `$type` rather than vanishing
+- Third-party text rendered as markdown blockquotes — post bodies, bios, alt text, and link-card text render as `>`-prefixed blockquotes in `content[]`, so a post's own heading or code fence never merges with the server's structure; values that render inline (display names, pronouns, topic names) have line breaks folded to spaces for the same reason
+- Bounded truncation disclosure — thread and pagination shortfalls (`truncated`, `unreturnedReplies`, `parentChainTruncated`, `hitsTotal` at its 10,000 cap) are reported as bounds rather than measurements
 
 ## Getting started
 
@@ -175,7 +164,7 @@ Connect directly — no installation required:
 }
 ```
 
-### Self-hosted
+### Self-Hosted / Local
 
 Add the following to your MCP client configuration file. No API key required.
 
@@ -240,7 +229,7 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
 
 ### Prerequisites
 
-- [Bun v1.3.0](https://bun.sh/) or higher (or Node.js v24+).
+- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
 - No API key or account required — all tools call `api.bsky.app` without credentials.
 
 ### Installation
@@ -277,7 +266,7 @@ This server requires no API keys. All framework configuration is optional.
 | Variable | Description | Default |
 |:---------|:------------|:--------|
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http` | `stdio` |
-| `MCP_SESSION_MODE` | HTTP session mode: `auto`, `stateful`, or `stateless`. The schema default `auto` resolves to stateful. | `stateless` |
+| `MCP_SESSION_MODE` | HTTP session mode: `stateful`, `stateless`, or `auto`. Unset or empty, the server resolves to `stateless` from its own `createApp({ sessionMode })` declaration; an explicit value still overrides it. | `stateless` |
 | `MCP_HTTP_PORT` | Port for HTTP server | `3010` |
 | `MCP_AUTH_MODE` | Auth mode: `none`, `jwt`, or `oauth` | `none` |
 | `MCP_LOG_LEVEL` | Log level (RFC 5424) | `info` |
@@ -341,7 +330,7 @@ See [`CLAUDE.md`](./CLAUDE.md) for development guidelines and architectural rule
 
 ## Contributing
 
-Issues and pull requests are welcome. Run checks and tests before submitting:
+Issues are welcome. Run checks and tests before submitting:
 
 ```sh
 bun run devcheck
