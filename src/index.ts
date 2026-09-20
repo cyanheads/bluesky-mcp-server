@@ -18,6 +18,14 @@ import { initBlueskyService } from './services/bluesky/bluesky-service.js';
 await createApp({
   name: 'bluesky-mcp-server',
   title: 'bluesky-mcp-server',
+  /**
+   * Every tool here is a read against the public AppView and none calls
+   * `ctx.requestInput`, so no request needs a session to be answered. Declared in
+   * source rather than left to the schema default: with `MCP_SESSION_MODE` unset or
+   * empty the server resolves to `stateless` from here, and an explicit
+   * `MCP_SESSION_MODE` value still overrides it.
+   */
+  sessionMode: 'stateless',
   tools: [
     bskyGetProfile,
     bskySearchActors,
