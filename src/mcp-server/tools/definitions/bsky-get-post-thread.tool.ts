@@ -416,7 +416,7 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
     {
       reason: 'post_not_found',
       code: JsonRpcErrorCode.NotFound,
-      when: 'The AT-URI is valid format but the post was deleted or never existed.',
+      when: 'The AT-URI is well-formed but the post was deleted or never existed.',
       recovery: 'Verify the AT-URI or use bsky_search_posts to find the correct post.',
     },
   ],
