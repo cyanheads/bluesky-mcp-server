@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.2](changelog/0.3.x/0.3.2.md) — 2026-09-20
+
+Adopts mcp-ts-core 0.13.x: structured argument-rejection envelopes, request-cancellation handling, and HTTP-status reclassification; this server now declares sessionMode: 'stateless' in source and corrects its env-var docs and post_not_found description
+
 ## [0.3.1](changelog/0.3.x/0.3.1.md) — 2026-08-24 · ⚠️ Breaking
 
 Adopts mcp-ts-core's MCP SDK v2 migration: tool inputs are now strict and the advertised outputSchema declares the error envelope; bsky_get_post_thread's rendered threadgate names each rule's machine value
