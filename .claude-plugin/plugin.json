@@ -1,13 +1,17 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "bluesky-mcp-server",
   "version": "0.3.1",
   "description": "Search posts, profiles, feeds, threads, and trending topics on Bluesky via MCP. STDIO or Streamable HTTP.",
   "author": {
-    "name": "cyanheads"
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads/bluesky-mcp-server#readme"
   },
   "homepage": "https://github.com/cyanheads/bluesky-mcp-server#readme",
   "repository": "git+https://github.com/cyanheads/bluesky-mcp-server.git",
   "license": "Apache-2.0",
+  "keywords": ["bluesky", "atproto", "social-media", "mcp", "mcp-server", "model-context-protocol"],
   "mcpServers": {
     "bluesky-mcp-server": {
       "command": "npx",
