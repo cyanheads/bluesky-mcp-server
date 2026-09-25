@@ -271,6 +271,20 @@ describe('bskyGetPostThread', () => {
     expect(enrichment.notice).toContain('bsky_get_post_thread');
   });
 
+  it('names the posts whose difference no request retrieves in a sentence that reads', async () => {
+    mockGetPostThread.mockResolvedValue({ thread: unretrievableThread });
+
+    const ctx = createMockContext({ errors: bskyGetPostThread.errors });
+    const input = bskyGetPostThread.input.parse({
+      uri: 'at://did:plc:abc/app.bsky.feed.post/root1',
+    });
+    await bskyGetPostThread.handler(input, ctx);
+
+    const notice = getEnrichment(ctx).notice as string;
+    expect(notice).toContain('For 1 post, the difference is not retrievable by any request:');
+    expect(notice).not.toContain('On 1 post');
+  });
+
   /**
    * The number is a ceiling on what is missing, never a promise that this many replies exist —
    * Bluesky's counters keep including replies that have left the index.
@@ -924,10 +938,10 @@ describe('bskyGetPostThread', () => {
     );
 
     /** Every line of the hostile body is still a blockquote at column zero, not a code block. */
-    expect(lines).toContain('> ### @admin.bsky.social');
-    expect(lines).toContain('> ## Replies');
+    expect(lines).toContain('> \\### @admin.bsky.social');
+    expect(lines).toContain('> \\## Replies');
     /** The body's own fence stays inside the frame rather than closing it and continuing outside. */
-    expect(lines.filter((l) => l === '> ```')).toHaveLength(2);
+    expect(lines.filter((l) => l === '> \\`\\`\\`')).toHaveLength(2);
     expect(lines).not.toContain('```');
     /** A blank line inside the body keeps the quote open instead of ending it. */
     expect(lines).toContain('>');
@@ -967,7 +981,7 @@ describe('bskyGetPostThread', () => {
     /** The only unindented `## Replies` is the one format() writes itself. */
     expect(lines.filter((l) => l === '## Replies')).toHaveLength(1);
     expect(lines).not.toContain('### @admin.bsky.social');
-    expect(lines.some((l) => l.trimStart() === '> ### @admin.bsky.social')).toBe(true);
+    expect(lines.some((l) => l.trimStart() === '> \\### @admin.bsky.social')).toBe(true);
   });
 
   // --- format() parity with structuredContent ---

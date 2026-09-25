@@ -3,14 +3,20 @@
  * rendered through the shared blockquote framing, since it is text the account holder
  * wrote and can carry its own markdown structure; the display name and pronouns, which
  * render inside lines this file writes, go through the inline framing instead, and the
- * label values take it inside the shared label renderer. The avatar and website URLs are
- * left bare — the lexicon types both as URIs.
+ * label values take it inside the shared label renderer, as does each verification issuer's display
+ * name. The avatar and website URLs are left bare — the lexicon types both as URIs.
  * @module mcp-server/tools/definitions/bsky-get-profile
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
-import { inlineUserText, quoteUserText, renderLabelList } from '@/mcp-server/tools/post-format.js';
+import {
+  closeQuotes,
+  inlineUserText,
+  quoteUserText,
+  renderLabelList,
+  verificationSuffix,
+} from '@/mcp-server/tools/post-format.js';
 import { ACTOR_REF_MESSAGE, ACTOR_REF_REGEX, actorFromRef } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
@@ -29,7 +35,8 @@ export const bskyGetProfile = tool('bsky_get_profile', {
   description:
     'Fetch a Bluesky actor\'s public profile by handle (e.g. "bsky.app") or DID ' +
     '(e.g. "did:plc:z72i7hdynmk6r22z27h6tvur"). Returns displayName, handle, DID, bio, pronouns, ' +
-    'website, follower/following/post counts, avatar URL, moderation labels, and pinned post AT-URI. ' +
+    'website, follower/following/post counts, avatar URL, moderation labels, pinned post AT-URI, and ' +
+    'Bluesky verification — whether the account is verified or a trusted verifier, and who verified it. ' +
     'Use this as the first step to resolve a handle to a DID before calling tools that require ' +
     'a DID or AT-URI. Handles and DIDs are interchangeable as input, and "@bsky.app" or the ' +
     "account's bsky.app page (https://bsky.app/profile/bsky.app) work as-is.",
@@ -88,6 +95,51 @@ export const bskyGetProfile = tool('bsky_get_profile', {
       .string()
       .optional()
       .describe('AT-URI of the pinned post, if any. Pass to bsky_get_post_thread to read it.'),
+    verification: z
+      .object({
+        verifiedStatus: z
+          .string()
+          .describe(
+            'Whether a trusted verifier verified this account: "valid", "invalid" (verified once, no ' +
+              'longer holds), or "none". Passed through as Bluesky sends it, so another value may appear.',
+          ),
+        trustedVerifierStatus: z
+          .string()
+          .describe(
+            'Whether this account is itself a trusted verifier, whose verifications Bluesky honors — ' +
+              'same values as verifiedStatus.',
+          ),
+        verifications: z
+          .array(
+            z
+              .object({
+                issuer: z.string().describe('DID of the trusted verifier that issued it.'),
+                issuerHandle: z
+                  .string()
+                  .optional()
+                  .describe('Handle of the issuer, when Bluesky sent it.'),
+                issuerDisplayName: z
+                  .string()
+                  .optional()
+                  .describe(
+                    'Display name of the issuer, when Bluesky sent it. Account-authored text.',
+                  ),
+                uri: z.string().describe('AT-URI of the verification record.'),
+                isValid: z.boolean().describe('Whether this verification still holds.'),
+                createdAt: z.string().describe('ISO 8601 timestamp when it was issued.'),
+              })
+              .describe('One verification a trusted verifier issued for this account.'),
+          )
+          .describe(
+            'Verifications issued by trusted verifiers — empty for an account that verifies others but ' +
+              'was never verified itself.',
+          ),
+      })
+      .optional()
+      .describe(
+        'Bluesky verification state — what tells a verified account from a look-alike handle. Absent ' +
+          'when Bluesky sent none, which it does for an account neither verified nor a trusted verifier.',
+      ),
   }),
 
   errors: [
@@ -126,7 +178,9 @@ export const bskyGetProfile = tool('bsky_get_profile', {
     const lines: string[] = [];
     const name = result.displayName ? inlineUserText(result.displayName) : '';
     lines.push(`## ${name || result.handle}`);
-    lines.push(`**Handle:** @${result.handle} | **DID:** \`${result.did}\``);
+    lines.push(
+      `**Handle:** @${result.handle} | **DID:** \`${result.did}\`${verificationSuffix(result.verification)}`,
+    );
     /**
      * Pronouns take the inline framing rather than the blockquote: they render on a line this file
      * writes, and quoting them would push that label onto a line of its own.
@@ -153,6 +207,24 @@ export const bskyGetProfile = tool('bsky_get_profile', {
     if (result.labels?.length) lines.push(`**Labels:** ${renderLabelList(result.labels)}`);
     if (result.createdAt) lines.push(`**Joined:** ${result.createdAt}`);
     if (result.indexedAt) lines.push(`**Indexed:** ${result.indexedAt}`);
-    return [{ type: 'text', text: lines.join('\n') }];
+    /**
+     * One line per issuance, last and after a blank line so no line below can continue the list. The
+     * issuer's display name is the issuer's own writing, so it takes the inline framing; the handle
+     * and DID beside it are lexicon-typed identifiers.
+     */
+    const issued = result.verification?.verifications ?? [];
+    if (issued.length) {
+      lines.push('', '**Verifications:**');
+      for (const v of issued) {
+        const issuerName = v.issuerDisplayName ? inlineUserText(v.issuerDisplayName) : '';
+        const who = [issuerName, v.issuerHandle ? `(@${v.issuerHandle})` : '']
+          .filter(Boolean)
+          .join(' ');
+        lines.push(
+          `- Issued by ${who ? `${who} ` : ''}\`${v.issuer}\` · isValid: ${v.isValid} · created ${v.createdAt} · \`${v.uri}\``,
+        );
+      }
+    }
+    return [{ type: 'text', text: closeQuotes(lines).join('\n') }];
   },
 });

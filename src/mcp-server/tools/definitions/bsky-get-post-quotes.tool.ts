@@ -5,9 +5,10 @@
  * @module mcp-server/tools/definitions/bsky-get-post-quotes
  */
 
-import { tool, z } from '@cyanheads/mcp-ts-core';
+import { type ContentBlock, tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { renderPostLines } from '@/mcp-server/tools/post-format.js';
+import { pageEnrichment, respondWithinBudget } from '@/mcp-server/tools/response-budget.js';
 import {
   atUriFromRef,
   POST_URI_REF_MESSAGE,
@@ -55,6 +56,25 @@ const PostSchema = z
           .describe('Human-readable handle of the author, e.g. "alice.bsky.social".'),
         displayName: z.string().optional().describe('Display name set by the author.'),
         avatar: z.string().optional().describe('URL of the author avatar image.'),
+        verification: z
+          .object({
+            verifiedStatus: z
+              .string()
+              .describe(
+                'Whether a trusted verifier verified the author: "valid", "invalid" (verified once, no ' +
+                  'longer holds), or "none". Passed through as Bluesky sends it, so another value may appear.',
+              ),
+            trustedVerifierStatus: z
+              .string()
+              .describe(
+                'Whether the author is itself a trusted verifier — same values as verifiedStatus.',
+              ),
+          })
+          .optional()
+          .describe(
+            'Bluesky verification of the author — what tells a verified account from a look-alike ' +
+              'handle. Absent when Bluesky sent none. Who issued it is on bsky_get_profile.',
+          ),
       })
       .describe('Author of this quote post.'),
     replyCount: z.number().optional().describe('Number of replies to this quote post.'),
@@ -103,6 +123,33 @@ const PostSchema = z
   })
   .describe('A post quoting the queried post.');
 
+const QuotesOutput = z.object({
+  uri: z
+    .string()
+    .describe(
+      'AT-URI of the post whose quotes these are, in DID form — the form Bluesky was asked in, whatever ' +
+        'form the input took.',
+    ),
+  posts: z.array(PostSchema).describe('Posts quoting the queried post, newest first.'),
+  cursor: z
+    .string()
+    .optional()
+    .describe('Opaque cursor for the next page. Absent when there are no more quotes.'),
+});
+
+/** Module-level so the handler can measure the rendered page against the response budget. */
+function formatQuotes(result: z.infer<typeof QuotesOutput>): ContentBlock[] {
+  const header = `## Quotes of \`${result.uri}\``;
+  const footer = result.cursor ? `\n\n---\n*cursor: \`${result.cursor}\`*` : '';
+  if (result.posts.length === 0) {
+    return [{ type: 'text', text: `${header}\n\nNo quote posts on this page.${footer}` }];
+  }
+  const note =
+    "*Each quote's embed names the post above by AT-URI and CID; its text is not repeated here.*";
+  const body = result.posts.map((p) => renderPostLines(p).join('\n')).join('\n\n---\n\n');
+  return [{ type: 'text', text: `${header}\n${note}\n\n${body}${footer}` }];
+}
+
 export const bskyGetPostQuotes = tool('bsky_get_post_quotes', {
   title: 'Get Bluesky Post Quotes',
   description:
@@ -135,7 +182,9 @@ export const bskyGetPostQuotes = tool('bsky_get_post_quotes', {
       .default(25)
       .describe(
         'Maximum number of quote posts to return (1–100). Default 25. Pages often hold fewer than the ' +
-          'limit and still continue — follow the cursor, not the count.',
+          'limit and still continue — follow the cursor, not the count. A page that would pass the ' +
+          '48,000-byte response budget comes back with fewer quotes and "budgetCapped: true"; its cursor ' +
+          'continues from the first quote it left out.',
       ),
     cursor: z
       .string()
@@ -146,19 +195,7 @@ export const bskyGetPostQuotes = tool('bsky_get_post_quotes', {
           'Omit for the first page.',
       ),
   }),
-  output: z.object({
-    uri: z
-      .string()
-      .describe(
-        'AT-URI of the post whose quotes these are, in DID form — the form Bluesky was asked in, whatever ' +
-          'form the input took.',
-      ),
-    posts: z.array(PostSchema).describe('Posts quoting the queried post, newest first.'),
-    cursor: z
-      .string()
-      .optional()
-      .describe('Opaque cursor for the next page. Absent when there are no more quotes.'),
-  }),
+  output: QuotesOutput,
 
   enrichment: {
     totalReturned: z.number().describe('Number of quote posts in this response page.'),
@@ -171,6 +208,15 @@ export const bskyGetPostQuotes = tool('bsky_get_post_quotes', {
       ),
     shown: z.number().optional().describe('Number of quote posts returned on this page.'),
     cap: z.number().optional().describe('The limit applied to this page.'),
+    budgetCapped: z
+      .boolean()
+      .optional()
+      .describe(
+        "True when a page of the requested limit would have passed this server's 48,000-byte response " +
+          'budget, so Bluesky was asked again for fewer quotes and that page was returned whole. The ' +
+          'cursor comes from that same response, so paging on from it skips nothing. Independent of ' +
+          '"truncated", which still means only that a cursor was returned.',
+      ),
     notice: z
       .string()
       .optional()
@@ -202,46 +248,48 @@ export const bskyGetPostQuotes = tool('bsky_get_post_quotes', {
   async handler(input, ctx) {
     const uri = atUriFromRef(input.uri);
     ctx.log.info('Fetching Bluesky post quotes', { uri, limit: input.limit });
-    const result = await getBlueskyService().getQuotes(
-      { uri, limit: input.limit, ...(input.cursor ? { cursor: input.cursor } : {}) },
-      ctx,
-    );
-    ctx.enrich({ totalReturned: result.posts.length });
-    /**
-     * The cursor is the only continuation signal: at limit 100, pages of 72–99 quotes carried one and
-     * the last page (6) none, so page size says nothing about what is left.
-     */
-    if (result.cursor) {
-      ctx.enrich.truncated({
-        shown: result.posts.length,
-        cap: input.limit,
-        guidance: 'More quotes exist — pass the returned cursor to fetch the next page.',
-      });
-    } else if (result.posts.length === 0) {
-      ctx.enrich.notice(
-        input.cursor
-          ? 'No more quotes — the previous page was the last.'
-          : result.quoteCount
-            ? `Bluesky returned no quotes of ${result.uri}, though its quoteCount is ${result.quoteCount}: the counter keeps quotes that have left the index, so none of them can be read.`
-            : `${result.uri} has no quotes.`,
+    /** `cursorAccepted` on a re-request: Bluesky just answered this cursor, so a 500 is not about it. */
+    const fetchPage = (postUri: string, limit: number, cursorAccepted = false) =>
+      getBlueskyService().getQuotes(
+        { uri: postUri, limit, ...(input.cursor ? { cursor: input.cursor, cursorAccepted } : {}) },
+        ctx,
       );
-    }
-    return {
-      uri: result.uri,
-      posts: result.posts,
-      ...(result.cursor ? { cursor: result.cursor } : {}),
-    };
+
+    const first = await fetchPage(uri, input.limit);
+    return respondWithinBudget(ctx, first, {
+      count: (page) => page.posts.length,
+      limit: input.limit,
+      slice: (page, kept) => ({ ...page, posts: page.posts.slice(0, kept) }),
+      /** The DID form the first page resolved, so a handle is looked up once per call. */
+      refetch: (limit) => fetchPage(first.uri, limit, true),
+      respond: (page, requested) => ({
+        output: {
+          uri: page.uri,
+          posts: page.posts,
+          ...(page.cursor ? { cursor: page.cursor } : {}),
+        },
+        /**
+         * The cursor is the only continuation signal: at limit 100, pages of 72–99 quotes carried
+         * one and the last page (6) none, so page size says nothing about what is left.
+         */
+        enrichment: pageEnrichment({
+          shown: page.posts.length,
+          cursor: page.cursor,
+          limit: input.limit,
+          requested,
+          noun: 'quotes',
+          more: 'More quotes exist — pass the returned cursor to fetch the next page.',
+          empty: input.cursor
+            ? 'No more quotes — the previous page was the last.'
+            : page.quoteCount
+              ? `Bluesky returned no quotes of ${page.uri}, though its quoteCount is ${page.quoteCount}: the counter keeps quotes that have left the index, so none of them can be read.`
+              : `${page.uri} has no quotes.`,
+        }),
+      }),
+      schema: QuotesOutput,
+      format: formatQuotes,
+    });
   },
 
-  format: (result) => {
-    const header = `## Quotes of \`${result.uri}\``;
-    const footer = result.cursor ? `\n\n---\n*cursor: \`${result.cursor}\`*` : '';
-    if (result.posts.length === 0) {
-      return [{ type: 'text', text: `${header}\n\nNo quote posts on this page.${footer}` }];
-    }
-    const note =
-      "*Each quote's embed names the post above by AT-URI and CID; its text is not repeated here.*";
-    const body = result.posts.map((p) => renderPostLines(p).join('\n')).join('\n\n---\n\n');
-    return [{ type: 'text', text: `${header}\n${note}\n\n${body}${footer}` }];
-  },
+  format: formatQuotes,
 });

@@ -9,7 +9,12 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { inlineUserText, quoteUserText } from '@/mcp-server/tools/post-format.js';
+import {
+  closeQuotes,
+  inlineUserText,
+  quoteUserText,
+  verificationSuffix,
+} from '@/mcp-server/tools/post-format.js';
 import { NON_BLANK_MESSAGE, NON_BLANK_REGEX } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
@@ -38,6 +43,25 @@ const ActorResultSchema = z
       )
       .optional()
       .describe('Moderation labels applied to this actor.'),
+    verification: z
+      .object({
+        verifiedStatus: z
+          .string()
+          .describe(
+            'Whether a trusted verifier verified this account: "valid", "invalid" (verified once, no ' +
+              'longer holds), or "none". Passed through as Bluesky sends it, so another value may appear.',
+          ),
+        trustedVerifierStatus: z
+          .string()
+          .describe(
+            'Whether this account is itself a trusted verifier — same values as verifiedStatus.',
+          ),
+      })
+      .optional()
+      .describe(
+        'Bluesky verification of this account — what tells it from a look-alike handle. Absent when ' +
+          'Bluesky sent none. Who issued it is on bsky_get_profile.',
+      ),
   })
   .describe('A Bluesky actor profile summary.');
 
@@ -45,7 +69,8 @@ export const bskySearchActors = tool('bsky_search_actors', {
   title: 'Search Bluesky Actors',
   description:
     'Find Bluesky accounts by name or handle fragment. Returns ranked profiles with handle, ' +
-    'DID, displayName, bio, and pronouns when the account set them. Follower, following, and post ' +
+    'DID, displayName, bio, pronouns when the account set them, and Bluesky verification status — ' +
+    'which tells a verified account from a look-alike handle. Follower, following, and post ' +
     'counts and the website are not on this view — bsky_get_profile returns them for one account. ' +
     'Use before bsky_get_profile or bsky_get_author_feed when you have a name but not a confirmed ' +
     'handle. Supports cursor-based pagination for browsing beyond the first page of results.',
@@ -139,7 +164,7 @@ export const bskySearchActors = tool('bsky_search_actors', {
     }
     const lines = result.actors.map((a) => {
       const parts = [`## @${a.handle}`];
-      parts.push(`**DID:** \`${a.did}\``);
+      parts.push(`**DID:** \`${a.did}\`${verificationSuffix(a.verification)}`);
       if (a.displayName) parts.push(`**Name:** ${inlineUserText(a.displayName)}`);
       if (a.pronouns) parts.push(`**Pronouns:** ${inlineUserText(a.pronouns)}`);
       if (a.description) parts.push(...quoteUserText(a.description));
@@ -151,7 +176,7 @@ export const bskySearchActors = tool('bsky_search_actors', {
         parts.push(`**Labels:** ${labelParts.join(', ')}`);
       }
       if (a.avatar) parts.push(`**Avatar:** ${a.avatar}`);
-      return parts.join('\n');
+      return closeQuotes(parts).join('\n');
     });
     return [{ type: 'text', text: `${lines.join('\n\n')}${footer}` }];
   },

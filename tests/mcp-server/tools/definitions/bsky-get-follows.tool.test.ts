@@ -279,7 +279,7 @@ describe('bskyGetFollows', () => {
     /** The only bare `---` is the one format() writes between the subject header and the list. */
     expect(lines.filter((l) => l === '---')).toHaveLength(1);
     expect(lines).not.toContain('### @admin.bsky.social');
-    expect(lines).toContain('> ### @admin.bsky.social');
+    expect(lines).toContain('> \\### @admin.bsky.social');
   });
 
   // --- Pronouns ---

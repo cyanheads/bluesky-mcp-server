@@ -7,7 +7,12 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { actorLabel, inlineUserText, quoteUserText } from '@/mcp-server/tools/post-format.js';
+import {
+  actorLabel,
+  closeQuotes,
+  inlineUserText,
+  quoteUserText,
+} from '@/mcp-server/tools/post-format.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
 /** `app.bsky.unspecced.getTrends` lexicon `maximum` for `limit`. */
@@ -140,7 +145,11 @@ export const bskyGetTrending = tool('bsky_get_trending', {
       return [{ type: 'text', text: 'No trending topics available at this time.' }];
     }
     const lines = result.trends.map((t, i) => {
-      const parts = [`${i + 1}. **${inlineUserText(t.displayName)}**`];
+      /**
+       * The topic stands in for a display name that folds to nothing — an empty `**…**` would render
+       * as `****`, a thematic break, rather than as the trend's name.
+       */
+      const parts = [`${i + 1}. **${inlineUserText(t.displayName) || t.topic}**`];
       const meta: string[] = [];
       if (t.postCount != null) meta.push(`${t.postCount.toLocaleString()} posts`);
       if (t.category) meta.push(t.category);
@@ -157,7 +166,7 @@ export const bskyGetTrending = tool('bsky_get_trending', {
           parts.push(`     - ${actorLabel(a)} \`${a.did}\``);
         }
       }
-      return parts.join('\n');
+      return closeQuotes(parts).join('\n');
     });
     return [{ type: 'text', text: lines.join('\n\n') }];
   },

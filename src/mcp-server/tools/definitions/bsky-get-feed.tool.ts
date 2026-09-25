@@ -4,9 +4,10 @@
  * @module mcp-server/tools/definitions/bsky-get-feed
  */
 
-import { tool, z } from '@cyanheads/mcp-ts-core';
+import { type ContentBlock, tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { renderPostLines } from '@/mcp-server/tools/post-format.js';
+import { pageEnrichment, respondWithinBudget } from '@/mcp-server/tools/response-budget.js';
 import { FEED_REF_MESSAGE, FEED_REF_REGEX } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
@@ -55,6 +56,25 @@ const PostSchema = z
           .describe('Human-readable handle of the author, e.g. "alice.bsky.social".'),
         displayName: z.string().optional().describe('Display name set by the author.'),
         avatar: z.string().optional().describe('URL of the author avatar image.'),
+        verification: z
+          .object({
+            verifiedStatus: z
+              .string()
+              .describe(
+                'Whether a trusted verifier verified the author: "valid", "invalid" (verified once, no ' +
+                  'longer holds), or "none". Passed through as Bluesky sends it, so another value may appear.',
+              ),
+            trustedVerifierStatus: z
+              .string()
+              .describe(
+                'Whether the author is itself a trusted verifier — same values as verifiedStatus.',
+              ),
+          })
+          .optional()
+          .describe(
+            'Bluesky verification of the author — what tells a verified account from a look-alike ' +
+              'handle. Absent when Bluesky sent none. Who issued it is on bsky_get_profile.',
+          ),
       })
       .describe('Author of this post.'),
     replyCount: z.number().optional().describe('Number of replies to this post.'),
@@ -126,6 +146,30 @@ const PostSchema = z
   })
   .describe('A single post the feed served.');
 
+const FeedOutput = z.object({
+  posts: z.array(PostSchema).describe('Posts the feed served, in the order it ranked them.'),
+  cursor: z
+    .string()
+    .optional()
+    .describe('Opaque cursor for the next page. Absent when the feed has nothing further.'),
+});
+
+/** Module-level so the handler can measure the rendered page against the response budget. */
+function formatFeed(result: z.infer<typeof FeedOutput>): ContentBlock[] {
+  if (result.posts.length === 0 && !result.cursor) {
+    return [{ type: 'text', text: 'The feed returned no posts.' }];
+  }
+  const output = result.posts.length
+    ? result.posts.map((p) => renderPostLines(p).join('\n')).join('\n\n---\n\n')
+    : 'No posts on this page.';
+  return [
+    {
+      type: 'text',
+      text: result.cursor ? `${output}\n\n---\n*cursor: \`${result.cursor}\`*` : output,
+    },
+  ];
+}
+
 export const bskyGetFeed = tool('bsky_get_feed', {
   title: 'Get Bluesky Feed',
   description:
@@ -159,7 +203,9 @@ export const bskyGetFeed = tool('bsky_get_feed', {
       .default(25)
       .describe(
         'Maximum number of posts to return (1–100). Default 25. A feed may return fewer than the ' +
-          'limit on a page that still has more after it — follow the cursor, not the count.',
+          'limit on a page that still has more after it — follow the cursor, not the count. A page that ' +
+          'would pass the 48,000-byte response budget is asked for again with fewer posts and carries ' +
+          '"budgetCapped: true"; its cursor continues after the posts it holds.',
       ),
     cursor: z
       .string()
@@ -169,13 +215,7 @@ export const bskyGetFeed = tool('bsky_get_feed', {
         'Opaque pagination cursor from a previous response of the same feed. Omit for the first page.',
       ),
   }),
-  output: z.object({
-    posts: z.array(PostSchema).describe('Posts the feed served, in the order it ranked them.'),
-    cursor: z
-      .string()
-      .optional()
-      .describe('Opaque cursor for the next page. Absent when the feed has nothing further.'),
-  }),
+  output: FeedOutput,
 
   enrichment: {
     totalReturned: z.number().describe('Number of posts in this response page.'),
@@ -185,7 +225,16 @@ export const bskyGetFeed = tool('bsky_get_feed', {
       .describe('True when the feed has more posts after this page (a cursor was returned).'),
     shown: z.number().optional().describe('Number of posts returned on this page.'),
     cap: z.number().optional().describe('The limit applied to this page.'),
-    notice: z.string().optional().describe('Guidance when the feed returned nothing.'),
+    budgetCapped: z
+      .boolean()
+      .optional()
+      .describe(
+        "True when a page of the requested limit would have passed this server's 48,000-byte response " +
+          'budget, so the feed was asked again for fewer posts and that page was returned whole. The ' +
+          'cursor comes from that same response, so paging on from it continues where these posts ' +
+          'end. Independent of "truncated", which still means only that a cursor was returned.',
+      ),
+    notice: z.string().optional().describe('Guidance when the feed returned nothing, or was cut.'),
   },
 
   errors: [
@@ -218,48 +267,46 @@ export const bskyGetFeed = tool('bsky_get_feed', {
 
   async handler(input, ctx) {
     ctx.log.info('Fetching Bluesky feed', { feed: input.feed, limit: input.limit });
-    const result = await getBlueskyService().getFeed(
-      {
-        feed: input.feed,
-        limit: input.limit,
-        ...(input.cursor ? { cursor: input.cursor } : {}),
-      },
-      ctx,
-    );
-    ctx.enrich({ totalReturned: result.posts.length });
-    /**
-     * The cursor is the only sound signal. A trend feed answers 29 of a requested 30 with more
-     * pages behind it, and a personalized feed answers a single item with `cursor: ""` — the count
-     * alone would call the first complete and the second truncated. An empty cursor never reaches
-     * here: the service drops it.
-     */
-    if (result.cursor) {
-      ctx.enrich.truncated({
-        shown: result.posts.length,
-        cap: input.limit,
-        guidance: 'More posts exist — pass the returned cursor to fetch the next page.',
-      });
-    }
-    if (result.posts.length === 0 && !result.cursor) {
-      ctx.enrich.notice(
-        'The feed returned no posts. It may have nothing to serve right now — try a different feed, such as a bsky_get_trending feedUri.',
+    const fetchPage = (feed: string, limit: number) =>
+      getBlueskyService().getFeed(
+        { feed, limit, ...(input.cursor ? { cursor: input.cursor } : {}) },
+        ctx,
       );
-    }
-    return { posts: result.posts, ...(result.cursor ? { cursor: result.cursor } : {}) };
+
+    /**
+     * A ranked feed reranks on every request, so a re-requested page is not a prefix of the first —
+     * which is why the page is re-requested rather than cut: its posts and cursor stay one answer.
+     */
+    const first = await fetchPage(input.feed, input.limit);
+    return respondWithinBudget(ctx, first, {
+      count: (page) => page.posts.length,
+      limit: input.limit,
+      slice: (page, kept) => ({ ...page, posts: page.posts.slice(0, kept) }),
+      /** The DID form the first page resolved, so a handle owner is looked up once per call. */
+      refetch: (limit) => fetchPage(first.feedUri, limit),
+      respond: (page, requested) => ({
+        output: { posts: page.posts, ...(page.cursor ? { cursor: page.cursor } : {}) },
+        /**
+         * The cursor is the only sound signal. A trend feed answers 29 of a requested 30 with more
+         * pages behind it, and a personalized feed answers a single item with `cursor: ""` — the
+         * count alone would call the first complete and the second truncated. An empty cursor never
+         * reaches here: the service drops it.
+         */
+        enrichment: pageEnrichment({
+          shown: page.posts.length,
+          cursor: page.cursor,
+          limit: input.limit,
+          requested,
+          noun: 'posts',
+          more: 'More posts exist — pass the returned cursor to fetch the next page.',
+          empty:
+            'The feed returned no posts. It may have nothing to serve right now — try a different feed, such as a bsky_get_trending feedUri.',
+        }),
+      }),
+      schema: FeedOutput,
+      format: formatFeed,
+    });
   },
 
-  format: (result) => {
-    if (result.posts.length === 0 && !result.cursor) {
-      return [{ type: 'text', text: 'The feed returned no posts.' }];
-    }
-    const output = result.posts.length
-      ? result.posts.map((p) => renderPostLines(p).join('\n')).join('\n\n---\n\n')
-      : 'No posts on this page.';
-    return [
-      {
-        type: 'text',
-        text: result.cursor ? `${output}\n\n---\n*cursor: \`${result.cursor}\`*` : output,
-      },
-    ];
-  },
+  format: formatFeed,
 });

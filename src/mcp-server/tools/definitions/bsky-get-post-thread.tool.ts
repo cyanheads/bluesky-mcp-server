@@ -2,14 +2,24 @@
  * @fileoverview Fetch a Bluesky post conversation thread by AT-URI, disclosing both ways the
  * response falls short of the conversation: how far the AppView's reply counts run ahead of the
  * replies it returned, and whether the parent chain stopped at the requested height rather than at
- * the start of the thread. Reply depth rides the author heading rather than the left margin, so no
- * line of a nested node crosses the four-space threshold that would turn it into a code block.
+ * the start of the thread. A thread past the 48,000-byte response budget is cut between whole posts,
+ * breadth-first, and the cut is marked on the posts kept so every omitted one is a request away.
+ * Reply depth rides the author heading rather than the left margin, so no line of a nested node
+ * crosses the four-space threshold that would turn it into a code block.
  * @module mcp-server/tools/definitions/bsky-get-post-thread
  */
 
-import { tool, z } from '@cyanheads/mcp-ts-core';
+import { type ContentBlock, tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { renderPostLines } from '@/mcp-server/tools/post-format.js';
+import {
+  applyEnrichment,
+  type EnrichmentValue,
+  fitsBudget,
+  largestFitting,
+  measureResponse,
+  RESPONSE_BUDGET_BYTES,
+} from '@/mcp-server/tools/response-budget.js';
 import {
   AT_URI_REF_MESSAGE,
   AT_URI_REF_REGEX,
@@ -61,6 +71,26 @@ function parentChainLine(node: ThreadPost): string {
   return `*[Not the start of the conversation — the parent chain stops here at the requested parent_height, and this post replies to \`${node.post.replyToUri}\`, which is not in this response. Fetch this post's AT-URI with bsky_get_post_thread to continue upward]*`;
 }
 
+/** @internal How every budget marker names its cause, so a reader can tell it from the AppView's own cuts. */
+const BUDGET_CAUSE = `left out to keep this response within its ${RESPONSE_BUDGET_BYTES.toLocaleString('en-US')}-byte budget`;
+
+/** @internal The line above the topmost kept node whose ancestors the budget cut. */
+function budgetParentsLine(n: number): string {
+  return `*[${n.toLocaleString()} earlier ${n === 1 ? 'post' : 'posts'} in this conversation ${n === 1 ? 'was' : 'were'} ${BUDGET_CAUSE} — fetch this post's AT-URI with bsky_get_post_thread, depth 0 and parent_height ${n} or more, to read above it]*`;
+}
+
+/** @internal The line below a kept reply whose own replies the budget cut. */
+function budgetRepliesLine(n: number): string {
+  const them = n === 1 ? 'it' : 'them';
+  return `*[${n.toLocaleString()} more ${n === 1 ? 'reply' : 'replies'} to this post ${n === 1 ? 'was' : 'were'} ${BUDGET_CAUSE}, with everything below ${them} — fetch this post's AT-URI with bsky_get_post_thread, parent_height 0, to read ${them}]*`;
+}
+
+/** @internal The line naming the target's direct replies the budget cut, one AT-URI each. */
+function budgetReplyUrisLine(uris: readonly string[]): string {
+  const n = uris.length;
+  return `*[${n.toLocaleString()} more direct ${n === 1 ? 'reply' : 'replies'} to this post ${n === 1 ? 'was' : 'were'} ${BUDGET_CAUSE}, with everything below ${n === 1 ? 'it' : 'them'} — fetch each AT-URI with bsky_get_post_thread, parent_height 0: ${uris.map((uri) => `\`${uri}\``).join(', ')}]*`;
+}
+
 /**
  * @internal How a reply's depth is shown. It rides the author heading rather than the left margin:
  * indenting two spaces per level put every line of a node at depth 2 or below past four leading
@@ -89,7 +119,10 @@ function formatThreadNode(node: ThreadPost, depth: number, lines: string[]): voi
     lines.push(`${marker}*[Post hidden — its author blocks this view]*${uriSuffix}`);
     return;
   }
-  /** Above the node it belongs to, since the posts it names sit above it in the conversation. */
+  /** Above the node they belong to, since the posts they name sit above it in the conversation. */
+  if (node.budgetOmittedParents) {
+    lines.push(`${marker}${budgetParentsLine(node.budgetOmittedParents)}`);
+  }
   if (node.parentChainTruncated) {
     lines.push(`${marker}${parentChainLine(node)}`);
   }
@@ -106,6 +139,9 @@ function formatThreadNode(node: ThreadPost, depth: number, lines: string[]): voi
    * Blank-line separated for the same reason: an emphasis line following the post body directly
    * would be read as a continuation of the blockquote it sits under rather than as its own note.
    */
+  if (node.budgetOmittedReplies) {
+    lines.push('', `${marker}${budgetRepliesLine(node.budgetOmittedReplies)}`);
+  }
   if (node.truncated) {
     lines.push('', `${marker}${truncationLine(node)}`);
   }
@@ -171,9 +207,10 @@ function postCountLabel(n: number): string {
 /**
  * @internal Spell out what the response is missing and which part of it is still reachable.
  * Two independent shortfalls feed it — the reply tree below the target and the parent chain above —
- * and either alone is enough to make the notice worth sending.
+ * and either alone is enough to make the notice worth sending. A budget cut is a third, told apart
+ * from both: the AppView returned those posts, and each is one request away.
  */
-function truncationNotice(survey: ThreadSurvey): string {
+function truncationNotice(survey: ThreadSurvey, cut?: ThreadBudgetCut): string {
   const parts: string[] = [];
   if (survey.unreturnedReplies > 0) {
     parts.push(
@@ -186,7 +223,7 @@ function truncationNotice(survey: ThreadSurvey): string {
     }
     if (survey.unavailableNodes > 0) {
       parts.push(
-        `On ${postCountLabel(survey.unavailableNodes)} the difference is not retrievable by any request: Bluesky holds replies back past a per-post limit, and its counts also keep including replies that have left the index, so treat the number as an upper bound on what is missing rather than a count of readable replies.`,
+        `For ${postCountLabel(survey.unavailableNodes)}, the difference is not retrievable by any request: Bluesky holds replies back past a per-post limit, and its counts also keep including replies that have left the index, so treat the number as an upper bound on what is missing rather than a count of readable replies.`,
       );
     }
     if (survey.authorHidden > 0) {
@@ -200,8 +237,133 @@ function truncationNotice(survey: ThreadSurvey): string {
       `The conversation also continues above what was returned: the topmost post in the parent chain, \`${survey.parentChainTopUri}\`, is itself a reply, so it is not the start of the thread. This part is fully recoverable — unlike the reply shortfall, parent_height is honored level for level, so calling bsky_get_post_thread with that AT-URI walks further up.`,
     );
   }
+  if (cut) parts.push(budgetNotice(cut));
   parts.push('Treat any summary of this conversation as covering only what was returned.');
   return parts.join(' ');
+}
+
+/** What the response budget left out of one thread. */
+interface ThreadBudgetCut {
+  /** Nodes kept, the target included. */
+  kept: number;
+  /** Nodes the AppView returned that the response left out. */
+  omitted: number;
+  /** The target's direct replies left out. */
+  omittedDirect: number;
+  /** Ancestors above the topmost kept parent left out. */
+  omittedParents: number;
+}
+
+/** @internal The part of the notice a budget cut adds: how much was left out, and the calls that read it. */
+function budgetNotice(cut: ThreadBudgetCut): string {
+  const deeper = cut.omitted - cut.omittedParents - cut.omittedDirect;
+  const left = [
+    cut.omittedParents > 0
+      ? `${postCountLabel(cut.omittedParents)} higher in the parent chain`
+      : '',
+    cut.omittedDirect > 0
+      ? `${replyCountLabel(cut.omittedDirect)} directly to the requested post`
+      : '',
+    deeper > 0 ? `${replyCountLabel(deeper)} further down the reply tree` : '',
+  ].filter(Boolean);
+  const calls = [
+    cut.omittedDirect > 0 ? 'each AT-URI in budgetOmittedReplyUris on the requested post' : '',
+    deeper > 0 ? 'the AT-URI of every post carrying budgetOmittedReplies' : '',
+  ].filter(Boolean);
+  return [
+    `This response holds ${cut.kept.toLocaleString()} of the ${(cut.kept + cut.omitted).toLocaleString()} posts Bluesky returned: the rest would have run past this server's ${RESPONSE_BUDGET_BYTES.toLocaleString('en-US')}-byte response budget, so ${left.join(', ')} ${cut.omitted === 1 ? 'was' : 'were'} left out whole (budgetOmitted).`,
+    calls.length
+      ? `Fetch ${calls.join(', and ')} with bsky_get_post_thread, parent_height 0 and the same depth, to read the replies left out.`
+      : '',
+    cut.omittedParents > 0
+      ? 'Fetch the post carrying budgetOmittedParents with depth 0 to read the parent chain above it.'
+      : '',
+    'A fetch that is itself cut marks its own frontier the same way.',
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/**
+ * @internal The order the budget keeps nodes in: the target, then its parents nearest-first, then its
+ * replies level by level in AppView order. Every prefix of it is a connected conversation — a reply
+ * is never kept without its parent, and the replies a node keeps are always the first of its own.
+ */
+function budgetOrder(target: ThreadPost): ThreadPost[] {
+  const order: ThreadPost[] = [target];
+  for (let p = target.parent; p; p = p.parent) order.push(p);
+  for (
+    let level = target.replies ?? [];
+    level.length;
+    level = level.flatMap((n) => n.replies ?? [])
+  ) {
+    order.push(...level);
+  }
+  return order;
+}
+
+/**
+ * @internal The thread cut down to `kept`, with its frontier marked: the target names its cut direct
+ * replies by AT-URI, a kept reply counts its cut replies, and the topmost kept parent — or the target,
+ * when no parent survives — counts the ancestors cut above it. Nodes are copied; the AppView's own
+ * fields on each are left as they were.
+ */
+function cutThread(target: ThreadPost, kept: ReadonlySet<ThreadPost>) {
+  const keepReplies = (node: ThreadPost, isTarget: boolean): ThreadPost => {
+    const { parent: _parent, replies = [], ...rest } = node;
+    const keptReplies = replies.filter((r) => kept.has(r));
+    const omitted = replies.filter((r) => !kept.has(r));
+    const marker = isTarget
+      ? { budgetOmittedReplyUris: omitted.map((r) => r.post.uri) }
+      : { budgetOmittedReplies: omitted.length };
+    return {
+      ...rest,
+      ...(keptReplies.length ? { replies: keptReplies.map((r) => keepReplies(r, false)) } : {}),
+      ...(omitted.length ? marker : {}),
+    };
+  };
+  const parents: ThreadPost[] = [];
+  for (let p = target.parent; p; p = p.parent) parents.push(p);
+  const keptParents = parents.filter((p) => kept.has(p));
+  const omittedParents = parents.length - keptParents.length;
+  let chain: ThreadPost | undefined;
+  for (let i = keptParents.length - 1; i >= 0; i--) {
+    const { parent: _parent, ...rest } = keptParents[i] as ThreadPost;
+    const topmost = i === keptParents.length - 1;
+    chain = {
+      ...rest,
+      ...(chain ? { parent: chain } : {}),
+      ...(topmost && omittedParents ? { budgetOmittedParents: omittedParents } : {}),
+    };
+  }
+  const thread = keepReplies(target, true);
+  if (chain) thread.parent = chain;
+  else if (omittedParents) thread.budgetOmittedParents = omittedParents;
+  const omittedDirect = (target.replies ?? []).filter((r) => !kept.has(r)).length;
+  return { thread, omittedDirect, omittedParents };
+}
+
+/**
+ * @internal The enrichment for one response, in the order the fields are written. The shortfall
+ * fields describe what Bluesky did not return, over everything it did return — a budget cut leaves
+ * them as the uncut response reports them, so its survey is the uncut one with `nodes` set to the
+ * posts kept. The budget pair describes the posts left out.
+ */
+function threadEnrichment(survey: ThreadSurvey, cut?: ThreadBudgetCut) {
+  const enrichment: Record<string, EnrichmentValue> = { totalReturned: survey.nodes };
+  if (survey.unreturnedReplies > 0) {
+    enrichment.truncated = true;
+    enrichment.unreturnedReplies = survey.unreturnedReplies;
+  }
+  if (survey.parentChainTopUri) enrichment.parentChainTruncated = true;
+  if (cut) {
+    enrichment.budgetCapped = true;
+    enrichment.budgetOmitted = cut.omitted;
+  }
+  if (survey.unreturnedReplies > 0 || survey.parentChainTopUri || cut) {
+    enrichment.notice = truncationNotice(survey, cut);
+  }
+  return enrichment;
 }
 
 /**
@@ -257,15 +419,16 @@ function gateAudience(gate: ThreadGateView): string {
  *
  * Passthrough is why the node this describes must be normalized down to what it names: the sibling
  * tools declare their post shape as a closed object, so an extra field is stripped there and
- * survives here. The author fields listed below are the four the service carries and the four the
- * renderer emits — widening the normalized author again would put fields in this channel alone.
+ * survives here. The author fields listed below are the ones the service carries and the renderer
+ * emits — widening the normalized author again would put fields in this channel alone.
  */
 const ThreadNodeSchema: z.ZodType<unknown> = z
   .object({})
   .passthrough()
   .describe(
     'The conversation thread rooted at the requested post — a recursive node tree. Each node has: ' +
-      'post: { uri, cid, text, author: { did, handle, displayName?, avatar? }, replyCount?, repostCount?, likeCount?, quoteCount?, indexedAt?, createdAt?, labels?: [{ val, src?, cts? }], embed?, replyToUri?, replyRootUri? }. ' +
+      'post: { uri, cid, text, author: { did, handle, displayName?, avatar?, verification? }, replyCount?, repostCount?, likeCount?, quoteCount?, indexedAt?, createdAt?, labels?: [{ val, src?, cts? }], embed?, replyToUri?, replyRootUri? }. ' +
+      'author.verification: { verifiedStatus, trustedVerifierStatus } — whether a trusted verifier verified the author and whether the author is one, each "valid", "invalid" (verified once, no longer holds), or "none", passed through as Bluesky sends it; absent when Bluesky sent none. ' +
       'quoteCount counts quote posts, which are not part of the thread — read them with bsky_get_post_quotes. ' +
       'parent?: parent thread node. replies?: array of child thread nodes. ' +
       "truncated?: true when the node's own post.replyCount exceeds the replies returned for it, with " +
@@ -282,7 +445,15 @@ const ThreadNodeSchema: z.ZodType<unknown> = z
       'it are one request away. Set on the target itself when no parent was returned at all. ' +
       'notFound?: true when the post was deleted or never existed. blocked?: true when its author blocks ' +
       'this view. Both stubs carry the reported AT-URI on post.uri and no content — a blocked node also ' +
-      'carries the author DID on post.author.did.',
+      'carries the author DID on post.author.did. ' +
+      "Set only when this server's 48,000-byte response budget cut the thread (budgetCapped), on the posts " +
+      'Bluesky did return: budgetOmittedReplyUris?: on the target, the AT-URIs of its direct replies left ' +
+      'out, in Bluesky order — fetch each as its own thread (parent_height 0) to read it and everything ' +
+      'below it. budgetOmittedReplies?: on any other node, how many of its direct replies were left out, ' +
+      "each with everything below it — fetch the node's post.uri as its own thread (parent_height 0). " +
+      'budgetOmittedParents?: on the topmost parent kept, or the target when none was, how many ancestors ' +
+      "above it were left out — fetch the node's post.uri with depth 0 to read them. Independent of " +
+      'truncated / unreturnedReplies / parentChainTruncated, which describe what Bluesky itself did not return.',
   );
 
 /** Reply restrictions the thread author set, when the AppView returned a threadgate. */
@@ -309,6 +480,73 @@ const ThreadGateSchema = z
       'counts run ahead of the tree.',
   );
 
+const ThreadOutput = z.object({
+  thread: ThreadNodeSchema,
+  threadgate: ThreadGateSchema.optional(),
+});
+
+/** Module-level so the handler can measure the rendered thread against the response budget. */
+function formatThread(result: z.infer<typeof ThreadOutput>): ContentBlock[] {
+  const thread = result.thread as ThreadPost;
+  /**
+   * The gate leads, and leads in every branch: it is the one part of the response that explains
+   * a missing reply as a deliberate act rather than an API limit.
+   */
+  const gate = result.threadgate;
+  const gateLines = gate ? renderGateLines(gate) : [];
+  /**
+   * `post` is checked as well as `notFound`: the node tree is declared `passthrough()`, so an
+   * empty node is a valid value of the output schema even though the AppView never sends one.
+   */
+  if (!thread?.post || thread.notFound) {
+    return [{ type: 'text', text: [...gateLines, '*Post not found or deleted.*'].join('\n') }];
+  }
+  if (thread.blocked) {
+    return [
+      {
+        type: 'text',
+        text: [...gateLines, '*Post hidden — its author blocks this view.*'].join('\n'),
+      },
+    ];
+  }
+  const lines: string[] = ['# Thread', ...gateLines];
+  // Render parent chain first (walking up)
+  if (thread.parent) {
+    lines.push('## Parent chain');
+    const parents: ThreadPost[] = [];
+    let cur: ThreadPost | undefined = thread.parent;
+    while (cur) {
+      parents.unshift(cur);
+      cur = cur.parent;
+    }
+    for (const p of parents) {
+      const { replies: _r, ...pWithoutReplies } = p;
+      formatThreadNode(pWithoutReplies, 0, lines);
+      lines.push('');
+    }
+    lines.push('---');
+  }
+  lines.push('## This post');
+  /**
+   * The target renders alone — `formatThreadNode` walks `replies` itself, so leaving them
+   * on would emit the whole subtree here and again under `## Replies`.
+   */
+  const { parent: _p, replies: _r2, ...targetOnly } = thread;
+  formatThreadNode(targetOnly, 0, lines);
+  const cutUris = thread.budgetOmittedReplyUris ?? [];
+  if (thread.replies?.length || cutUris.length) {
+    lines.push('');
+    lines.push('## Replies');
+    for (const reply of thread.replies ?? []) {
+      formatThreadNode(reply, 0, lines);
+      lines.push('');
+    }
+    /** After the replies kept, since the ones it names follow them in Bluesky's order. */
+    if (cutUris.length) lines.push(budgetReplyUrisLine(cutUris), '');
+  }
+  return [{ type: 'text', text: lines.join('\n') }];
+}
+
 export const bskyGetPostThread = tool('bsky_get_post_thread', {
   title: 'Get Bluesky Post Thread',
   description:
@@ -330,6 +568,11 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
     'instead of at the start of the conversation, the topmost node carries "parentChainTruncated: true" and ' +
     'fetching its AT-URI as its own thread continues upward. The enrichment fields total the difference for ' +
     'the whole thread; check them before describing a conversation as complete or naming its first post. ' +
+    "A thread that would pass this server's 48,000-byte response budget is cut between whole posts — the " +
+    'target kept first, then its parents nearest-first, then replies level by level — with "budgetCapped: ' +
+    'true" and the cut marked where it happened: "budgetOmittedReplyUris" on the target and ' +
+    '"budgetOmittedReplies" on a kept reply name the replies left out, "budgetOmittedParents" on the ' +
+    'topmost parent the ancestors; fetching those AT-URIs as their own threads reads the rest. ' +
     "In the rendered text nothing is indented: a reply's author heading carries how far it sits below the " +
     'top-level reply it descends from ("### ↳2"), and every post also names its own parent on a "Reply to" line.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
@@ -371,10 +614,7 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
           'target then reports the same marker on itself, since its own parent was not returned either.',
       ),
   }),
-  output: z.object({
-    thread: ThreadNodeSchema,
-    threadgate: ThreadGateSchema.optional(),
-  }),
+  output: ThreadOutput,
 
   enrichment: {
     totalReturned: z
@@ -386,7 +626,8 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
       .boolean()
       .optional()
       .describe(
-        'True when at least one post in the reply tree returned fewer replies than Bluesky counts for it.',
+        'True when at least one post in the reply tree returned fewer replies than Bluesky counts for it — ' +
+          'counted over every post Bluesky returned, including any the response budget left out.',
       ),
     parentChainTruncated: z
       .boolean()
@@ -403,8 +644,26 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
       .describe(
         'How far the reply counts run ahead of the replies returned, summed across the reply tree. An ' +
           "upper bound on what is missing, not a count of readable replies — Bluesky's counters keep " +
-          'including replies that have left the index. Compare against the root post replyCount to judge ' +
-          'how much of the conversation is present.',
+          'including replies that have left the index. Summed over every post Bluesky returned, including ' +
+          'any the response budget left out. Compare against the root post replyCount to judge how much of ' +
+          'the conversation is present.',
+      ),
+    budgetCapped: z
+      .boolean()
+      .optional()
+      .describe(
+        "True when the whole thread would have passed this server's 48,000-byte response budget, so " +
+          'posts Bluesky returned were left out whole — the target first kept, then its parents ' +
+          'nearest-first, then replies level by level. The nodes at the cut carry budgetOmittedReplyUris, ' +
+          'budgetOmittedReplies, or budgetOmittedParents, and fetching those AT-URIs reads everything left ' +
+          'out. Independent of "truncated" and "parentChainTruncated", which describe what Bluesky did not return.',
+      ),
+    budgetOmitted: z
+      .number()
+      .optional()
+      .describe(
+        'How many posts Bluesky returned that the response budget left out, set alongside budgetCapped. ' +
+          'totalReturned counts the posts kept.',
       ),
     notice: z
       .string()
@@ -482,76 +741,48 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
       throw err;
     }
 
-    const survey = surveyThread(result.thread, result.threadgate);
-    ctx.enrich({ totalReturned: survey.nodes });
-    if (survey.unreturnedReplies > 0) {
-      ctx.enrich({ truncated: true, unreturnedReplies: survey.unreturnedReplies });
-    }
-    if (survey.parentChainTopUri) {
-      ctx.enrich({ parentChainTruncated: true });
-    }
-    if (survey.unreturnedReplies > 0 || survey.parentChainTopUri) {
-      ctx.enrich.notice(truncationNotice(survey));
-    }
-
-    return result;
-  },
-
-  format: (result) => {
-    const thread = result.thread as ThreadPost;
-    /**
-     * The gate leads, and leads in every branch: it is the one part of the response that explains
-     * a missing reply as a deliberate act rather than an API limit.
-     */
     const gate = result.threadgate;
-    const gateLines = gate ? renderGateLines(gate) : [];
-    /**
-     * `post` is checked as well as `notFound`: the node tree is declared `passthrough()`, so an
-     * empty node is a valid value of the output schema even though the AppView never sends one.
-     */
-    if (!thread?.post || thread.notFound) {
-      return [{ type: 'text', text: [...gateLines, '*Post not found or deleted.*'].join('\n') }];
+    const measure = (response: PostThreadResult, enrichment: Record<string, EnrichmentValue>) =>
+      measureResponse(ThreadOutput.parse(response), formatThread, enrichment);
+    const survey = surveyThread(result.thread, gate);
+    const whole = threadEnrichment(survey);
+    const order = budgetOrder(result.thread);
+    if (order.length === 1 || fitsBudget(measure(result, whole))) {
+      applyEnrichment(ctx, whole);
+      return result;
     }
-    if (thread.blocked) {
-      return [
+
+    /**
+     * Over the budget: keep the longest prefix of the budget order whose response fits. A kept node
+     * costs far more than the marker it retires, so a response grows with every node kept and the
+     * search is sound; the prefix of one — the target alone — is kept whatever its size.
+     */
+    const build = (kept: number) => {
+      const cut = cutThread(result.thread, new Set(order.slice(0, kept)));
+      const response: PostThreadResult = {
+        thread: cut.thread,
+        ...(gate ? { threadgate: gate } : {}),
+      };
+      const enrichment = threadEnrichment(
+        { ...survey, nodes: kept },
         {
-          type: 'text',
-          text: [...gateLines, '*Post hidden — its author blocks this view.*'].join('\n'),
+          kept,
+          omitted: order.length - kept,
+          omittedDirect: cut.omittedDirect,
+          omittedParents: cut.omittedParents,
         },
-      ];
-    }
-    const lines: string[] = ['# Thread', ...gateLines];
-    // Render parent chain first (walking up)
-    if (thread.parent) {
-      lines.push('## Parent chain');
-      const parents: ThreadPost[] = [];
-      let cur: ThreadPost | undefined = thread.parent;
-      while (cur) {
-        parents.unshift(cur);
-        cur = cur.parent;
-      }
-      for (const p of parents) {
-        const { replies: _r, ...pWithoutReplies } = p;
-        formatThreadNode(pWithoutReplies, 0, lines);
-        lines.push('');
-      }
-      lines.push('---');
-    }
-    lines.push('## This post');
-    /**
-     * The target renders alone — `formatThreadNode` walks `replies` itself, so leaving them
-     * on would emit the whole subtree here and again under `## Replies`.
-     */
-    const { parent: _p, replies: _r2, ...targetOnly } = thread;
-    formatThreadNode(targetOnly, 0, lines);
-    if (thread.replies?.length) {
-      lines.push('');
-      lines.push('## Replies');
-      for (const reply of thread.replies) {
-        formatThreadNode(reply, 0, lines);
-        lines.push('');
-      }
-    }
-    return [{ type: 'text', text: lines.join('\n') }];
+      );
+      return { response, enrichment };
+    };
+    const kept = largestFitting(order.length - 1, (n) => {
+      const { response, enrichment } = build(n);
+      return fitsBudget(measure(response, enrichment));
+    });
+    const { response, enrichment } = build(kept);
+    ctx.log.info('Thread cut to the response budget', { kept, omitted: order.length - kept });
+    applyEnrichment(ctx, enrichment);
+    return response;
   },
+
+  format: formatThread,
 });

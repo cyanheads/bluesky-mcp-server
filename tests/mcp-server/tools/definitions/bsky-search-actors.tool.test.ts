@@ -216,8 +216,8 @@ describe('bskySearchActors', () => {
     );
     expect(lines).not.toContain('---');
     expect(lines).not.toContain('## Contact');
-    expect(lines).toContain('> ---');
-    expect(lines).toContain('> ## Contact');
+    expect(lines).toContain('> \\---');
+    expect(lines).toContain('> \\## Contact');
   });
 
   // --- Query validation (schema layer, before the upstream call) ---

@@ -6,9 +6,10 @@
  * @module mcp-server/tools/definitions/bsky-get-author-feed
  */
 
-import { tool, z } from '@cyanheads/mcp-ts-core';
+import { type ContentBlock, tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { renderPostLines } from '@/mcp-server/tools/post-format.js';
+import { pageEnrichment, respondWithinBudget } from '@/mcp-server/tools/response-budget.js';
 import { ACTOR_REF_MESSAGE, ACTOR_REF_REGEX, actorFromRef } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 import type { AuthorFeedResult } from '@/services/bluesky/types.js';
@@ -62,6 +63,25 @@ const PostSchema = z
           .describe('Human-readable handle of the author, e.g. "alice.bsky.social".'),
         displayName: z.string().optional().describe('Display name set by the author.'),
         avatar: z.string().optional().describe('URL of the author avatar image.'),
+        verification: z
+          .object({
+            verifiedStatus: z
+              .string()
+              .describe(
+                'Whether a trusted verifier verified the author: "valid", "invalid" (verified once, no ' +
+                  'longer holds), or "none". Passed through as Bluesky sends it, so another value may appear.',
+              ),
+            trustedVerifierStatus: z
+              .string()
+              .describe(
+                'Whether the author is itself a trusted verifier — same values as verifiedStatus.',
+              ),
+          })
+          .optional()
+          .describe(
+            'Bluesky verification of the author — what tells a verified account from a look-alike ' +
+              'handle. Absent when Bluesky sent none. Who issued it is on bsky_get_profile.',
+          ),
       })
       .describe('Author of this post.'),
     replyCount: z.number().optional().describe('Number of replies to this post.'),
@@ -133,6 +153,35 @@ const PostSchema = z
   })
   .describe("A single item from the author feed — the actor's own post, or a post they reposted.");
 
+const AuthorFeedOutput = z.object({
+  posts: z
+    .array(PostSchema)
+    .describe(
+      "Feed items, newest-first — the actor's own posts and the posts they reposted. Items carrying " +
+        '"repostedBy" were written by the account named in "author", not by the requested actor.',
+    ),
+  cursor: z
+    .string()
+    .optional()
+    .describe('Opaque cursor for the next page. Absent on the last page.'),
+});
+
+/** Module-level so the handler can measure the rendered page against the response budget. */
+function formatAuthorFeed(result: z.infer<typeof AuthorFeedOutput>): ContentBlock[] {
+  if (result.posts.length === 0 && !result.cursor) {
+    return [{ type: 'text', text: 'No posts found for this actor.' }];
+  }
+  const output = result.posts.length
+    ? result.posts.map((p) => renderPostLines(p).join('\n')).join('\n\n---\n\n')
+    : 'No posts on this page.';
+  return [
+    {
+      type: 'text',
+      text: result.cursor ? `${output}\n\n---\n*cursor: \`${result.cursor}\`*` : output,
+    },
+  ];
+}
+
 export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
   title: 'Get Bluesky Author Feed',
   description:
@@ -191,7 +240,11 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
       .min(1)
       .max(100)
       .default(25)
-      .describe('Maximum number of posts to return (1–100). Default 25.'),
+      .describe(
+        'Maximum number of posts to return (1–100). Default 25. A page that would pass the 48,000-byte ' +
+          'response budget comes back with fewer posts and "budgetCapped: true"; its cursor continues ' +
+          'from the first post it left out.',
+      ),
     cursor: z
       .string()
       .max(2048)
@@ -201,18 +254,7 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
           'Omit for the first page.',
       ),
   }),
-  output: z.object({
-    posts: z
-      .array(PostSchema)
-      .describe(
-        "Feed items, newest-first — the actor's own posts and the posts they reposted. Items carrying " +
-          '"repostedBy" were written by the account named in "author", not by the requested actor.',
-      ),
-    cursor: z
-      .string()
-      .optional()
-      .describe('Opaque cursor for the next page. Absent on the last page.'),
-  }),
+  output: AuthorFeedOutput,
 
   errors: [
     {
@@ -254,6 +296,15 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
       .describe('True when more posts exist beyond this page (a cursor was returned).'),
     shown: z.number().optional().describe('Number of posts returned on this page.'),
     cap: z.number().optional().describe('The limit applied to this page.'),
+    budgetCapped: z
+      .boolean()
+      .optional()
+      .describe(
+        "True when a page of the requested limit would have passed this server's 48,000-byte response " +
+          'budget, so Bluesky was asked again for fewer posts and that page was returned whole. The ' +
+          'cursor comes from that same response, so paging on from it skips nothing. Independent of ' +
+          '"truncated", which still means only that a cursor was returned.',
+      ),
     notice: z.string().optional().describe('Guidance when the result set is empty or constrained.'),
   },
 
@@ -265,70 +316,73 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
       includePins: input.include_pins,
       limit: input.limit,
     });
-    let result: AuthorFeedResult;
-    try {
-      result = await getBlueskyService().getAuthorFeed(
-        {
-          actor,
-          filter: input.filter,
-          includePins: input.include_pins,
-          limit: input.limit,
-          ...(input.cursor ? { cursor: input.cursor } : {}),
-        },
-        ctx,
-      );
-    } catch (err) {
-      if (err instanceof McpError) {
-        const body = (err.data as { responseBody?: string } | undefined)?.responseBody ?? '';
-        if (
-          err.data &&
-          (body.includes('not found') || body.includes('Not Found') || body.includes('NotFound'))
-        ) {
-          throw ctx.fail(
-            'actor_not_found',
-            `Actor not found: "${actor}"`,
-            ctx.recoveryFor('actor_not_found'),
-          );
+    /** `cursorAccepted` on a re-request: Bluesky just answered this cursor, so a 500 is not about it. */
+    const fetchPage = async (limit: number, cursorAccepted = false): Promise<AuthorFeedResult> => {
+      try {
+        return await getBlueskyService().getAuthorFeed(
+          {
+            actor,
+            filter: input.filter,
+            includePins: input.include_pins,
+            limit,
+            ...(input.cursor ? { cursor: input.cursor, cursorAccepted } : {}),
+          },
+          ctx,
+        );
+      } catch (err) {
+        if (err instanceof McpError) {
+          const body = (err.data as { responseBody?: string } | undefined)?.responseBody ?? '';
+          if (
+            err.data &&
+            (body.includes('not found') || body.includes('Not Found') || body.includes('NotFound'))
+          ) {
+            throw ctx.fail(
+              'actor_not_found',
+              `Actor not found: "${actor}"`,
+              ctx.recoveryFor('actor_not_found'),
+            );
+          }
         }
+        throw err;
       }
-      throw err;
-    }
-    ctx.enrich({ totalReturned: result.feed.length });
-    /**
-     * The split is what a caller after the actor's own writing actually asked for, and it costs no
-     * second request — every item already carries its repost marker. Reported only when a repost is
-     * present: on a page that is entirely original posts, `totalReturned` already says it, and a
-     * pair of numbers that never varies carries no information.
-     */
-    const reposts = result.feed.filter((post) => post.repostedBy).length;
-    if (reposts > 0) {
-      ctx.enrich({ originalPosts: result.feed.length - reposts, reposts });
-    }
-    if (result.cursor) {
-      ctx.enrich.truncated({
-        shown: result.feed.length,
-        cap: input.limit,
-        guidance: 'More posts exist — pass the returned cursor to fetch the next page.',
-      });
-    }
-    if (result.feed.length === 0 && !result.cursor) {
-      ctx.enrich.notice(`No posts found for actor "${actor}" with filter "${input.filter}".`);
-    }
-    return { posts: result.feed, ...(result.cursor ? { cursor: result.cursor } : {}) };
+    };
+
+    return respondWithinBudget(ctx, await fetchPage(input.limit), {
+      count: (page) => page.feed.length,
+      limit: input.limit,
+      /** A profile's pinned post arrives in addition to `limit`, so it is not counted toward one. */
+      limitFor: (page, kept) =>
+        kept - page.feed.slice(0, kept).filter((post) => post.pinned).length,
+      slice: (page, kept) => ({ ...page, feed: page.feed.slice(0, kept) }),
+      refetch: (limit) => fetchPage(limit, true),
+      respond: (page, requested) => {
+        /**
+         * The split is what a caller after the actor's own writing actually asked for, and it costs
+         * no second request — every item already carries its repost marker. Reported only when a
+         * repost is present: on a page that is entirely original posts, `totalReturned` already
+         * says it, and a pair of numbers that never varies carries no information.
+         */
+        const reposts = page.feed.filter((post) => post.repostedBy).length;
+        return {
+          output: { posts: page.feed, ...(page.cursor ? { cursor: page.cursor } : {}) },
+          enrichment: pageEnrichment({
+            shown: page.feed.length,
+            cursor: page.cursor,
+            limit: input.limit,
+            requested,
+            noun: 'posts',
+            more: 'More posts exist — pass the returned cursor to fetch the next page.',
+            empty: `No posts found for actor "${actor}" with filter "${input.filter}".`,
+            ...(reposts > 0
+              ? { extra: { originalPosts: page.feed.length - reposts, reposts } }
+              : {}),
+          }),
+        };
+      },
+      schema: AuthorFeedOutput,
+      format: formatAuthorFeed,
+    });
   },
 
-  format: (result) => {
-    if (result.posts.length === 0 && !result.cursor) {
-      return [{ type: 'text', text: 'No posts found for this actor.' }];
-    }
-    const output = result.posts.length
-      ? result.posts.map((p) => renderPostLines(p).join('\n')).join('\n\n---\n\n')
-      : 'No posts on this page.';
-    return [
-      {
-        type: 'text',
-        text: result.cursor ? `${output}\n\n---\n*cursor: \`${result.cursor}\`*` : output,
-      },
-    ];
-  },
+  format: formatAuthorFeed,
 });

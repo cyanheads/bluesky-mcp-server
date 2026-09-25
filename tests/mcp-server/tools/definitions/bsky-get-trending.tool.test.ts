@@ -243,7 +243,7 @@ describe('bskyGetTrending', () => {
       '\n',
     );
     expect(lines.some((l) => /^\s*> Line one\.$/.test(l))).toBe(true);
-    expect(lines.some((l) => /^\s*> ## not a heading$/.test(l))).toBe(true);
+    expect(lines.some((l) => /^\s*> \\## not a heading$/.test(l))).toBe(true);
     expect(lines).not.toContain('## not a heading');
 
     const bare = (bskyGetTrending.format!({ trends: [makeTrend()] })[0] as { text: string }).text;

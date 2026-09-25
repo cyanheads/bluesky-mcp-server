@@ -89,6 +89,13 @@ describe('the server instructions', () => {
     }
   });
 
+  it('say the escapes in user text are the server’s own, and structuredContent is raw', () => {
+    for (const text of [serverInstructions(false), serverInstructions(true)]) {
+      expect(text).toContain('Markdown and HTML in that');
+      expect(text).toContain('structuredContent carries every string as written');
+    }
+  });
+
   it('lead with post search and disclose whose account it runs as when search is on', () => {
     const text = serverInstructions(true);
     expect(text).toMatch(/1\. bsky_search_posts — find posts on any topic, filtered by author/);

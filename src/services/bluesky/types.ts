@@ -86,6 +86,42 @@ export type Embed =
     }
   | { type: 'unknown'; raw: string };
 
+/**
+ * Bluesky's verdict on an account, from `app.bsky.actor.defs#verificationState`. Both are open
+ * strings: the lexicon's `knownValues` are `valid`, `invalid`, and `none`, and a value added upstream
+ * passes through verbatim. `invalid` is not `none` — the account was verified once and the
+ * verification no longer holds.
+ */
+export interface VerificationStatus {
+  /** Whether this account is a trusted verifier — one whose verifications Bluesky honors. */
+  trustedVerifierStatus: string;
+  /** Whether this account is verified by a trusted verifier. */
+  verifiedStatus: string;
+}
+
+/** One verification a trusted verifier issued for an account (`#verificationView`). */
+export interface Verification {
+  createdAt: string;
+  /** DID of the account that issued it. */
+  issuer: string;
+  /** Display name of the issuer — account-authored text. */
+  issuerDisplayName?: string;
+  issuerHandle?: string;
+  /** Whether the verification still holds. */
+  isValid: boolean;
+  /** AT-URI of the verification record. */
+  uri: string;
+}
+
+/**
+ * The full verification state a profile lookup carries: the two statuses and every verification
+ * issued by a trusted verifier. Actor lists and post authors carry {@link VerificationStatus} alone —
+ * who issued what is a profile lookup.
+ */
+export interface VerificationState extends VerificationStatus {
+  verifications: Verification[];
+}
+
 /** Public actor profile returned by getProfile / searchActors / etc. */
 export interface ActorProfile {
   avatar?: string;
@@ -107,10 +143,23 @@ export interface ActorProfile {
    */
   pronouns?: string;
   /**
+   * Verification state, absent when the AppView sent none — which it does for an account that is
+   * neither verified nor a trusted verifier. Never synthesized as `none`.
+   */
+  verification?: VerificationState;
+  /**
    * The one outbound link a profile carries in a field of its own, rather than inside the bio.
    * `format: "uri"` in the lexicon, so it is a URL by construction.
    */
   website?: string;
+}
+
+/**
+ * An account as the actor lists carry it (`searchActors`, and the follow graph's entries and
+ * subject): the profile fields a `profileView` has, with verification narrowed to the two statuses.
+ */
+export interface ActorSummary extends Omit<ActorProfile, 'verification'> {
+  verification?: VerificationStatus;
 }
 
 /**
@@ -120,14 +169,19 @@ export interface ActorProfile {
  * those describe the post, no post schema declares them, and no formatter renders them — carried
  * through they would reach a `structuredContent` reader and no other.
  *
- * Account-level detail is a profile lookup: `bsky_get_profile` and the `bsky://profile/{actor}`
- * resource serve the full {@link ActorProfile} for any handle or DID on a post.
+ * Verification is the exception: whether the account behind a post is the verified one, rather
+ * than a look-alike handle, decides whether the post can be cited, so its two statuses ride along.
+ * Who issued the verification is a profile lookup: `bsky_get_profile` and the
+ * `bsky://profile/{actor}` resource serve the full {@link ActorProfile} for any handle or DID on a
+ * post.
  */
 export interface PostAuthor {
   avatar?: string;
   did: string;
   displayName?: string;
   handle: string;
+  /** Absent when the AppView sent no verification state for the account. */
+  verification?: VerificationStatus;
 }
 
 /** A single post view (feed items + search results share this shape). */
@@ -179,6 +233,26 @@ export type ThreadTruncationReason = 'depth' | 'unavailable';
 export interface ThreadPost {
   /** True when the AppView returned `app.bsky.feed.defs#blockedPost` — the author blocks this view. */
   blocked?: boolean;
+  /**
+   * Set on the topmost parent a budget-cut response kept — or on the target, when it kept none — to
+   * the number of ancestors above it that the AppView returned and the response budget left out.
+   * Re-rooting a request at this node's AT-URI reads them. Distinct from `parentChainTruncated`,
+   * which is the AppView's own cut at `parentHeight`.
+   */
+  budgetOmittedParents?: number;
+  /**
+   * Set on a kept reply-tree node whose own replies the response budget cut: how many of the direct
+   * replies the AppView returned for it were left out, each with everything below it. Re-rooting a
+   * request at this node's AT-URI reads them. Never set on the target, which lists its cut replies
+   * by AT-URI instead ({@link budgetOmittedReplyUris}).
+   */
+  budgetOmittedReplies?: number;
+  /**
+   * Set on the target of a budget-cut response: the AT-URIs of its direct replies that were left
+   * out, in AppView order, each with everything below it. Re-rooting the target itself would
+   * reproduce the same cut, so each is named to be fetched on its own.
+   */
+  budgetOmittedReplyUris?: string[];
   /** True when the AppView returned `app.bsky.feed.defs#notFoundPost` — deleted or never existed. */
   notFound?: boolean;
   parent?: ThreadPost;
@@ -250,6 +324,11 @@ export interface AuthorFeedResult {
 /** Result of getFeed — a feed generator's posts. */
 export interface FeedResult {
   cursor?: string;
+  /**
+   * The generator's AT-URI in the DID form the request was sent with, whatever form the input
+   * took — a later request for the same feed reuses it rather than resolving the handle again.
+   */
+  feedUri: string;
   posts: PostView[];
 }
 
@@ -268,15 +347,15 @@ export interface QuotesResult {
 
 /** Result of searchActors. */
 export interface SearchActorsResult {
-  actors: ActorProfile[];
+  actors: ActorSummary[];
   cursor?: string;
 }
 
 /** Result of getFollowers / getFollows. */
 export interface GraphResult {
-  actors: ActorProfile[];
+  actors: ActorSummary[];
   cursor?: string;
-  subject: ActorProfile;
+  subject: ActorSummary;
 }
 
 /** A single trending topic. */

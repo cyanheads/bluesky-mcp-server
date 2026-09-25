@@ -313,7 +313,7 @@ describe('bskySearchPosts', () => {
       .text;
     /** The only bare `---` lines are the separators format() itself writes between posts. */
     expect(text.split('\n').filter((l) => l === '---')).toHaveLength(1);
-    expect(text).toContain('> ### Why It Matters');
+    expect(text).toContain('> \\### Why It Matters');
   });
 
   it('renders empty-result message when no posts', () => {

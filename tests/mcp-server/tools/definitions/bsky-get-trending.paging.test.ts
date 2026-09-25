@@ -8,6 +8,7 @@
  */
 
 import { createFetchMock, runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import { Parser } from 'commonmark';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { bskyGetTrending } from '@/mcp-server/tools/definitions/bsky-get-trending.tool.js';
 import { initBlueskyService } from '@/services/bluesky/bluesky-service.js';
@@ -157,5 +158,48 @@ describe('bsky_get_trending — truncation keyed on one topic past the limit', (
     const truncatedDescribe = bskyGetTrending.enrichment?.truncated?.description ?? '';
     expect(truncatedDescribe).toMatch(/more topics were trending than limit/i);
     expect(truncatedDescribe).not.toMatch(/capped at the requested limit/);
+  });
+});
+
+describe('a trend whose display name folds to nothing', () => {
+  /** Node types and shown text of one rendered trend heading line, under CommonMark. */
+  const parseLine = (line: string) => {
+    const walker = new Parser().parse(line).walker();
+    const types: string[] = [];
+    let text = '';
+    for (let event = walker.next(); event; event = walker.next()) {
+      if (!event.entering) continue;
+      types.push(event.node.type);
+      if (event.node.type === 'text') text += event.node.literal ?? '';
+    }
+    return { types, text };
+  };
+
+  const headingOf = async (displayName: string) => {
+    http.route({
+      method: 'GET',
+      match: /app\.bsky\.unspecced\.getTrends/,
+      respond: Response.json({ trends: [{ ...rawTrend(1), displayName }] }),
+    });
+    const result = await runToolContract(bskyGetTrending, { limit: 1 });
+    expect(result.isError).toBeFalsy();
+    const text = result.content.map((b) => ('text' in b ? b.text : '')).join('\n');
+    return text.split('\n')[0] ?? '';
+  };
+
+  it.each(['', '  ', '\n', ' \r\n\t'])(
+    'names the trend by its topic rather than rendering a thematic break for %j',
+    async (displayName) => {
+      const line = await headingOf(displayName);
+      const parsed = parseLine(line);
+      expect(parsed.types).not.toContain('thematic_break');
+      expect(parsed.types).toContain('strong');
+      expect(parsed.text).toBe('trend01');
+      expect(line).toBe('1. **trend01**');
+    },
+  );
+
+  it('leaves a display name that has text unchanged', async () => {
+    expect(await headingOf('Topic 1')).toBe('1. **Topic 1**');
   });
 });

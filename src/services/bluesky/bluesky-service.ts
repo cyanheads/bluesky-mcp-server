@@ -29,6 +29,7 @@ import {
 import { type SearchCredentials, SearchSession } from './search-session.js';
 import type {
   ActorProfile,
+  ActorSummary,
   AuthorFeedResult,
   Embed,
   FeedResult,
@@ -45,6 +46,8 @@ import type {
   ThreadGateRule,
   ThreadPost,
   TrendsResult,
+  VerificationState,
+  VerificationStatus,
 } from './types.js';
 import {
   HTML_DOCUMENT,
@@ -71,6 +74,25 @@ interface RawLabel {
   val: string;
 }
 
+/**
+ * @internal Raw `app.bsky.actor.defs#verificationState`, on every actor view — `profileViewBasic`,
+ * `profileView`, and `profileViewDetailed` alike. The lexicon requires all three fields; the whole
+ * object is optional, and the AppView omits it for an account that is neither verified nor a
+ * trusted verifier.
+ */
+interface RawVerificationState {
+  trustedVerifierStatus: string;
+  verifications: Array<{
+    createdAt: string;
+    isValid: boolean;
+    issuer: string;
+    issuerDisplayName?: string;
+    issuerHandle?: string;
+    uri: string;
+  }>;
+  verifiedStatus: string;
+}
+
 /** @internal Raw actor view returned by several AppView endpoints. */
 interface RawActorView {
   avatar?: string;
@@ -87,6 +109,7 @@ interface RawActorView {
   pinnedPost?: { uri?: string };
   postsCount?: number;
   pronouns?: string;
+  verification?: RawVerificationState;
   website?: string;
 }
 
@@ -216,7 +239,40 @@ function normalizeLabel(r: RawLabel): Label {
   return { val: r.val, ...(r.src ? { src: r.src } : {}), ...(r.cts ? { cts: r.cts } : {}) };
 }
 
+/** @internal The two statuses, verbatim. Undefined when the AppView sent no verification state. */
+function verificationStatus(v: RawVerificationState | undefined): VerificationStatus | undefined {
+  if (!v) return;
+  return { verifiedStatus: v.verifiedStatus, trustedVerifierStatus: v.trustedVerifierStatus };
+}
+
+/**
+ * @internal The full verification state for a profile lookup — the statuses and every issuance,
+ * with an issuer's optional handle and display name carried only when the AppView sent them.
+ */
+function verificationState(v: RawVerificationState | undefined): VerificationState | undefined {
+  if (!v) return;
+  return {
+    verifiedStatus: v.verifiedStatus,
+    trustedVerifierStatus: v.trustedVerifierStatus,
+    verifications: v.verifications.map((entry) => ({
+      issuer: entry.issuer,
+      ...(entry.issuerHandle ? { issuerHandle: entry.issuerHandle } : {}),
+      ...(entry.issuerDisplayName ? { issuerDisplayName: entry.issuerDisplayName } : {}),
+      uri: entry.uri,
+      isValid: entry.isValid,
+      createdAt: entry.createdAt,
+    })),
+  };
+}
+
+/** @internal An actor as the list views carry it: every profile field, verification narrowed. */
+function normalizeActorSummary({ verification, ...actor }: RawActorView): ActorSummary {
+  const status = verificationStatus(verification);
+  return { ...normalizeActor(actor), ...(status ? { verification: status } : {}) };
+}
+
 function normalizeActor(r: RawActorView): ActorProfile {
+  const verification = verificationState(r.verification);
   return {
     did: r.did,
     handle: r.handle,
@@ -232,6 +288,7 @@ function normalizeActor(r: RawActorView): ActorProfile {
     ...(r.pinnedPost?.uri ? { pinnedPostUri: r.pinnedPost.uri } : {}),
     ...(r.pronouns ? { pronouns: r.pronouns } : {}),
     ...(r.website ? { website: r.website } : {}),
+    ...(verification ? { verification } : {}),
   };
 }
 
@@ -240,13 +297,18 @@ function normalizeActor(r: RawActorView): ActorProfile {
  * also carries the account's own `createdAt`, its account-level moderation labels, and its pronouns
  * — account facts rather than post facts, declared by no post schema and rendered by no formatter.
  * Kept, they would reach a `structuredContent` reader alone. `bsky_get_profile` serves the rest.
+ *
+ * The two verification statuses are the one account fact kept: they say whether the account behind
+ * the post is the verified one or a look-alike, which is what citing the post turns on.
  */
 function normalizePostAuthor(r: RawActorView): PostAuthor {
+  const verification = verificationStatus(r.verification);
   return {
     did: r.did,
     handle: r.handle,
     ...(r.displayName ? { displayName: r.displayName } : {}),
     ...(r.avatar ? { avatar: r.avatar } : {}),
+    ...(verification ? { verification } : {}),
   };
 }
 
@@ -601,7 +663,9 @@ interface BadCursorAnswer {
  * caller's cursor, onto `invalid_cursor`. That reason is final, so the retry loop leaves a 500
  * alone instead of spending seconds on the same answer. Without a cursor nothing the caller sent
  * could explain the status, and the failure keeps its ordinary handling — a 500 is retried as
- * transient, a 400 fails as it always has.
+ * transient, a 400 fails as it always has. The same holds for a request whose cursor Bluesky has
+ * already accepted — the response budget's re-request of a page (`cursorAccepted`) — where a 500
+ * cannot be the cursor.
  *
  * A 400 maps only when its envelope names `InvalidRequest`, the lexicon's parameter rejection. The
  * search session reads a 400 `ExpiredToken` / `InvalidToken` as its cue to renew the access token,
@@ -797,6 +861,8 @@ export class BlueskyService {
       includePins?: boolean;
       limit?: number;
       cursor?: string;
+      /** Bluesky already answered a request carrying `cursor` — see {@link cursorError}. */
+      cursorAccepted?: boolean;
     },
     ctx: Context,
   ): Promise<AuthorFeedResult> {
@@ -811,7 +877,7 @@ export class BlueskyService {
         ...(params.cursor ? { cursor: params.cursor } : {}),
       },
       ctx,
-      (err) => cursorError(err, params.cursor, lexicon, ctx),
+      (err) => (params.cursorAccepted ? undefined : cursorError(err, params.cursor, lexicon, ctx)),
     );
     return {
       feed: (raw.feed ?? []).map(normalizeFeedItem),
@@ -849,6 +915,7 @@ export class BlueskyService {
       (err) => feedError(err, uri, ctx),
     );
     return {
+      feedUri: uri,
       posts: (raw.feed ?? []).map(normalizeFeedItem),
       ...(raw.cursor ? { cursor: raw.cursor } : {}),
     };
@@ -883,7 +950,13 @@ export class BlueskyService {
    * handle authority with 500. Each result's embed has the restated queried post taken out.
    */
   async getQuotes(
-    params: { uri: string; limit?: number; cursor?: string },
+    params: {
+      uri: string;
+      limit?: number;
+      cursor?: string;
+      /** Bluesky already answered a request carrying `cursor` — see {@link cursorError}. */
+      cursorAccepted?: boolean;
+    },
     ctx: Context,
   ): Promise<QuotesResult> {
     const ref = parsePostRef(params.uri);
@@ -906,7 +979,7 @@ export class BlueskyService {
         ...(params.cursor ? { cursor: params.cursor } : {}),
       },
       ctx,
-      (err) => cursorError(err, params.cursor, lexicon, ctx),
+      (err) => (params.cursorAccepted ? undefined : cursorError(err, params.cursor, lexicon, ctx)),
     );
     const result: QuotesResult = {
       uri,
@@ -964,7 +1037,7 @@ export class BlueskyService {
       (err) => cursorError(err, params.cursor, lexicon, ctx),
     );
     return {
-      actors: (raw.actors ?? []).map(normalizeActor),
+      actors: (raw.actors ?? []).map(normalizeActorSummary),
       ...(raw.cursor ? { cursor: raw.cursor } : {}),
     };
   }
@@ -989,8 +1062,8 @@ export class BlueskyService {
       ctx,
     );
     return {
-      actors: (raw.followers ?? []).map(normalizeActor),
-      subject: normalizeActor(raw.subject),
+      actors: (raw.followers ?? []).map(normalizeActorSummary),
+      subject: normalizeActorSummary(raw.subject),
       ...(raw.cursor ? { cursor: raw.cursor } : {}),
     };
   }
@@ -1011,8 +1084,8 @@ export class BlueskyService {
       ctx,
     );
     return {
-      actors: (raw.follows ?? []).map(normalizeActor),
-      subject: normalizeActor(raw.subject),
+      actors: (raw.follows ?? []).map(normalizeActorSummary),
+      subject: normalizeActorSummary(raw.subject),
       ...(raw.cursor ? { cursor: raw.cursor } : {}),
     };
   }

@@ -9,10 +9,37 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
-import { actorLabel, inlineUserText, quoteUserText } from '@/mcp-server/tools/post-format.js';
+import {
+  actorLabel,
+  closeQuotes,
+  inlineUserText,
+  quoteUserText,
+  verificationSuffix,
+} from '@/mcp-server/tools/post-format.js';
 import { ACTOR_REF_MESSAGE, ACTOR_REF_REGEX, actorFromRef } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 import type { GraphResult } from '@/services/bluesky/types.js';
+
+/** The two verification statuses a `profileView` carries, on the list entries and the subject alike. */
+const VerificationSchema = z
+  .object({
+    verifiedStatus: z
+      .string()
+      .describe(
+        'Whether a trusted verifier verified this account: "valid", "invalid" (verified once, no ' +
+          'longer holds), or "none". Passed through as Bluesky sends it, so another value may appear.',
+      ),
+    trustedVerifierStatus: z
+      .string()
+      .describe(
+        'Whether this account is itself a trusted verifier — same values as verifiedStatus.',
+      ),
+  })
+  .optional()
+  .describe(
+    'Bluesky verification of this account — what tells it from a look-alike handle. Absent when ' +
+      'Bluesky sent none. Who issued it is on bsky_get_profile.',
+  );
 
 const ActorSchema = z
   .object({
@@ -40,6 +67,7 @@ const ActorSchema = z
       )
       .optional()
       .describe('Moderation labels.'),
+    verification: VerificationSchema,
   })
   .describe('A Bluesky actor in the social graph.');
 
@@ -47,9 +75,10 @@ export const bskyGetFollows = tool('bsky_get_follows', {
   title: 'Get Bluesky Social Graph',
   description:
     'Fetch the social graph edges for a Bluesky account — who follows them, or who they follow. ' +
-    'Returns paginated actor profiles (handle, DID, displayName, bio, pronouns when set) plus a ' +
-    'summary of the subject account. Follower, following, and post counts and the website are not ' +
-    'on this view, for the listed accounts or the subject — bsky_get_profile returns them for one ' +
+    'Returns paginated actor profiles (handle, DID, displayName, bio, pronouns when set, and Bluesky ' +
+    'verification status) plus a summary of the subject account. Follower, following, and post ' +
+    'counts and the website are not on this view, for the listed accounts or the subject — ' +
+    'bsky_get_profile returns them for one ' +
     'account. Accounts with large social graphs return only the first page; use cursor pagination ' +
     'to walk through the full list, or sort "top" to put the accounts Bluesky ranks most prominent first.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
@@ -104,6 +133,7 @@ export const bskyGetFollows = tool('bsky_get_follows', {
           .describe(
             'Free-form pronouns the subject account set, e.g. "they/he". Absent when it set none.',
           ),
+        verification: VerificationSchema,
       })
       .describe('Profile summary of the queried actor.'),
     cursor: z
@@ -188,7 +218,7 @@ export const bskyGetFollows = tool('bsky_get_follows', {
       );
     }
 
-    const { did, handle, displayName, pronouns } = result.subject;
+    const { did, handle, displayName, pronouns, verification } = result.subject;
     return {
       actors: result.actors,
       subject: {
@@ -196,6 +226,7 @@ export const bskyGetFollows = tool('bsky_get_follows', {
         handle,
         ...(displayName ? { displayName } : {}),
         ...(pronouns ? { pronouns } : {}),
+        ...(verification ? { verification } : {}),
       },
       ...(result.cursor ? { cursor: result.cursor } : {}),
     };
@@ -203,7 +234,9 @@ export const bskyGetFollows = tool('bsky_get_follows', {
 
   format: (result) => {
     const header: string[] = [`## Subject: ${actorLabel(result.subject)}`];
-    header.push(`**DID:** \`${result.subject.did}\``);
+    header.push(
+      `**DID:** \`${result.subject.did}\`${verificationSuffix(result.subject.verification)}`,
+    );
     if (result.subject.pronouns)
       header.push(`**Pronouns:** ${inlineUserText(result.subject.pronouns)}`);
 
@@ -216,14 +249,14 @@ export const bskyGetFollows = tool('bsky_get_follows', {
 
     const actorLines = result.actors.map((a) => {
       const parts = [`### @${a.handle}`];
-      parts.push(`**DID:** \`${a.did}\``);
+      parts.push(`**DID:** \`${a.did}\`${verificationSuffix(a.verification)}`);
       if (a.displayName) parts.push(`**Name:** ${inlineUserText(a.displayName)}`);
       if (a.pronouns) parts.push(`**Pronouns:** ${inlineUserText(a.pronouns)}`);
       if (a.description) parts.push(...quoteUserText(a.description));
       if (a.labels?.length)
         parts.push(`**Labels:** ${a.labels.map((l) => inlineUserText(l.val)).join(', ')}`);
       if (a.avatar) parts.push(`**Avatar:** ${a.avatar}`);
-      return parts.join('\n');
+      return closeQuotes(parts).join('\n');
     });
 
     return [

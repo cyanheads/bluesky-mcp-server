@@ -207,6 +207,7 @@ src/
     server-surface.ts                   # Tool list + server instructions, both derived from whether search is configured
     tools/
       post-format.ts                    # Shared post renderer + the quoted/inline framings every format() puts around Bluesky-authored text
+      response-budget.ts                # 48,000-byte per-surface budget — measures the real output, re-requests an overflowing page at the limit that fits
       definitions/
         bsky-search-posts.tool.ts       # Full-text post search with filters (disabledTool() without an app password)
         bsky-get-profile.tool.ts        # Actor profile lookup by handle or DID

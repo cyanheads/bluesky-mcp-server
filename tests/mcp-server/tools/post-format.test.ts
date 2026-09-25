@@ -63,15 +63,15 @@ describe('quoteUserText', () => {
 
   it('keeps a heading and a horizontal rule inside the quote', () => {
     const quoted = quoteUserText(MARKDOWN_COLLISION);
-    expect(quoted).toContain('> ---');
-    expect(quoted).toContain('> ### Why It Matters');
+    expect(quoted).toContain('> \\---');
+    expect(quoted).toContain('> \\### Why It Matters');
     expect(quoted.every((line) => line.startsWith('>'))).toBe(true);
   });
 
   it('keeps a fenced code block inside the quote instead of letting it close a frame', () => {
     const quoted = quoteUserText(FENCE_COLLISION);
-    expect(quoted).toContain('> ```markdown');
-    expect(quoted).toContain('> ```');
+    expect(quoted).toContain('> \\`\\`\\`markdown');
+    expect(quoted).toContain('> \\`\\`\\`');
     expect(quoted.every((line) => line.startsWith('>'))).toBe(true);
   });
 
@@ -105,6 +105,57 @@ describe('inlineUserText', () => {
 
   it('leaves an ordinary single-line value untouched', () => {
     expect(inlineUserText('Alice — Bluesky')).toBe('Alice — Bluesky');
+  });
+});
+
+/**
+ * Text that carries no syntax CommonMark would act on reaches both framings as written. Escaping
+ * rewrites only what a renderer would interpret, so these stay byte-identical.
+ */
+describe('framing leaves inert text as written', () => {
+  it.each([
+    'snake_case_name',
+    'a # mid-line hash',
+    'AT&T and a < b',
+    'https://example.com/p?_t=x&_r=1',
+    'a > b, 3 > 2',
+    'Alice — Bluesky',
+    'intra_word_under_scores and a__b',
+  ])('passes %j through both framings unchanged', (text) => {
+    expect(quoteUserText(text)).toEqual([`> ${text}`]);
+    expect(inlineUserText(text)).toBe(text);
+  });
+
+  it('renders a plain post line for line, server markdown included', () => {
+    expect(
+      renderPostLines(
+        makePost({
+          likeCount: 3,
+          repostCount: 1,
+          createdAt: '2026-09-01T00:00:00Z',
+          labels: [{ val: 'spam', src: 'did:plc:labeler' }],
+          embed: {
+            type: 'external',
+            uri: 'https://example.com/a',
+            title: 'Example',
+            description: '',
+          },
+        }),
+      ),
+    ).toEqual([
+      '### Alice (@alice.bsky.social)',
+      '**AT-URI:** `at://did:plc:abc123/app.bsky.feed.post/rkey1` | **CID:** `bafyreiabc`',
+      '**Author DID:** `did:plc:abc123`',
+      '> Hello Bluesky',
+      '',
+      '*3 likes · 1 reposts*',
+      '*Created: 2026-09-01T00:00:00Z*',
+      '🔗 Link card: https://example.com/a',
+      '   Title:',
+      '   > Example',
+      '',
+      '**Labels:** spam src:did:plc:labeler',
+    ]);
   });
 });
 
@@ -151,7 +202,7 @@ describe('renderPostLines', () => {
     /** The only unquoted heading is the renderer's own author line. */
     expect(headingLines).toEqual(['### Alice (@alice.bsky.social)']);
     expect(lines).not.toContain('---');
-    expect(lines).toContain('> ---');
+    expect(lines).toContain('> \\---');
   });
 
   it('keeps a blank line inside the post body quoted', () => {
@@ -258,8 +309,8 @@ describe('renderEmbedLines', () => {
     });
     expect(lines).not.toContain('---');
     expect(lines).not.toContain('### Why It Matters');
-    expect(lines).toContain('   > ---');
-    expect(lines).toContain('   > ### Why It Matters');
+    expect(lines).toContain('   > \\---');
+    expect(lines).toContain('   > \\### Why It Matters');
   });
 
   it('renders an image with no alt text as the URL alone', () => {
@@ -279,6 +330,7 @@ describe('renderEmbedLines', () => {
       '🔗 Link card: https://example.com/article',
       '   Title:',
       '   > Example',
+      '',
       '   Description:',
       '   > An example site',
     ]);
@@ -291,9 +343,9 @@ describe('renderEmbedLines', () => {
       title: 'Breaking\n\n### @admin.bsky.social',
       description: MARKDOWN_COLLISION,
     });
-    expect(lines.every((l) => l.startsWith('🔗') || l.startsWith('   '))).toBe(true);
-    expect(lines).toContain('   > ### @admin.bsky.social');
-    expect(lines).toContain('   > ---');
+    expect(lines.every((l) => l === '' || l.startsWith('🔗') || l.startsWith('   '))).toBe(true);
+    expect(lines).toContain('   > \\### @admin.bsky.social');
+    expect(lines).toContain('   > \\---');
     expect(lines).not.toContain('---');
   });
 
@@ -392,8 +444,8 @@ describe('renderEmbedLines', () => {
     });
     const quoteLines = lines.filter((l) => l.startsWith('   '));
     expect(quoteLines.every((l) => l.startsWith('   >'))).toBe(true);
-    expect(lines).toContain('   > ### Why It Matters');
-    expect(lines).toContain('   > ---');
+    expect(lines).toContain('   > \\### Why It Matters');
+    expect(lines).toContain('   > \\---');
   });
 
   it('emits no quote lines for a quoted record that carries no text', () => {
@@ -516,8 +568,8 @@ describe('renderEmbedLines', () => {
 
     expect(lines.filter((l) => /^ {4}/.test(l))).toEqual([]);
     /** Every line of every nested user-authored value is still a blockquote at column three. */
-    expect(lines).toContain('   > ### Why It Matters');
-    expect(lines).toContain('   > ```markdown');
+    expect(lines).toContain('   > \\### Why It Matters');
+    expect(lines).toContain('   > \\`\\`\\`markdown');
     expect(lines).not.toContain('### Why It Matters');
     expect(lines).not.toContain('```markdown');
     /** And the deepest content still renders — depth cost no fields. */

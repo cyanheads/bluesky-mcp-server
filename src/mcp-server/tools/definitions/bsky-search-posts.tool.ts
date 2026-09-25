@@ -7,9 +7,10 @@
  * @module mcp-server/tools/definitions/bsky-search-posts
  */
 
-import { tool, z } from '@cyanheads/mcp-ts-core';
+import { type ContentBlock, tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { renderPostLines } from '@/mcp-server/tools/post-format.js';
+import { pageEnrichment, respondWithinBudget } from '@/mcp-server/tools/response-budget.js';
 import {
   ACTOR_REF_MESSAGE,
   ACTOR_REF_REGEX,
@@ -113,6 +114,25 @@ const PostSchema = z
           .describe('Human-readable handle of the author, e.g. "alice.bsky.social".'),
         displayName: z.string().optional().describe('Display name set by the author.'),
         avatar: z.string().optional().describe('URL of the author avatar image.'),
+        verification: z
+          .object({
+            verifiedStatus: z
+              .string()
+              .describe(
+                'Whether a trusted verifier verified the author: "valid", "invalid" (verified once, no ' +
+                  'longer holds), or "none". Passed through as Bluesky sends it, so another value may appear.',
+              ),
+            trustedVerifierStatus: z
+              .string()
+              .describe(
+                'Whether the author is itself a trusted verifier — same values as verifiedStatus.',
+              ),
+          })
+          .optional()
+          .describe(
+            'Bluesky verification of the author — what tells a verified account from a look-alike ' +
+              'handle. Absent when Bluesky sent none. Who issued it is on bsky_get_profile.',
+          ),
       })
       .describe('Author of this post.'),
     replyCount: z.number().optional().describe('Number of replies.'),
@@ -161,6 +181,54 @@ const PostSchema = z
       ),
   })
   .describe('A single post matching the search query.');
+
+const SearchPostsOutput = z.object({
+  posts: z.array(PostSchema).describe('Posts matching the search query.'),
+  cursor: z
+    .string()
+    .optional()
+    .describe(
+      'Opaque cursor for the next page of this query and filters — pass it back unchanged. Absent ' +
+        'once nothing more matches, so its presence is what says more posts can be fetched.',
+    ),
+  hitsTotal: z
+    .number()
+    .optional()
+    .describe(
+      "Bluesky's estimate of how many posts match this query across all pages. Below " +
+        `${HITS_TOTAL_CAP.toLocaleString()} it is an upper bound: Bluesky counts before dropping posts from ` +
+        'blocked accounts, posts with hidden tags, and posts it cannot load, so paging can return ' +
+        `fewer. It is capped at ${HITS_TOTAL_CAP.toLocaleString()}, and exactly ${HITS_TOTAL_CAP.toLocaleString()} ` +
+        `means "at least ${HITS_TOTAL_CAP.toLocaleString()}" — the true total may be far larger. Report it as ` +
+        'result scale, not as a count, and use the cursor rather than this number to decide whether to page.',
+    ),
+});
+
+/** Module-level so the handler can measure the rendered page against the response budget. */
+function formatSearchPosts(result: z.infer<typeof SearchPostsOutput>): ContentBlock[] {
+  if (result.posts.length === 0 && !result.hitsTotal && !result.cursor) {
+    return [{ type: 'text', text: 'No posts matched this query.' }];
+  }
+  const header: string[] = [];
+  if (result.hitsTotal != null) {
+    const count = result.hitsTotal.toLocaleString();
+    const showing = `(showing ${result.posts.length})`;
+    header.push(
+      result.hitsTotal >= HITS_TOTAL_CAP
+        ? `**At least ${count} total matches** ${showing} — Bluesky caps this count at ` +
+            `${HITS_TOTAL_CAP.toLocaleString()}, so it is a floor rather than a measurement; the real total may be far higher and is not knowable from here.`
+        : `**Up to ${count} matching post${result.hitsTotal === 1 ? '' : 's'}** ${showing} — Bluesky's count, taken before it drops ` +
+            'posts it will not return, so paging can return fewer.',
+    );
+  }
+  const body = result.posts.length
+    ? result.posts.map((p) => renderPostLines(p).join('\n')).join('\n\n---\n\n')
+    : 'No posts on this page.';
+  const footer = result.cursor ? `\n\n---\n*cursor: \`${result.cursor}\`*` : '';
+  return [
+    { type: 'text', text: (header.length ? `${header.join('\n')}\n\n` : '') + body + footer },
+  ];
+}
 
 export const bskySearchPosts = tool('bsky_search_posts', {
   title: 'Search Bluesky Posts',
@@ -318,7 +386,11 @@ export const bskySearchPosts = tool('bsky_search_posts', {
       .min(1)
       .max(100)
       .default(25)
-      .describe('Maximum posts to return (1–100). Default 25.'),
+      .describe(
+        'Maximum posts to return (1–100). Default 25. A page that would pass the 48,000-byte response ' +
+          'budget is asked for again with fewer posts and carries "budgetCapped: true"; its cursor ' +
+          'continues after the posts it holds.',
+      ),
     cursor: z
       .string()
       .max(2048)
@@ -328,27 +400,7 @@ export const bskySearchPosts = tool('bsky_search_posts', {
           'Omit for the first page.',
       ),
   }),
-  output: z.object({
-    posts: z.array(PostSchema).describe('Posts matching the search query.'),
-    cursor: z
-      .string()
-      .optional()
-      .describe(
-        'Opaque cursor for the next page of this query and filters — pass it back unchanged. Absent ' +
-          'once nothing more matches, so its presence is what says more posts can be fetched.',
-      ),
-    hitsTotal: z
-      .number()
-      .optional()
-      .describe(
-        "Bluesky's estimate of how many posts match this query across all pages. Below " +
-          `${HITS_TOTAL_CAP.toLocaleString()} it is an upper bound: Bluesky counts before dropping posts from ` +
-          'blocked accounts, posts with hidden tags, and posts it cannot load, so paging can return ' +
-          `fewer. It is capped at ${HITS_TOTAL_CAP.toLocaleString()}, and exactly ${HITS_TOTAL_CAP.toLocaleString()} ` +
-          `means "at least ${HITS_TOTAL_CAP.toLocaleString()}" — the true total may be far larger. Report it as ` +
-          'result scale, not as a count, and use the cursor rather than this number to decide whether to page.',
-      ),
-  }),
+  output: SearchPostsOutput,
 
   enrichment: {
     totalReturned: z.number().describe('Number of posts in this response page.'),
@@ -361,6 +413,15 @@ export const bskySearchPosts = tool('bsky_search_posts', {
       ),
     shown: z.number().optional().describe('Number of posts returned on this page.'),
     cap: z.number().optional().describe('The limit applied to this page.'),
+    budgetCapped: z
+      .boolean()
+      .optional()
+      .describe(
+        "True when a page of the requested limit would have passed this server's 48,000-byte response " +
+          'budget, so Bluesky was asked again for fewer posts and that page was returned whole. The ' +
+          'cursor and hitsTotal come from that same response, so paging on from it continues where ' +
+          'these posts end. Independent of "truncated", which still means only that a cursor was returned.',
+      ),
     notice: z.string().optional().describe('Guidance when the result set is empty or constrained.'),
   },
 
@@ -413,95 +474,78 @@ export const bskySearchPosts = tool('bsky_search_posts', {
       sort: input.sort,
       limit: input.limit,
     });
-    let result: SearchPostsResult;
-    try {
-      result = await getBlueskyService().searchPosts(
-        {
-          q: input.query,
-          ...(input.author_handle ? { author: actorFromRef(input.author_handle) } : {}),
-          ...(input.mentions ? { mentions: actorFromRef(input.mentions) } : {}),
-          ...(input.language ? { lang: searchLanguage(input.language) } : {}),
-          ...(input.tag ? { tag: input.tag } : {}),
-          ...(input.domain ? { domain: searchDomain(input.domain) } : {}),
-          ...(input.url ? { url: input.url } : {}),
-          ...(input.since ? { since: input.since } : {}),
-          ...(input.until ? { until: input.until } : {}),
-          sort: input.sort,
-          limit: input.limit,
-          ...(input.cursor ? { cursor: input.cursor } : {}),
-        },
-        ctx,
-      );
-    } catch (err) {
-      if (err instanceof McpError) {
-        const reason = upstreamRejection(err);
-        if (reason) {
-          throw ctx.fail('upstream_rejected_filter', `Bluesky rejected this search: ${reason}`, {
-            recovery: {
-              hint: `Bluesky reported: ${reason}. Correct the parameter it named and call again.`,
-            },
-          });
+    const fetchPage = async (limit: number): Promise<SearchPostsResult> => {
+      try {
+        return await getBlueskyService().searchPosts(
+          {
+            q: input.query,
+            ...(input.author_handle ? { author: actorFromRef(input.author_handle) } : {}),
+            ...(input.mentions ? { mentions: actorFromRef(input.mentions) } : {}),
+            ...(input.language ? { lang: searchLanguage(input.language) } : {}),
+            ...(input.tag ? { tag: input.tag } : {}),
+            ...(input.domain ? { domain: searchDomain(input.domain) } : {}),
+            ...(input.url ? { url: input.url } : {}),
+            ...(input.since ? { since: input.since } : {}),
+            ...(input.until ? { until: input.until } : {}),
+            sort: input.sort,
+            limit,
+            ...(input.cursor ? { cursor: input.cursor } : {}),
+          },
+          ctx,
+        );
+      } catch (err) {
+        if (err instanceof McpError) {
+          const reason = upstreamRejection(err);
+          if (reason) {
+            throw ctx.fail('upstream_rejected_filter', `Bluesky rejected this search: ${reason}`, {
+              recovery: {
+                hint: `Bluesky reported: ${reason}. Correct the parameter it named and call again.`,
+              },
+            });
+          }
         }
+        throw err;
       }
-      throw err;
-    }
-
-    ctx.enrich({ totalReturned: result.posts.length });
-    /**
-     * The cursor is the continuation signal, and the only one. Authenticated search omits it
-     * once a result set is exhausted — 11 of 11 measured walks ended on a page without one,
-     * `limit` equal to the total included — and pages at `limit` 100 carrying one held 88–100
-     * posts, so page size says nothing. `hitsTotal` is no check either: it overcounts what
-     * paging returns (952 retrievable of a reported 1,009), so it could only ever agree with
-     * the cursor or wrongly claim more.
-     *
-     * `hitsTotal` itself is not enriched: it is a declared `output` field, so it already
-     * reaches both `structuredContent` and `format()`. `ctx.enrich.total()` would write
-     * `totalCount`, a key this enrichment block does not declare, and the effective-output
-     * parse strips it.
-     */
-    if (result.cursor) {
-      ctx.enrich.truncated({
-        shown: result.posts.length,
-        cap: input.limit,
-        guidance:
-          'More posts match than were returned — pass the returned cursor for the next page, or narrow with filters (author, tag, date range).',
-      });
-    }
-    if (result.posts.length === 0 && !result.cursor) {
-      ctx.enrich.notice(
-        `No posts matched "${input.query}". Try broader terms, different spelling, or remove filters.`,
-      );
-    }
-    return {
-      posts: result.posts,
-      ...(result.cursor ? { cursor: result.cursor } : {}),
-      ...(result.hitsTotal != null ? { hitsTotal: result.hitsTotal } : {}),
     };
+
+    return respondWithinBudget(ctx, await fetchPage(input.limit), {
+      count: (page) => page.posts.length,
+      limit: input.limit,
+      slice: (page, kept) => ({ ...page, posts: page.posts.slice(0, kept) }),
+      refetch: fetchPage,
+      respond: (page, requested) => ({
+        output: {
+          posts: page.posts,
+          ...(page.cursor ? { cursor: page.cursor } : {}),
+          ...(page.hitsTotal != null ? { hitsTotal: page.hitsTotal } : {}),
+        },
+        /**
+         * The cursor is the continuation signal, and the only one. Authenticated search omits it
+         * once a result set is exhausted — 11 of 11 measured walks ended on a page without one,
+         * `limit` equal to the total included — and pages at `limit` 100 carrying one held 88–100
+         * posts, so page size says nothing. `hitsTotal` is no check either: it overcounts what
+         * paging returns (952 retrievable of a reported 1,009), so it could only ever agree with
+         * the cursor or wrongly claim more.
+         *
+         * `hitsTotal` itself is not enriched: it is a declared `output` field, so it already
+         * reaches both `structuredContent` and `format()`. `ctx.enrich.total()` would write
+         * `totalCount`, a key this enrichment block does not declare, and the effective-output
+         * parse strips it.
+         */
+        enrichment: pageEnrichment({
+          shown: page.posts.length,
+          cursor: page.cursor,
+          limit: input.limit,
+          requested,
+          noun: 'posts',
+          more: 'More posts match than were returned — pass the returned cursor for the next page, or narrow with filters (author, tag, date range).',
+          empty: `No posts matched "${input.query}". Try broader terms, different spelling, or remove filters.`,
+        }),
+      }),
+      schema: SearchPostsOutput,
+      format: formatSearchPosts,
+    });
   },
 
-  format: (result) => {
-    if (result.posts.length === 0 && !result.hitsTotal && !result.cursor) {
-      return [{ type: 'text', text: 'No posts matched this query.' }];
-    }
-    const header: string[] = [];
-    if (result.hitsTotal != null) {
-      const count = result.hitsTotal.toLocaleString();
-      const showing = `(showing ${result.posts.length})`;
-      header.push(
-        result.hitsTotal >= HITS_TOTAL_CAP
-          ? `**At least ${count} total matches** ${showing} — Bluesky caps this count at ` +
-              `${HITS_TOTAL_CAP.toLocaleString()}, so it is a floor rather than a measurement; the real total may be far higher and is not knowable from here.`
-          : `**Up to ${count} matching post${result.hitsTotal === 1 ? '' : 's'}** ${showing} — Bluesky's count, taken before it drops ` +
-              'posts it will not return, so paging can return fewer.',
-      );
-    }
-    const body = result.posts.length
-      ? result.posts.map((p) => renderPostLines(p).join('\n')).join('\n\n---\n\n')
-      : 'No posts on this page.';
-    const footer = result.cursor ? `\n\n---\n*cursor: \`${result.cursor}\`*` : '';
-    return [
-      { type: 'text', text: (header.length ? `${header.join('\n')}\n\n` : '') + body + footer },
-    ];
-  },
+  format: formatSearchPosts,
 });

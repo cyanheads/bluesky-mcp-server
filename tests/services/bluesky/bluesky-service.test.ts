@@ -862,13 +862,14 @@ describe('BlueskyService — embed normalization', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Post authors — the four fields a post view commits to.
+// Post authors — the fields a post view commits to.
 // ---------------------------------------------------------------------------
 
 /**
  * A `profileViewBasic` as the AppView attaches it to every post view. Its account-level fields
  * describe the account, not the post: no post schema declares them and no formatter renders them,
- * so carrying them through would put them in `structuredContent` alone.
+ * so carrying them through would put them in `structuredContent` alone. Verification is the one
+ * account fact a post carries, and only its two statuses — who issued it is a profile lookup.
  */
 const RAW_POST_AUTHOR = {
   did: 'did:plc:author',
@@ -879,7 +880,20 @@ const RAW_POST_AUTHOR = {
   labels: [{ src: 'did:plc:mod', val: 'spam' }],
   createdAt: '2023-04-10T19:03:12.744Z',
   pronouns: 'they/them',
-  verification: { verifiedStatus: 'none' },
+  verification: {
+    verifications: [
+      {
+        issuer: 'did:plc:z72i7hdynmk6r22z27h6tvur',
+        issuerHandle: 'bsky.app',
+        issuerDisplayName: 'Bluesky',
+        uri: 'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.graph.verification/3lnd',
+        isValid: true,
+        createdAt: '2025-04-21T10:46:44.369Z',
+      },
+    ],
+    verifiedStatus: 'valid',
+    trustedVerifierStatus: 'none',
+  },
 };
 
 describe('BlueskyService — post author normalization', () => {
@@ -890,7 +904,7 @@ describe('BlueskyService — post author normalization', () => {
     mockFetch.mockReset();
   });
 
-  it('carries exactly the four fields the post schemas declare', async () => {
+  it('carries exactly the fields the post schemas declare, verification narrowed to its statuses', async () => {
     mockFetch.mockImplementation(() =>
       fakeResponse({
         feed: [
@@ -916,6 +930,7 @@ describe('BlueskyService — post author normalization', () => {
       handle: 'author.bsky.social',
       displayName: 'Author',
       avatar: 'https://cdn.bsky.app/img/avatar/plain/did:plc:author/aaa',
+      verification: { verifiedStatus: 'valid', trustedVerifierStatus: 'none' },
     });
   });
 
@@ -1017,10 +1032,15 @@ describe('BlueskyService — post author normalization', () => {
       'did',
       'displayName',
       'handle',
+      'verification',
+    ]);
+    expect(Object.keys(result.thread.post.author.verification ?? {}).sort()).toEqual([
+      'trustedVerifierStatus',
+      'verifiedStatus',
     ]);
   });
 
-  it('leaves the profile tools their full actor profile', async () => {
+  it('leaves the profile tools their full actor profile, verifications included', async () => {
     mockFetch.mockImplementation(() =>
       fakeResponse({ ...RAW_POST_AUTHOR, description: 'a bio', followersCount: 12 }),
     );
@@ -1033,6 +1053,7 @@ describe('BlueskyService — post author normalization', () => {
       followersCount: 12,
       labels: [{ src: 'did:plc:mod', val: 'spam' }],
       pronouns: 'they/them',
+      verification: RAW_POST_AUTHOR.verification,
     });
   });
 });

@@ -202,8 +202,8 @@ describe('bskyGetProfile', () => {
     const lines = (bskyGetProfile.format!(profile)[0] as { text: string }).text.split('\n');
     expect(lines).not.toContain('---');
     expect(lines).not.toContain('### Contact');
-    expect(lines).toContain('> ---');
-    expect(lines).toContain('> ### Contact');
+    expect(lines).toContain('> \\---');
+    expect(lines).toContain('> \\### Contact');
   });
 
   // --- Pronouns and website ---

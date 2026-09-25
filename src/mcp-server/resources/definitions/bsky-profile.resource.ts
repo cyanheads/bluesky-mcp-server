@@ -14,7 +14,8 @@ export const bskyProfileResource = resource('bsky://profile/{actor}', {
     "A Bluesky actor's public profile, addressable by handle or DID, with or without a leading " +
     '"@" (bsky://profile/@bsky.app). Returns the same data as bsky_get_profile in injectable-context ' +
     'form — displayName, handle, DID, bio, pronouns, website, follower/following/post counts, avatar, ' +
-    'moderation labels, and pinned post AT-URI.',
+    'moderation labels, pinned post AT-URI, and Bluesky verification state (verifiedStatus, ' +
+    'trustedVerifierStatus, and each verification with its issuer), absent when Bluesky sent none.',
   mimeType: 'application/json',
   params: z.object({
     actor: z
