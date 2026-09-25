@@ -127,10 +127,6 @@ describe('bskySearchPosts', () => {
   });
 
   it('discloses truncation when a cursor and hitsTotal both return', async () => {
-    /**
-     * Bluesky reports hitsTotal on every search response, so gating the truncation
-     * disclosure behind its absence made the disclosure unreachable in practice.
-     */
     mockSearchPosts.mockResolvedValue({
       posts: [makePost(), makePost()],
       cursor: 'more-abc',
@@ -148,15 +144,14 @@ describe('bskySearchPosts', () => {
     expect(enrichment.notice).toContain('More posts match');
   });
 
-  it('does not disclose truncation when the cursor rides a complete result set', async () => {
+  it('discloses truncation on the cursor alone, even when hitsTotal is no larger than the page', async () => {
     /**
-     * The AppView returns a cursor on every non-empty search response, exhausted or not:
-     * `q=cyanheads&limit=100` answers 23 posts, hitsTotal 23, and a cursor. Disclosing on
-     * the cursor alone would mark every search truncated.
+     * Authenticated search omits the cursor once a result set is exhausted, so a cursor is
+     * the continuation signal; hitsTotal overcounts what paging returns and is not consulted.
      */
     mockSearchPosts.mockResolvedValue({
       posts: [makePost(), makePost(), makePost()],
-      cursor: 'exhausted-abc',
+      cursor: 'more-abc',
       hitsTotal: 3,
     });
 
@@ -165,8 +160,21 @@ describe('bskySearchPosts', () => {
     await bskySearchPosts.handler(input, ctx);
 
     const enrichment = getEnrichment(ctx);
-    expect(enrichment.truncated).toBeUndefined();
-    expect(enrichment.notice).toBeUndefined();
+    expect(enrichment.truncated).toBe(true);
+    expect(enrichment.shown).toBe(3);
+  });
+
+  it('does not disclose truncation without a cursor, whatever hitsTotal says', async () => {
+    mockSearchPosts.mockResolvedValue({
+      posts: Array.from({ length: 100 }, () => makePost()),
+      hitsTotal: 1009,
+    });
+
+    const ctx = createMockContext({ errors: bskySearchPosts.errors });
+    const input = bskySearchPosts.input.parse({ query: 'sesquipedalian', limit: 100 });
+    await bskySearchPosts.handler(input, ctx);
+
+    expect(getEnrichment(ctx).truncated).toBeUndefined();
   });
 
   it('discloses truncation when a cursor returns and hitsTotal is absent', async () => {
@@ -274,11 +282,19 @@ describe('bskySearchPosts', () => {
     expect(text).not.toContain('**10,000 total matches**');
   });
 
-  it('renders a sub-cap hitsTotal as an exact count', () => {
-    const blocks = bskySearchPosts.format!({ posts: [makePost()], hitsTotal: 21 });
+  it('renders a sub-cap hitsTotal as an upper bound, never an exact count', () => {
+    const blocks = bskySearchPosts.format!({ posts: [makePost()], hitsTotal: 1009 });
     const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('**21 total matches**');
+    expect(text).toContain('**Up to 1,009 matching posts**');
+    expect(text).not.toContain('total matches');
     expect(text).not.toContain('At least');
+  });
+
+  it('names a single match in the singular', () => {
+    const text = (
+      bskySearchPosts.format!({ posts: [makePost()], hitsTotal: 1 })[0] as { text: string }
+    ).text;
+    expect(text).toContain('**Up to 1 matching post** (showing 1)');
   });
 
   it('frames post text as a blockquote so it cannot read as an instruction', () => {
@@ -477,7 +493,8 @@ describe('bskySearchPosts', () => {
 
   it.each([
     ['bare name without a dot', 'alice'],
-    ['leading @', '@bsky.app'],
+    ['@ before a DID', '@did:plc:z72i7hdynmk6r22z27h6tvur'],
+    ['a post URL', 'https://bsky.app/profile/bsky.app/post/3l6oveex3ii2l'],
     ['spaces', 'not a handle'],
   ])('rejects a malformed author_handle (%s)', (_label, author_handle) => {
     expect(() => bskySearchPosts.input.parse({ query: 'test', author_handle })).toThrow();
@@ -540,14 +557,21 @@ describe('bskySearchPosts', () => {
     ['a leading hyphen', '-en'],
     ['a trailing hyphen', 'en-'],
     ['an underscore separator', 'en_US'],
-  ])('rejects a malformed language (%s)', (_label, language) => {
-    expect(() => bskySearchPosts.input.parse({ query: 'test', language })).toThrow();
+    /**
+     * Bluesky drops a three-letter primary subtag and answers with the unfiltered result set,
+     * indistinguishable from a filtered one — real languages and unassigned codes alike.
+     */
+    ['an unassigned three-letter code', 'qqq'],
+    ['a language with no two-letter code', 'fil'],
+    ['the three-letter form of a filterable language', 'eng'],
+  ])('rejects a language search cannot filter by (%s)', (_label, language) => {
+    expect(() => bskySearchPosts.input.parse({ query: 'test', language })).toThrow(/two-letter/);
     expect(mockSearchPosts).not.toHaveBeenCalled();
   });
 
   it.each([
     ['two-letter code', 'en'],
-    ['three-letter code', 'fil'],
+    ['uppercase code', 'EN'],
     ['region subtag', 'en-US'],
     ['Brazilian Portuguese', 'pt-BR'],
     ['script subtag', 'zh-Hant'],
@@ -557,19 +581,14 @@ describe('bskySearchPosts', () => {
     expect(bskySearchPosts.input.parse({ query: 'test', language }).language).toBe(language);
   });
 
-  it('accepts a shape-valid tag that names no real language, matching Bluesky', async () => {
-    /**
-     * Bluesky answers `lang=qqq` with 200 and the filter dropped rather than an error,
-     * so a stricter local check here would reject a value the API itself honours.
-     */
+  it('hands the service the tag with its primary subtag lowercased', async () => {
     mockSearchPosts.mockResolvedValue({ posts: [makePost()] });
 
     const ctx = createMockContext({ errors: bskySearchPosts.errors });
-    const input = bskySearchPosts.input.parse({ query: 'test', language: 'qqq' });
-    const result = await bskySearchPosts.handler(input, ctx);
+    const input = bskySearchPosts.input.parse({ query: 'test', language: 'PT-BR' });
+    await bskySearchPosts.handler(input, ctx);
 
-    expect(mockSearchPosts).toHaveBeenCalledWith(expect.objectContaining({ lang: 'qqq' }), ctx);
-    expect(result.posts).toHaveLength(1);
+    expect(mockSearchPosts).toHaveBeenCalledWith(expect.objectContaining({ lang: 'pt-BR' }), ctx);
   });
 
   it('omits the language filter entirely when passed an empty string', async () => {

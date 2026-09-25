@@ -13,12 +13,18 @@ import { serverInstructions } from '@/mcp-server/server-surface.js';
 import { bskyGetAuthorFeed } from '@/mcp-server/tools/definitions/bsky-get-author-feed.tool.js';
 import { bskyGetFeed } from '@/mcp-server/tools/definitions/bsky-get-feed.tool.js';
 import { bskyGetFollows } from '@/mcp-server/tools/definitions/bsky-get-follows.tool.js';
+import { bskyGetPostQuotes } from '@/mcp-server/tools/definitions/bsky-get-post-quotes.tool.js';
 import { bskyGetPostThread } from '@/mcp-server/tools/definitions/bsky-get-post-thread.tool.js';
 import { bskyGetProfile } from '@/mcp-server/tools/definitions/bsky-get-profile.tool.js';
 import { bskyGetTrending } from '@/mcp-server/tools/definitions/bsky-get-trending.tool.js';
 import { bskySearchActors } from '@/mcp-server/tools/definitions/bsky-search-actors.tool.js';
 import { bskySearchPosts } from '@/mcp-server/tools/definitions/bsky-search-posts.tool.js';
-import { AT_URI_MESSAGE, FEED_REF_MESSAGE } from '@/services/bluesky/at-syntax.js';
+import {
+  ACTOR_REF_MESSAGE,
+  AT_URI_REF_MESSAGE,
+  FEED_REF_MESSAGE,
+  POST_URI_REF_MESSAGE,
+} from '@/services/bluesky/at-syntax.js';
 
 const ALWAYS_REGISTERED = [
   bskyGetProfile,
@@ -27,6 +33,7 @@ const ALWAYS_REGISTERED = [
   bskyGetFeed,
   bskyGetAuthorFeed,
   bskyGetPostThread,
+  bskyGetPostQuotes,
   bskyGetFollows,
 ];
 
@@ -48,10 +55,13 @@ describe('tools that stay registered without credentials', () => {
     },
   );
 
-  it('the AT-URI validation message names only always-registered sources', () => {
-    expect(AT_URI_MESSAGE).not.toContain('bsky_search_posts');
-    expect(AT_URI_MESSAGE).toContain('bsky_get_author_feed');
+  it('the identifier validation messages name only always-registered sources', () => {
+    for (const message of [AT_URI_REF_MESSAGE, POST_URI_REF_MESSAGE]) {
+      expect(message).not.toContain('bsky_search_posts');
+      expect(message).toContain('bsky_get_author_feed');
+    }
     expect(FEED_REF_MESSAGE).not.toContain('bsky_search_posts');
+    expect(ACTOR_REF_MESSAGE).not.toContain('bsky_search_posts');
   });
 
   it('search recoveries route only to always-registered tools', () => {
@@ -72,9 +82,17 @@ describe('the server instructions', () => {
     expect(text).toMatch(/1\. bsky_get_trending/);
   });
 
+  it('route quote reading to bsky_get_post_quotes and accept shared links, in either configuration', () => {
+    for (const text of [serverInstructions(false), serverInstructions(true)]) {
+      expect(text).toMatch(/\d\. bsky_get_post_quotes/);
+      expect(text).toContain('bsky.app post or feed URL');
+    }
+  });
+
   it('lead with post search and disclose whose account it runs as when search is on', () => {
     const text = serverInstructions(true);
-    expect(text).toMatch(/1\. bsky_search_posts/);
+    expect(text).toMatch(/1\. bsky_search_posts — find posts on any topic, filtered by author/);
+    expect(text).not.toContain('recent posts');
     expect(text).toContain('block relationship');
     expect(text).toContain('bsky_get_feed');
     expect(text).not.toMatch(/No authentication required/i);

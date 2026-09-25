@@ -60,7 +60,13 @@ const PostSchema = z
     replyCount: z.number().optional().describe('Number of replies to this post.'),
     repostCount: z.number().optional().describe('Number of reposts.'),
     likeCount: z.number().optional().describe('Number of likes.'),
-    quoteCount: z.number().optional().describe('Number of quote posts.'),
+    quoteCount: z
+      .number()
+      .optional()
+      .describe(
+        'Number of quote posts Bluesky counts — read them with bsky_get_post_quotes. An upper bound on ' +
+          'what that returns, since the counter keeps quotes that have left the index.',
+      ),
     indexedAt: z.string().optional().describe('ISO 8601 timestamp when this post was indexed.'),
     createdAt: z.string().optional().describe('ISO 8601 timestamp when this post was created.'),
     labels: z
@@ -141,8 +147,9 @@ export const bskyGetFeed = tool('bsky_get_feed', {
       .regex(FEED_REF_REGEX, FEED_REF_MESSAGE)
       .describe(
         'The feed to read — its AT-URI, e.g. "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot", ' +
-          'or its bsky.app URL, e.g. "https://bsky.app/profile/bsky.app/feed/whats-hot". The owner may be a ' +
-          'handle or a DID; a handle costs one extra lookup. A trend\'s "feedUri" works as-is.',
+          'or its bsky.app URL, e.g. "https://bsky.app/profile/bsky.app/feed/whats-hot"; a trailing "/", "?…", ' +
+          'or "#…" on the URL is ignored. The owner may be a handle or a DID; a handle costs one extra lookup. ' +
+          'A trend\'s "feedUri" works as-is.',
       ),
     limit: z
       .number()
@@ -233,7 +240,7 @@ export const bskyGetFeed = tool('bsky_get_feed', {
         guidance: 'More posts exist — pass the returned cursor to fetch the next page.',
       });
     }
-    if (result.posts.length === 0) {
+    if (result.posts.length === 0 && !result.cursor) {
       ctx.enrich.notice(
         'The feed returned no posts. It may have nothing to serve right now — try a different feed, such as a bsky_get_trending feedUri.',
       );
@@ -242,10 +249,12 @@ export const bskyGetFeed = tool('bsky_get_feed', {
   },
 
   format: (result) => {
-    if (result.posts.length === 0) {
+    if (result.posts.length === 0 && !result.cursor) {
       return [{ type: 'text', text: 'The feed returned no posts.' }];
     }
-    const output = result.posts.map((p) => renderPostLines(p).join('\n')).join('\n\n---\n\n');
+    const output = result.posts.length
+      ? result.posts.map((p) => renderPostLines(p).join('\n')).join('\n\n---\n\n')
+      : 'No posts on this page.';
     return [
       {
         type: 'text',

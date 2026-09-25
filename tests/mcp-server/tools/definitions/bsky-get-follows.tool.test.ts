@@ -337,7 +337,7 @@ describe('bskyGetFollows', () => {
     ['blank', ''],
     ['whitespace only', '   '],
     ['bare name without a dot', 'alice'],
-    ['leading @', '@alice.bsky.social'],
+    ['@ before a DID', '@did:plc:z72i7hdynmk6r22z27h6tvur'],
     ['spaces', 'not a handle'],
   ])('rejects a malformed actor (%s) at the schema layer', (_label, actor) => {
     expect(() => bskyGetFollows.input.parse({ actor, direction: 'followers' })).toThrow();

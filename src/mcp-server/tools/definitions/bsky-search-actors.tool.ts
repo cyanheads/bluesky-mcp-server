@@ -8,6 +8,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { inlineUserText, quoteUserText } from '@/mcp-server/tools/post-format.js';
 import { NON_BLANK_MESSAGE, NON_BLANK_REGEX } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
@@ -83,6 +84,17 @@ export const bskySearchActors = tool('bsky_search_actors', {
       ),
   }),
 
+  errors: [
+    {
+      reason: 'invalid_cursor',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Bluesky could not continue from the cursor the request carried — it answers a cursor it cannot decode with HTTP 400.',
+      recovery:
+        'Drop the cursor to start again from the first page, or pass the cursor exactly as the previous response for this same query returned it.',
+      thrownBy: 'service',
+    },
+  ],
+
   enrichment: {
     totalReturned: z.number().describe('Number of actors in this response page.'),
     truncated: z
@@ -121,8 +133,9 @@ export const bskySearchActors = tool('bsky_search_actors', {
   },
 
   format: (result) => {
+    const footer = result.cursor ? `\n\n---\n*cursor: \`${result.cursor}\`*` : '';
     if (result.actors.length === 0) {
-      return [{ type: 'text', text: 'No actors on this page.' }];
+      return [{ type: 'text', text: `No actors on this page.${footer}` }];
     }
     const lines = result.actors.map((a) => {
       const parts = [`## @${a.handle}`];
@@ -140,12 +153,6 @@ export const bskySearchActors = tool('bsky_search_actors', {
       if (a.avatar) parts.push(`**Avatar:** ${a.avatar}`);
       return parts.join('\n');
     });
-    const output = lines.join('\n\n');
-    return [
-      {
-        type: 'text',
-        text: result.cursor ? `${output}\n\n---\n*cursor: \`${result.cursor}\`*` : output,
-      },
-    ];
+    return [{ type: 'text', text: `${lines.join('\n\n')}${footer}` }];
   },
 });

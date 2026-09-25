@@ -10,7 +10,12 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { renderPostLines } from '@/mcp-server/tools/post-format.js';
-import { AT_URI_MESSAGE, AT_URI_REGEX, parseFeedRef } from '@/services/bluesky/at-syntax.js';
+import {
+  AT_URI_REF_MESSAGE,
+  AT_URI_REF_REGEX,
+  atUriFromRef,
+  parseFeedRef,
+} from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 import type {
   PostThreadResult,
@@ -261,6 +266,7 @@ const ThreadNodeSchema: z.ZodType<unknown> = z
   .describe(
     'The conversation thread rooted at the requested post — a recursive node tree. Each node has: ' +
       'post: { uri, cid, text, author: { did, handle, displayName?, avatar? }, replyCount?, repostCount?, likeCount?, quoteCount?, indexedAt?, createdAt?, labels?: [{ val, src?, cts? }], embed?, replyToUri?, replyRootUri? }. ' +
+      'quoteCount counts quote posts, which are not part of the thread — read them with bsky_get_post_quotes. ' +
       'parent?: parent thread node. replies?: array of child thread nodes. ' +
       "truncated?: true when the node's own post.replyCount exceeds the replies returned for it, with " +
       'unreturnedReplies: the size of that difference, and truncationReason: "depth" (the reply tree ends ' +
@@ -309,8 +315,10 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
     'Fetch the conversation for a post by AT-URI — the parent chain upward and the reply tree downward. ' +
     'Enter the thread at any point and traverse the discussion. ' +
     'AT-URIs have the format "at://<handle-or-did>/<collection>/<rkey>" and are returned in the "uri" field ' +
-    'of every post the other post-returning tools emit, such as bsky_get_feed and bsky_get_author_feed. ' +
+    'of every post the other post-returning tools emit, such as bsky_get_feed and bsky_get_author_feed; ' +
+    'a bsky.app post URL (https://bsky.app/profile/<handle-or-did>/post/<rkey>) works as-is. ' +
     'Returns the root post, parent chain, and nested replies with per-post author and engagement data. ' +
+    'Replies only: quote posts are not part of a thread — read them with bsky_get_post_quotes. ' +
     'The response is often a fraction of the conversation: Bluesky holds replies back past a per-post limit ' +
     'and offers no way to page the rest, so a thread with thousands of replies commonly returns a few hundred. ' +
     'Any node returning fewer replies than its own replyCount carries "truncated: true" with ' +
@@ -329,11 +337,13 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
     uri: z
       .string()
       .max(2048)
-      .regex(AT_URI_REGEX, AT_URI_MESSAGE)
+      .regex(AT_URI_REF_REGEX, AT_URI_REF_MESSAGE)
       .describe(
         'AT-URI of the post to fetch, e.g. "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/abc123". ' +
           'All three segments are required — authority (handle or DID), collection, and record key. ' +
-          'Obtain from the "uri" field of a post returned by bsky_get_feed or bsky_get_author_feed.',
+          'Obtain from the "uri" field of a post returned by bsky_get_feed or bsky_get_author_feed. ' +
+          'The post\'s bsky.app page, e.g. "https://bsky.app/profile/bsky.app/post/abc123", is accepted and ' +
+          'read as the AT-URI it names; a trailing "/", "?…", or "#…" on it is ignored.',
       ),
     depth: z
       .number()
@@ -429,16 +439,18 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
   ],
 
   async handler(input, ctx) {
-    ctx.log.info('Fetching Bluesky post thread', { uri: input.uri, depth: input.depth });
+    /** A bsky.app post URL becomes its AT-URI; the handle it carries is kept, since the AppView resolves one. */
+    const uri = atUriFromRef(input.uri);
+    ctx.log.info('Fetching Bluesky post thread', { uri, depth: input.depth });
 
     /**
      * A feed AT-URI passes the AT-URI pattern, and the AppView answers it as a missing post, which
      * would send the caller looking for a post that was never there.
      */
-    if (parseFeedRef(input.uri)) {
+    if (parseFeedRef(uri)) {
       throw ctx.fail(
         'uri_is_feed',
-        `"${input.uri}" is a feed generator, not a post — read its posts with bsky_get_feed.`,
+        `"${uri}" is a feed generator, not a post — read its posts with bsky_get_feed.`,
         ctx.recoveryFor('uri_is_feed'),
       );
     }
@@ -446,7 +458,7 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
     let result: PostThreadResult;
     try {
       result = await getBlueskyService().getPostThread(
-        { uri: input.uri, depth: input.depth, parentHeight: input.parent_height },
+        { uri, depth: input.depth, parentHeight: input.parent_height },
         ctx,
       );
     } catch (err) {
@@ -455,14 +467,14 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
         if (body.includes('Invalid at-uri')) {
           throw ctx.fail(
             'invalid_at_uri',
-            `Bluesky rejected the AT-URI "${input.uri}".`,
+            `Bluesky rejected the AT-URI "${uri}".`,
             ctx.recoveryFor('invalid_at_uri'),
           );
         }
         if (body.includes('NotFound') || body.includes('not found') || body.includes('Not Found')) {
           throw ctx.fail(
             'post_not_found',
-            `Post not found: "${input.uri}"`,
+            `Post not found: "${uri}"`,
             ctx.recoveryFor('post_not_found'),
           );
         }

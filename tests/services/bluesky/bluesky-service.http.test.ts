@@ -12,7 +12,10 @@ import {
   runToolContract,
 } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { bskyGetAuthorFeed } from '@/mcp-server/tools/definitions/bsky-get-author-feed.tool.js';
+import { bskyGetFollows } from '@/mcp-server/tools/definitions/bsky-get-follows.tool.js';
 import { bskyGetPostThread } from '@/mcp-server/tools/definitions/bsky-get-post-thread.tool.js';
+import { bskySearchActors } from '@/mcp-server/tools/definitions/bsky-search-actors.tool.js';
 import { getBlueskyService, initBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
 const http = createFetchMock([], {
@@ -98,6 +101,161 @@ describe('BlueskyService.get — request shape', () => {
     expect(
       JSON.stringify({ message: (err as Error).message, data: (err as { data: unknown }).data }),
     ).not.toMatch(/<html|<body|<h1/i);
+  });
+});
+
+describe('a 500 on a cursored endpoint', () => {
+  const INTERNAL = () => xrpcError(500, 'InternalServerError', 'Internal Server Error');
+  const authorFeedPage = () =>
+    Response.json({
+      feed: [
+        {
+          post: {
+            uri: 'at://did:plc:abc/app.bsky.feed.post/a',
+            cid: 'bafya',
+            author: { did: 'did:plc:abc', handle: 'alice.bsky.social' },
+            record: { text: 'hello' },
+          },
+        },
+      ],
+    });
+
+  it('bsky_get_author_feed with a caller cursor fails after one request as invalid_cursor', async () => {
+    http.route({ match: /app\.bsky\.feed\.getAuthorFeed/, respond: INTERNAL });
+
+    const result = await runToolContract(bskyGetAuthorFeed, {
+      actor: 'bsky.app',
+      cursor: 'garbage',
+    });
+
+    expect(http.calls).toHaveLength(1);
+    expect(new URL(http.calls[0]?.request.url ?? '').searchParams.get('cursor')).toBe('garbage');
+    expect(result.isError).toBe(true);
+    const error = errorOf(result);
+    expect(error.code).toBe(JsonRpcErrorCode.ValidationError);
+    expect(error.data?.reason).toBe('invalid_cursor');
+    const declared = bskyGetAuthorFeed.errors?.find((e) => e.reason === 'invalid_cursor')?.recovery;
+    expect(error.data?.recovery?.hint).toBe(declared);
+    expect(textOf(result)).toContain(declared ?? '<missing>');
+    expect(textOf(result)).toContain('invalid_cursor');
+  }, 15_000);
+
+  it('bsky_get_author_feed without a cursor still retries a 500', async () => {
+    http.route(
+      { match: /app\.bsky\.feed\.getAuthorFeed/, once: true, respond: INTERNAL },
+      { match: /app\.bsky\.feed\.getAuthorFeed/, respond: authorFeedPage },
+    );
+
+    const result = await runToolContract(bskyGetAuthorFeed, { actor: 'bsky.app' });
+
+    expect(result.isError).toBeFalsy();
+    expect(http.calls).toHaveLength(2);
+  }, 15_000);
+
+  it('bsky_get_author_feed with a cursor still retries a 502, which is not how a bad cursor is answered', async () => {
+    http.route(
+      {
+        match: /app\.bsky\.feed\.getAuthorFeed/,
+        once: true,
+        respond: () => xrpcError(502, 'UpstreamFailure', 'Bad Gateway'),
+      },
+      { match: /app\.bsky\.feed\.getAuthorFeed/, respond: authorFeedPage },
+    );
+
+    const result = await runToolContract(bskyGetAuthorFeed, { actor: 'bsky.app', cursor: 'p2' });
+
+    expect(result.isError).toBeFalsy();
+    expect(http.calls).toHaveLength(2);
+  }, 15_000);
+
+  it('bsky_get_follows, whose endpoint ignores a bad cursor, still retries a 500 that carried one', async () => {
+    http.route(
+      { match: /app\.bsky\.graph\.getFollows/, once: true, respond: INTERNAL },
+      {
+        match: /app\.bsky\.graph\.getFollows/,
+        respond: Response.json({
+          follows: [],
+          subject: { did: 'did:plc:abc', handle: 'alice.bsky.social' },
+        }),
+      },
+    );
+
+    const result = await runToolContract(bskyGetFollows, {
+      actor: 'alice.bsky.social',
+      direction: 'following',
+      cursor: 'garbage',
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(http.calls).toHaveLength(2);
+  }, 15_000);
+});
+
+describe('a 400 on searchActors', () => {
+  /** What `searchActors` answers for a cursor it cannot decode, and for any other rejected parameter. */
+  const INVALID = () => xrpcError(400, 'InvalidRequest', 'Invalid request');
+
+  it('bsky_search_actors with a caller cursor fails after one request as invalid_cursor', async () => {
+    http.route({ match: /app\.bsky\.actor\.searchActors/, respond: INVALID });
+
+    const result = await runToolContract(bskySearchActors, {
+      query: 'bluesky',
+      limit: 1,
+      cursor: 'garbage',
+    });
+
+    expect(http.calls).toHaveLength(1);
+    expect(new URL(http.calls[0]?.request.url ?? '').searchParams.get('cursor')).toBe('garbage');
+    expect(result.isError).toBe(true);
+    const error = errorOf(result);
+    expect(error.code).toBe(JsonRpcErrorCode.ValidationError);
+    expect(error.data?.reason).toBe('invalid_cursor');
+    expect(error.message).toContain('HTTP 400');
+    const declared = bskySearchActors.errors?.find((e) => e.reason === 'invalid_cursor')?.recovery;
+    expect(declared).toBeTruthy();
+    expect(error.data?.recovery?.hint).toBe(declared);
+    expect(textOf(result)).toContain(declared ?? '<missing>');
+    expect(textOf(result)).toContain('invalid_cursor');
+  });
+
+  it('bsky_search_actors without a cursor keeps the plain 400 failure, after one request', async () => {
+    http.route({ match: /app\.bsky\.actor\.searchActors/, respond: INVALID });
+
+    const result = await runToolContract(bskySearchActors, { query: 'bluesky' });
+
+    expect(http.calls).toHaveLength(1);
+    expect(result.isError).toBe(true);
+    const error = errorOf(result);
+    expect(error.code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(error.data?.reason).toBeUndefined();
+  });
+
+  it('bsky_search_actors with a cursor still retries a 500', async () => {
+    http.route(
+      {
+        match: /app\.bsky\.actor\.searchActors/,
+        once: true,
+        respond: () => xrpcError(500, 'InternalServerError', 'Internal Server Error'),
+      },
+      { match: /app\.bsky\.actor\.searchActors/, respond: () => Response.json({ actors: [] }) },
+    );
+
+    const result = await runToolContract(bskySearchActors, { query: 'bluesky', cursor: 'p2' });
+
+    expect(result.isError).toBeFalsy();
+    expect(http.calls).toHaveLength(2);
+  }, 15_000);
+
+  it('bsky_get_author_feed keeps its 500 mapping and leaves a 400 with a cursor unmapped', async () => {
+    http.route({
+      match: /app\.bsky\.feed\.getAuthorFeed/,
+      respond: () => xrpcError(400, 'InvalidRequest', 'Invalid request'),
+    });
+
+    const result = await runToolContract(bskyGetAuthorFeed, { actor: 'bsky.app', cursor: 'x' });
+
+    expect(http.calls).toHaveLength(1);
+    expect(errorOf(result).data?.reason).not.toBe('invalid_cursor');
   });
 });
 

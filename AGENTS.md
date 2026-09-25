@@ -198,7 +198,7 @@ src/
     server-config.ts                    # Optional BLUESKY_IDENTIFIER / BLUESKY_APP_PASSWORD pair that enables post search
   services/
     bluesky/
-      at-syntax.ts                      # AT identifier / AT-URI / feed-ref / ISO 8601 patterns shared by input schemas
+      at-syntax.ts                      # Identifier / AT-URI / feed-ref / ISO 8601 patterns, and the one parser for @handle and bsky.app URLs
       bluesky-service.ts                # AT Protocol read client — keyless AppView reads, retry, error mapping, normalization; post search via the session
       search-session.ts                 # App-password session for post search — lazy login, single-flight renewal, login-rejection and login-limit latches
       xrpc.ts                           # Shared request plumbing — User-Agent, timeout, XRPC URLs, error-status and HTML-body handling
@@ -213,6 +213,7 @@ src/
         bsky-get-feed.tool.ts           # A feed generator's posts by AT-URI or bsky.app URL
         bsky-get-author-feed.tool.ts    # User's own posts + their reposts (filtered by type)
         bsky-get-post-thread.tool.ts    # Conversation thread by AT-URI, with truncation and threadgate disclosure
+        bsky-get-post-quotes.tool.ts    # Quote posts behind a post's quoteCount, the restated quoted post cut from each embed
         bsky-search-actors.tool.ts      # Actor discovery by name/handle fragment
         bsky-get-follows.tool.ts        # Social graph edges (followers/following)
         bsky-get-trending.tool.ts       # Real-time trending topics, each with the feedUri of its feed

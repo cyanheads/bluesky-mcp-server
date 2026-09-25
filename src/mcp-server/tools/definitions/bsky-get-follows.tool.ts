@@ -10,7 +10,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { actorLabel, inlineUserText, quoteUserText } from '@/mcp-server/tools/post-format.js';
-import { AT_IDENTIFIER_MESSAGE, AT_IDENTIFIER_REGEX } from '@/services/bluesky/at-syntax.js';
+import { ACTOR_REF_MESSAGE, ACTOR_REF_REGEX, actorFromRef } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 import type { GraphResult } from '@/services/bluesky/types.js';
 
@@ -51,22 +51,32 @@ export const bskyGetFollows = tool('bsky_get_follows', {
     'summary of the subject account. Follower, following, and post counts and the website are not ' +
     'on this view, for the listed accounts or the subject — bsky_get_profile returns them for one ' +
     'account. Accounts with large social graphs return only the first page; use cursor pagination ' +
-    'to walk through the full list.',
+    'to walk through the full list, or sort "top" to put the accounts Bluesky ranks most prominent first.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     actor: z
       .string()
       .min(1)
-      .max(253)
-      .regex(AT_IDENTIFIER_REGEX, AT_IDENTIFIER_MESSAGE)
+      .max(2048)
+      .regex(ACTOR_REF_REGEX, ACTOR_REF_MESSAGE)
       .describe(
-        'Handle (e.g. "alice.bsky.social") or DID of the account to query. ' +
+        'Handle (e.g. "alice.bsky.social") or DID of the account to query. A leading "@" and the ' +
+          'account\'s bsky.app page ("https://bsky.app/profile/alice.bsky.social") are accepted and read ' +
+          'as the handle or DID they carry. ' +
           'A bare name without a dot is not a handle — use bsky_search_actors to resolve one.',
       ),
     direction: z
       .enum(['followers', 'following'])
       .describe(
         '"followers" returns accounts that follow this actor. "following" returns accounts this actor follows.',
+      ),
+    sort: z
+      .enum(['latest', 'top'])
+      .optional()
+      .describe(
+        'Order of the list. "latest" (Bluesky\'s default, and what omitting this gives) puts the most ' +
+          'recent follows first; "top" is Bluesky\'s own ranking, which surfaces prominent accounts but is ' +
+          'not a follower-count order. Pass a cursor back with the same sort it came from.',
       ),
     limit: z
       .number()
@@ -126,13 +136,16 @@ export const bskyGetFollows = tool('bsky_get_follows', {
   },
 
   async handler(input, ctx) {
+    const actor = actorFromRef(input.actor);
     ctx.log.info('Fetching Bluesky social graph', {
-      actor: input.actor,
+      actor,
       direction: input.direction,
+      sort: input.sort,
       limit: input.limit,
     });
     const params = {
-      actor: input.actor,
+      actor,
+      ...(input.sort ? { sort: input.sort } : {}),
       limit: input.limit,
       ...(input.cursor ? { cursor: input.cursor } : {}),
     };
@@ -151,7 +164,7 @@ export const bskyGetFollows = tool('bsky_get_follows', {
         ) {
           throw ctx.fail(
             'actor_not_found',
-            `Actor not found: "${input.actor}"`,
+            `Actor not found: "${actor}"`,
             ctx.recoveryFor('actor_not_found'),
           );
         }
@@ -171,7 +184,7 @@ export const bskyGetFollows = tool('bsky_get_follows', {
       ctx.enrich.notice(
         input.cursor
           ? `No more ${listed} — the previous page was the last.`
-          : `No ${listed} found for actor "${input.actor}".`,
+          : `No ${listed} found for actor "${actor}".`,
       );
     }
 
@@ -194,8 +207,11 @@ export const bskyGetFollows = tool('bsky_get_follows', {
     if (result.subject.pronouns)
       header.push(`**Pronouns:** ${inlineUserText(result.subject.pronouns)}`);
 
+    const footer = result.cursor ? `\n\n---\n*cursor: \`${result.cursor}\`*` : '';
     if (result.actors.length === 0) {
-      return [{ type: 'text', text: `${header.join('\n')}\n\n*No accounts on this page.*` }];
+      return [
+        { type: 'text', text: `${header.join('\n')}\n\n*No accounts on this page.*${footer}` },
+      ];
     }
 
     const actorLines = result.actors.map((a) => {
@@ -210,7 +226,6 @@ export const bskyGetFollows = tool('bsky_get_follows', {
       return parts.join('\n');
     });
 
-    const footer = result.cursor ? `\n\n---\n*cursor: \`${result.cursor}\`*` : '';
     return [
       {
         type: 'text',

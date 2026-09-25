@@ -1,14 +1,15 @@
 /**
- * @fileoverview Get a Bluesky user's recent feed — their own posts and their reposts, newest-first.
- * No upstream filter excludes reposts, so `limit` counts both; the enrichment reports the split
- * rather than leaving a caller after the actor's own writing to page blind for it.
+ * @fileoverview Get a Bluesky user's recent feed — their own posts and their reposts, newest-first,
+ * with the profile's pinned post on request. Only the two media filters leave reposts out, so under
+ * the other three `limit` counts both; the enrichment reports the split rather than leaving a caller
+ * after the actor's own writing to page blind for it.
  * @module mcp-server/tools/definitions/bsky-get-author-feed
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { renderPostLines } from '@/mcp-server/tools/post-format.js';
-import { AT_IDENTIFIER_MESSAGE, AT_IDENTIFIER_REGEX } from '@/services/bluesky/at-syntax.js';
+import { ACTOR_REF_MESSAGE, ACTOR_REF_REGEX, actorFromRef } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 import type { AuthorFeedResult } from '@/services/bluesky/types.js';
 
@@ -66,7 +67,13 @@ const PostSchema = z
     replyCount: z.number().optional().describe('Number of replies to this post.'),
     repostCount: z.number().optional().describe('Number of reposts.'),
     likeCount: z.number().optional().describe('Number of likes.'),
-    quoteCount: z.number().optional().describe('Number of quote posts.'),
+    quoteCount: z
+      .number()
+      .optional()
+      .describe(
+        'Number of quote posts Bluesky counts — read them with bsky_get_post_quotes. An upper bound on ' +
+          'what that returns, since the counter keeps quotes that have left the index.',
+      ),
     indexedAt: z.string().optional().describe('ISO 8601 timestamp when this post was indexed.'),
     createdAt: z.string().optional().describe('ISO 8601 timestamp when this post was created.'),
     labels: z
@@ -101,6 +108,13 @@ const PostSchema = z
         'AT-URI of the post this conversation started from, if this is a reply. ' +
           'Pass to bsky_get_post_thread to read the whole conversation rather than one branch.',
       ),
+    pinned: z
+      .boolean()
+      .optional()
+      .describe(
+        'True on the post the actor pinned to their profile, returned when include_pins is set. A pin is ' +
+          'placement, not recency — the post is often older than the items below it. Absent on every other item.',
+      ),
     repostedBy: z
       .object({
         did: z.string().describe('Permanent DID of the account that reposted.'),
@@ -122,25 +136,30 @@ const PostSchema = z
 export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
   title: 'Get Bluesky Author Feed',
   description:
-    "Get a Bluesky user's recent feed ordered newest-first. Every filter includes reposts, so " +
-    'items authored by other accounts appear alongside the actor\'s own writing — a "repostedBy" ' +
-    'field marks those, and the "author" field always names who actually wrote the post. Filter by ' +
-    'post type: "posts_with_replies" (everything), "posts_no_replies" (excludes replies), ' +
-    '"posts_with_media" (posts with images or links), or "posts_and_author_threads" ' +
-    '(posts the author started). Returns posts with full text, engagement counts, embeds, ' +
-    'and AT-URIs for drilling into threads via bsky_get_post_thread. Because "limit" counts reposts ' +
-    "too, a page from an account that reposts heavily holds far fewer of that account's own posts " +
-    'than the limit suggests; the enrichment fields report the split, so read "originalPosts" rather ' +
-    "than the limit when you want the actor's own writing. Supports cursor pagination.",
+    "Get a Bluesky user's recent feed ordered newest-first. Filter by post type: " +
+    '"posts_with_replies" (everything), "posts_no_replies" (excludes replies), "posts_and_author_threads" ' +
+    '(posts the author started), "posts_with_media" (the actor\'s own posts with images or video — no ' +
+    'link cards), or "posts_with_video" (the actor\'s own video posts). The first three include reposts, ' +
+    'so items authored by other accounts appear alongside the actor\'s own writing — a "repostedBy" ' +
+    'field marks those, and the "author" field always names who actually wrote the post; the two media ' +
+    'filters return no reposts. Set include_pins to also get the post pinned to the profile, marked ' +
+    '"pinned", first on the first page — in addition to "limit", and whether or not it matches the ' +
+    'filter. Returns posts with full text, engagement counts, embeds, and AT-URIs for drilling into ' +
+    'threads via bsky_get_post_thread. Because "limit" counts reposts too, a page from an account that ' +
+    "reposts heavily holds far fewer of that account's own posts than the limit suggests; the " +
+    'enrichment fields report the split, so read "originalPosts" rather than the limit when you want ' +
+    "the actor's own writing. Supports cursor pagination.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     actor: z
       .string()
       .min(1)
-      .max(253)
-      .regex(AT_IDENTIFIER_REGEX, AT_IDENTIFIER_MESSAGE)
+      .max(2048)
+      .regex(ACTOR_REF_REGEX, ACTOR_REF_MESSAGE)
       .describe(
-        'Handle (e.g. "alice.bsky.social") or DID of the author whose feed to fetch. ' +
+        'Handle (e.g. "alice.bsky.social") or DID of the author whose feed to fetch. A leading "@" and ' +
+          'the account\'s bsky.app page ("https://bsky.app/profile/alice.bsky.social") are accepted and ' +
+          'read as the handle or DID they carry. ' +
           'A bare name without a dot is not a handle — use bsky_search_actors to resolve one.',
       ),
     filter: z
@@ -149,12 +168,22 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
         'posts_no_replies',
         'posts_with_media',
         'posts_and_author_threads',
+        'posts_with_video',
       ])
       .default('posts_no_replies')
       .describe(
         'Filter for post types: "posts_no_replies" excludes replies, "posts_with_replies" for everything, ' +
-          '"posts_with_media" for posts with images/links, "posts_and_author_threads" for threads the author started. ' +
-          'None of these exclude reposts — the AppView offers no repost filter, so check "repostedBy" on each item.',
+          '"posts_and_author_threads" for threads the author started — all three include reposts, so check ' +
+          '"repostedBy" on each item. "posts_with_media" returns the actor\'s own posts with images or ' +
+          'video, not link cards, and "posts_with_video" their video posts; neither includes reposts.',
+      ),
+    include_pins: z
+      .boolean()
+      .default(false)
+      .describe(
+        'Also return the post pinned to the actor\'s profile, marked "pinned: true", first on the first ' +
+          'page. It arrives in addition to "limit", whether or not it matches "filter", and is not repeated ' +
+          'on later pages. Default false.',
       ),
     limit: z
       .number()
@@ -167,7 +196,10 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
       .string()
       .max(2048)
       .optional()
-      .describe('Opaque pagination cursor from a previous response. Omit for the first page.'),
+      .describe(
+        'Opaque pagination cursor from a previous response for the same actor, passed back unchanged. ' +
+          'Omit for the first page.',
+      ),
   }),
   output: z.object({
     posts: z
@@ -189,6 +221,14 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
       when: 'The actor handle or DID does not resolve to an existing account.',
       recovery: 'Verify the handle or DID, or use bsky_search_actors to find the correct actor.',
     },
+    {
+      reason: 'invalid_cursor',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Bluesky could not continue from the cursor the request carried — it answers a cursor it cannot decode with HTTP 500.',
+      recovery:
+        'Drop the cursor to start again from the first page, or pass the cursor exactly as the previous response for this same actor returned it.',
+      thrownBy: 'service',
+    },
   ],
 
   enrichment: {
@@ -197,9 +237,9 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
       .number()
       .optional()
       .describe(
-        'How many items on this page the requested actor wrote. Present whenever the page carries ' +
-          "at least one repost — the number a caller asking for the actor's own writing is after, " +
-          'since "limit" counts reposts too and no filter excludes them.',
+        'How many items on this page the requested actor wrote, a pinned post included. Present whenever ' +
+          "the page carries at least one repost — the number a caller asking for the actor's own writing " +
+          'is after, since under the filters that include reposts "limit" counts them too.',
       ),
     reposts: z
       .number()
@@ -218,17 +258,20 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
   },
 
   async handler(input, ctx) {
+    const actor = actorFromRef(input.actor);
     ctx.log.info('Fetching Bluesky author feed', {
-      actor: input.actor,
+      actor,
       filter: input.filter,
+      includePins: input.include_pins,
       limit: input.limit,
     });
     let result: AuthorFeedResult;
     try {
       result = await getBlueskyService().getAuthorFeed(
         {
-          actor: input.actor,
+          actor,
           filter: input.filter,
+          includePins: input.include_pins,
           limit: input.limit,
           ...(input.cursor ? { cursor: input.cursor } : {}),
         },
@@ -243,7 +286,7 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
         ) {
           throw ctx.fail(
             'actor_not_found',
-            `Actor not found: "${input.actor}"`,
+            `Actor not found: "${actor}"`,
             ctx.recoveryFor('actor_not_found'),
           );
         }
@@ -268,17 +311,19 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
         guidance: 'More posts exist — pass the returned cursor to fetch the next page.',
       });
     }
-    if (result.feed.length === 0) {
-      ctx.enrich.notice(`No posts found for actor "${input.actor}" with filter "${input.filter}".`);
+    if (result.feed.length === 0 && !result.cursor) {
+      ctx.enrich.notice(`No posts found for actor "${actor}" with filter "${input.filter}".`);
     }
     return { posts: result.feed, ...(result.cursor ? { cursor: result.cursor } : {}) };
   },
 
   format: (result) => {
-    if (result.posts.length === 0) {
+    if (result.posts.length === 0 && !result.cursor) {
       return [{ type: 'text', text: 'No posts found for this actor.' }];
     }
-    const output = result.posts.map((p) => renderPostLines(p).join('\n')).join('\n\n---\n\n');
+    const output = result.posts.length
+      ? result.posts.map((p) => renderPostLines(p).join('\n')).join('\n\n---\n\n')
+      : 'No posts on this page.';
     return [
       {
         type: 'text',

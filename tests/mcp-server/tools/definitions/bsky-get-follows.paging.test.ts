@@ -231,6 +231,66 @@ describe('bsky_get_follows — walking a follower graph to its end', () => {
   });
 });
 
+describe('bsky_get_follows — sort', () => {
+  it.each([
+    ['followers', 'getFollowers'],
+    ['following', 'getFollows'],
+  ] as const)(
+    'sends no sort parameter when %s is asked for without one',
+    async (direction, endpoint) => {
+      routeGraph(endpoint, { '': { accounts: [1] } });
+      await runToolContract(bskyGetFollows, { actor: ACTOR, direction });
+      expect(sentParams(0).has('sort')).toBe(false);
+    },
+  );
+
+  it.each([
+    ['followers', 'getFollowers', 'top'],
+    ['following', 'getFollows', 'top'],
+    ['followers', 'getFollowers', 'latest'],
+    ['following', 'getFollows', 'latest'],
+  ] as const)('forwards the sort on %s (%s): %s', async (direction, endpoint, sort) => {
+    routeGraph(endpoint, { '': { accounts: [1] } });
+    const result = await runToolContract(bskyGetFollows, { actor: ACTOR, direction, sort });
+    expect(result.isError).toBeFalsy();
+    expect(sentParams(0).get('sort')).toBe(sort);
+  });
+
+  it('walks a ranked graph with the cursor and the same sort on every page', async () => {
+    routeGraph('getFollows', {
+      '': { accounts: [9, 4], cursor: 't2' },
+      t2: { accounts: [7] },
+    });
+
+    const first = await runToolContract(bskyGetFollows, {
+      actor: ACTOR,
+      direction: 'following',
+      sort: 'top',
+      limit: 2,
+    });
+    const second = await runToolContract(bskyGetFollows, {
+      actor: ACTOR,
+      direction: 'following',
+      sort: 'top',
+      limit: 2,
+      cursor: structured(first).cursor,
+    });
+
+    expect(sentParams(0).get('sort')).toBe('top');
+    expect(sentParams(1).get('sort')).toBe('top');
+    expect(sentParams(1).get('cursor')).toBe('t2');
+    expect(structured(first)).toMatchObject({ truncated: true, shown: 2 });
+    expect(structured(second).actors.map((a) => a.handle)).toEqual(['acct7.bsky.social']);
+    expect(structured(second)).not.toHaveProperty('truncated');
+  });
+
+  it('rejects a sort outside the enum at the schema, since Bluesky ignores one silently', () => {
+    expect(() =>
+      bskyGetFollows.input.parse({ actor: ACTOR, direction: 'followers', sort: 'followers_count' }),
+    ).toThrow();
+  });
+});
+
 describe('bsky_get_follows — profileView carries no counts', () => {
   it('never puts a follower or following count on either surface, from one upstream request', async () => {
     http.route({

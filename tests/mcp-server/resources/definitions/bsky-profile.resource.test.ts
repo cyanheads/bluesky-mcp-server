@@ -187,7 +187,7 @@ describe('bskyProfileResource', () => {
     ['blank', ''],
     ['whitespace only', '   '],
     ['bare name without a dot', 'alice'],
-    ['leading @', '@bsky.app'],
+    ['@ before a DID', '@did:plc:z72i7hdynmk6r22z27h6tvur'],
   ])('rejects a malformed actor (%s) at the params layer', (_label, actor) => {
     expect(() => parseParams(actor)).toThrow();
     expect(mockGetProfile).not.toHaveBeenCalled();

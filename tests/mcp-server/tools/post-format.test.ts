@@ -319,6 +319,26 @@ describe('renderEmbedLines', () => {
     );
   });
 
+  /** The shape bsky_get_post_quotes reduces the restated target to: address, revision, own media. */
+  it('renders a quote carrying only its address and the quoting post media as exactly that', () => {
+    expect(
+      renderEmbedLines({ type: 'record', uri: 'at://did:plc:x/app.bsky.feed.post/q1', cid: 'c1' }),
+    ).toEqual(['💬 Quoted post: `at://did:plc:x/app.bsky.feed.post/q1` | CID: `c1`']);
+    expect(
+      renderEmbedLines({
+        type: 'record',
+        uri: 'at://did:plc:x/app.bsky.feed.post/q1',
+        cid: 'c1',
+        media: { type: 'images', images: [{ url: 'https://cdn/mine.jpg', alt: '' }] },
+      }),
+    ).toEqual([
+      '💬 Quoted post: `at://did:plc:x/app.bsky.feed.post/q1` | CID: `c1`',
+      '   Attached to the post that quoted it:',
+      '   📷 1 image(s):',
+      '   https://cdn/mine.jpg',
+    ]);
+  });
+
   /** The unreadable and non-post members of the quote slot carry no record of their own. */
   it('omits the CID pair for a quoted record that has none', () => {
     const lines = renderEmbedLines({

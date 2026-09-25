@@ -1,7 +1,7 @@
 <div align="center">
   <h1>@cyanheads/bluesky-mcp-server</h1>
   <p><b>Search posts, profiles, feeds, threads, and trending topics on Bluesky via MCP. STDIO or Streamable HTTP.</b>
-  <div>8 Tools • 1 Resource</div>
+  <div>9 Tools • 1 Resource</div>
   </p>
 </div>
 
@@ -29,17 +29,18 @@
 
 ## Overview
 
-Bluesky data over the AT Protocol AppView. Resolve profiles, track trending topics and read the feeds behind them, walk custom feeds, author feeds, and threads — all without an account — and add full-text post search with an optional app password. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+Bluesky data over the AT Protocol AppView. Resolve profiles, track trending topics and read the feeds behind them, walk custom feeds, author feeds, threads, and the quote posts on a post — all without an account — and add full-text post search with an optional app password. Shared bsky.app links and `@handle`s work wherever the matching account, post, or feed is asked for. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
 
 ### Tools
 
 | Tool | Description |
 |:-----|:------------|
-| `bsky_search_posts` | Full-text search across public Bluesky posts, with author, language, tag, date, and sort filters — offered only when an app password is configured |
+| `bsky_search_posts` | Full-text search across public Bluesky posts, with author, mention, language, tag, domain, URL, date, and sort filters — offered only when an app password is configured |
 | `bsky_get_profile` | Fetch a Bluesky actor's public profile by handle or DID — the handle↔DID resolver |
 | `bsky_get_feed` | Read a feed generator's posts — a trend's feed, Discover, or any custom feed — by AT-URI or bsky.app URL |
 | `bsky_get_author_feed` | A user's recent posts ordered newest-first, filterable by post type |
-| `bsky_get_post_thread` | Fetch the conversation for a post by AT-URI — parent chain upward and reply tree downward, with what Bluesky counted but did not return |
+| `bsky_get_post_thread` | Fetch the conversation for a post by AT-URI or bsky.app URL — parent chain upward and reply tree downward, with what Bluesky counted but did not return |
+| `bsky_get_post_quotes` | Read the quote posts behind a post's `quoteCount`, newest first — where much of the reaction to a post lives |
 | `bsky_search_actors` | Find Bluesky accounts by name or handle fragment |
 | `bsky_get_follows` | Paginated social graph edges — who a user follows or who follows them |
 | `bsky_get_trending` | Real-time trending topics on Bluesky with a story summary, post count, category, status, the accounts driving each topic, and the feed that collects its posts |
@@ -58,10 +59,11 @@ All resource data is also reachable via tools. Use `bsky_get_profile` for progra
 
 - Bluesky refuses post search without a signed-in account, so this tool is registered only when `BLUESKY_IDENTIFIER` and `BLUESKY_APP_PASSWORD` are set — without them it is absent from `tools/list` (see [Post search](#post-search))
 - Searches run as that account through its PDS; the first search logs in, the session is reused and refreshed, and a rejected login is not retried. Failures surface as `search_auth_failed` (the login or its renewal was rejected), `search_login_limited` (the account's daily login limit is used up — the error names when searching resumes), or `search_refused` (Bluesky refused the search)
-- Filters: author handle or DID, BCP-47 language, hashtag, `since`/`until` date range, and `top`/`latest` sort; up to 100 results per call via opaque cursor pagination
-- Identifier, language, and date inputs are pattern-validated locally before the upstream call; a well-formed but unindexed language tag (e.g. `"qqq"`) returns unfiltered results rather than an error
-- When Bluesky rejects a parameter, its own explanation is surfaced via the `upstream_rejected_filter` error reason instead of a bare status code
-- `hitsTotal` is capped at 10,000 — a value of exactly 10,000 means "at least that many," not an exact count; `truncated`/`shown`/`cap` disclose when more posts matched than were returned (a cursor alone doesn't imply truncation — Bluesky returns one on every non-empty response)
+- Filters: author and mentioned account (handle or DID, also as `@handle` or a bsky.app profile URL — `mentions` matches rich-text mentions only), two-letter language code, hashtag (with or without `#`), linked `domain` (bare hostname, leading `www.` dropped) or exact `url` (in text links or link cards), `since`/`until`, and `top`/`latest` sort; up to 100 results per call via opaque cursor pagination
+- `since`/`until` compare against each post's sort time — the earlier of `createdAt` and `indexedAt` — to the whole second, inclusive; a date alone is 00:00:00 UTC, so `until: "2026-01-01"` covers all of 2025-12-31
+- Identifier, language, domain, URL, and date inputs are pattern-validated locally before the upstream call. A three-letter language code (`"fil"`, `"eng"`) is rejected, since Bluesky search ignores one and returns unfiltered results; the code is sent lowercased, and later subtags are accepted but ignored upstream (`en-US` filters as `en`)
+- When Bluesky rejects a parameter, its own explanation is surfaced via the `upstream_rejected_filter` error reason instead of a bare status code; a cursor it can't decode fails as `invalid_cursor`, after one request
+- `hitsTotal` is Bluesky's estimate, never an exact count: below 10,000 it is an upper bound on what paging returns (Bluesky counts before dropping posts it won't return), and exactly 10,000 — the cap — means "at least that many"; `truncated`/`shown`/`cap` are keyed on the returned cursor, which Bluesky omits once nothing more matches
 - Embeds normalize to a `type`-discriminated union (`images`, `external`, `record`, `video`, `unknown`); a quoted post carries its own attachments up to 3 nesting levels, with `omittedEmbeds` counting what went deeper and `recordKind` naming a quote that's deleted, blocked, detached, or not a post
 - Moderation labels are surfaced as-is, unfiltered
 
@@ -69,7 +71,7 @@ All resource data is also reachable via tools. Use `bsky_get_profile` for progra
 
 ### `bsky_get_feed` <sub>tool</sub>
 
-- Takes a feed generator AT-URI (`at://<handle-or-did>/app.bsky.feed.generator/<rkey>`) or its bsky.app page (`https://bsky.app/profile/<handle-or-did>/feed/<rkey>`); a trend's `feedUri` works as-is, and Discover is `at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot`
+- Takes a feed generator AT-URI (`at://<handle-or-did>/app.bsky.feed.generator/<rkey>`) or its bsky.app page (`https://bsky.app/profile/<handle-or-did>/feed/<rkey>`, with any trailing `/`, `?…`, or `#…` ignored); a trend's `feedUri` works as-is, and Discover is `at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot`
 - A handle owner costs one extra lookup (`resolveHandle`), a DID owner none; any other collection, such as a post AT-URI, is rejected before the upstream call
 - A post the feed pinned to its top carries `pinned: true`; a repost carries `repostedBy`/`repostedAt`
 - Up to 100 posts per call, paginated via cursor; truncation is disclosed on the cursor, since a feed can return fewer than `limit` with more behind it
@@ -80,7 +82,7 @@ All resource data is also reachable via tools. Use `bsky_get_profile` for progra
 
 ### `bsky_get_profile` <sub>tool</sub>
 
-- Accepts a handle or DID; returns displayName, handle, DID, bio, pronouns, website, follower/following/post counts, avatar, moderation labels, and pinned post AT-URI
+- Accepts a handle or DID, also as `@handle` or the account's bsky.app page (`https://bsky.app/profile/<handle-or-did>`); returns displayName, handle, DID, bio, pronouns, website, follower/following/post counts, avatar, moderation labels, and pinned post AT-URI
 - `website` is the one link carried in its own field rather than inside the bio; both it and `pronouns` are absent when the account set neither
 - The bio renders as a markdown blockquote in `content[]`, since it's account-authored text that can carry its own markdown structure
 - `actor_not_found` when the handle doesn't resolve — resolve the handle with `bsky_search_actors` first
@@ -90,16 +92,20 @@ All resource data is also reachable via tools. Use `bsky_get_profile` for progra
 
 ### `bsky_get_author_feed` <sub>tool</sub>
 
-- `filter`: `posts_with_replies`, `posts_no_replies` (default, excludes replies), `posts_with_media`, or `posts_and_author_threads` — none exclude reposts, since the AppView has no repost filter
+- Takes a handle or DID, also as `@handle` or the account's bsky.app page
+- `filter`: `posts_with_replies`, `posts_no_replies` (default, excludes replies), and `posts_and_author_threads` include reposts; `posts_with_media` (the actor's own posts with images or video, no link cards) and `posts_with_video` return none
+- `include_pins: true` adds the profile's pinned post, marked `pinned: true`, first on the first page — in addition to `limit`, and whether or not it matches `filter`
 - Reposts carry `repostedBy` and `repostedAt`; `author` always names who actually wrote the post
-- `limit` counts reposts too, so a heavily-reposting account can return far fewer of its own posts than the limit suggests; `originalPosts`/`reposts` report the actual split whenever a repost is present
+- Under the filters that include reposts, `limit` counts them too, so a heavily-reposting account can return far fewer of its own posts than the limit suggests; `originalPosts`/`reposts` report the actual split whenever a repost is present
 - Up to 100 posts per call, paginated via cursor
-- `actor_not_found` when the handle or DID doesn't resolve
+- `actor_not_found` when the handle or DID doesn't resolve; `invalid_cursor`, after one request, when Bluesky can't decode the cursor passed (it answers those with HTTP 500, which is otherwise retried)
 
 ---
 
 ### `bsky_get_post_thread` <sub>tool</sub>
 
+- Takes a post AT-URI or its bsky.app page (`https://bsky.app/profile/<handle-or-did>/post/<rkey>`, trailing `/`, `?…`, or `#…` ignored)
+- Replies only — quote posts live under `bsky_get_post_quotes`
 - `depth` (reply levels, default 6, max 10 — Bluesky's own ceiling, however deep the request) and `parent_height` (parent chain height, default 80, max 100)
 - A node returning fewer replies than its own `replyCount` carries `truncated: true`, `unreturnedReplies` (an upper bound, not an exact shortfall), and `truncationReason` (`"depth"` — fetch that node's AT-URI to continue, or `"unavailable"` — no request closes the gap)
 - When the parent chain stops at `parent_height` short of the conversation root, the topmost node carries `parentChainTruncated: true` — recoverable by fetching that node's AT-URI as its own thread
@@ -110,11 +116,23 @@ All resource data is also reachable via tools. Use `bsky_get_profile` for progra
 
 ---
 
+### `bsky_get_post_quotes` <sub>tool</sub>
+
+- Takes a post AT-URI or its bsky.app page; any other collection is rejected before the upstream call
+- A DID-authority post costs one request; a handle costs one extra lookup (`resolveHandle`), since `getQuotes` answers a handle authority with an empty list
+- Every result quotes the same post, so each result's embed keeps only that post's AT-URI and CID, its `recordKind` when it's unreadable, and any media the quoting post attached — the queried post's text and attachments aren't repeated on every item
+- Up to 100 quotes per call, newest first, paginated via cursor; truncation is disclosed on the cursor, since pages often come back short of `limit` with more behind them
+- `quoteCount` is an upper bound on what this returns — Bluesky's counter keeps quotes that have left the index
+- `post_not_found` when the post doesn't exist or its handle doesn't resolve (an empty first page is checked with one `getPosts`); `invalid_cursor` after one request for a cursor Bluesky can't decode
+
+---
+
 ### `bsky_search_actors` <sub>tool</sub>
 
 - Returns ranked profiles with handle, DID, displayName, bio, and pronouns when set — no follower, following, or post counts and no `website`, which only `bsky_get_profile` returns
 - Bio renders as a markdown blockquote in `content[]`, since it's account-authored text
 - Up to 100 results per call, paginated via cursor; pages often hold fewer than `limit` and still continue, and the last page carries no cursor
+- `invalid_cursor`, after one request, when Bluesky can't decode the cursor passed (it answers those with HTTP 400)
 - Use before `bsky_get_profile` or `bsky_get_author_feed` when you have a name but not a confirmed handle
 
 ---
@@ -122,6 +140,8 @@ All resource data is also reachable via tools. Use `bsky_get_profile` for progra
 ### `bsky_get_follows` <sub>tool</sub>
 
 - `direction`: `followers` (who follows the actor) or `following` (who the actor follows)
+- `sort`: `latest` (Bluesky's default — most recent follows first) or `top` (Bluesky's own ranking of prominent accounts, not a follower-count order); pass a cursor back with the same `sort`
+- Takes a handle or DID, also as `@handle` or the account's bsky.app page
 - Returns paginated profiles (handle, DID, displayName, bio, pronouns when set) plus the subject's own profile summary
 - No follower, following, or post counts and no `website` on this view, for the list or the subject — resolve with `bsky_get_profile` when they matter
 - Up to 100 per page, paginated via cursor. A cursor can lead to an empty page when the remaining accounts no longer resolve, which the response reports as the end of the list
@@ -141,7 +161,7 @@ All resource data is also reachable via tools. Use `bsky_get_profile` for progra
 ### `bsky://profile/{actor}` <sub>resource</sub>
 
 - Returns the same fields as `bsky_get_profile` in injectable-context form — displayName, handle, DID, bio, pronouns, website, follower/following/post counts, avatar, moderation labels, pinned post AT-URI
-- Addressable by handle or DID via `{actor}`
+- Addressable by handle or DID via `{actor}`, with or without a leading `@` (`bsky://profile/@bsky.app`)
 - `actor_not_found` when the handle doesn't resolve
 
 ## Features
@@ -150,7 +170,8 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 
 Bluesky-specific:
 
-- Seven of eight tools read `api.bsky.app` without credentials; `bsky_search_posts` runs through an optional app-password session and is left out without one
+- Eight of nine tools read `api.bsky.app` without credentials; `bsky_search_posts` runs through an optional app-password session and is left out without one
+- Shared links as input — `@handle` and a bsky.app profile URL wherever an account is asked for, a bsky.app post or feed URL wherever that post or feed is, each rewritten to the handle, DID, or AT-URI it names before the request
 - Single `BlueskyService` wrapping the AT Protocol AppView, with a 15s per-request timeout, retry on transient upstream failures (up to 3 retries, 500ms base delay — never for a login, or for a failure already mapped to a tool error), and a versioned `User-Agent`
 - No HTML in any error — a block page from Bluesky's edge is dropped from the error data, leaving the status
 - Embed normalization — raw nested AT Protocol embed objects flattened into a clean `type`-discriminated union
@@ -344,7 +365,7 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 | `src/index.ts` | `createApp()` entry point — reads config, registers tools and resource, and inits the service. |
 | `src/config` | Server config — the optional app-password pair that enables post search. |
 | `src/services/bluesky` | AT Protocol HTTP client — public AppView reads, the app-password search session, retry, timeout, and `User-Agent`. |
-| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`) — eight read-only Bluesky tools. |
+| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`) — nine read-only Bluesky tools. |
 | `src/mcp-server/resources` | Resource definitions (`*.resource.ts`) — `bsky://profile/{actor}`. |
 | `tests/` | Unit and integration tests mirroring `src/`. |
 

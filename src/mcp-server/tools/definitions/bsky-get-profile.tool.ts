@@ -11,7 +11,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { inlineUserText, quoteUserText, renderLabelList } from '@/mcp-server/tools/post-format.js';
-import { AT_IDENTIFIER_MESSAGE, AT_IDENTIFIER_REGEX } from '@/services/bluesky/at-syntax.js';
+import { ACTOR_REF_MESSAGE, ACTOR_REF_REGEX, actorFromRef } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
 const LabelSchema = z
@@ -31,16 +31,19 @@ export const bskyGetProfile = tool('bsky_get_profile', {
     '(e.g. "did:plc:z72i7hdynmk6r22z27h6tvur"). Returns displayName, handle, DID, bio, pronouns, ' +
     'website, follower/following/post counts, avatar URL, moderation labels, and pinned post AT-URI. ' +
     'Use this as the first step to resolve a handle to a DID before calling tools that require ' +
-    'a DID or AT-URI. Handles and DIDs are interchangeable as input.',
+    'a DID or AT-URI. Handles and DIDs are interchangeable as input, and "@bsky.app" or the ' +
+    "account's bsky.app page (https://bsky.app/profile/bsky.app) work as-is.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     actor: z
       .string()
       .min(1)
-      .max(253)
-      .regex(AT_IDENTIFIER_REGEX, AT_IDENTIFIER_MESSAGE)
+      .max(2048)
+      .regex(ACTOR_REF_REGEX, ACTOR_REF_MESSAGE)
       .describe(
         'Handle (e.g. "bsky.app", "alice.bsky.social") or DID (e.g. "did:plc:z72i7hdynmk6r22z27h6tvur") of the actor to look up. ' +
+          'A leading "@" ("@bsky.app") and the account\'s bsky.app page ("https://bsky.app/profile/bsky.app") are ' +
+          'accepted and read as the handle or DID they carry. ' +
           'A bare name without a dot is not a handle — use bsky_search_actors to resolve one.',
       ),
   }),
@@ -97,9 +100,10 @@ export const bskyGetProfile = tool('bsky_get_profile', {
   ],
 
   async handler(input, ctx) {
-    ctx.log.info('Fetching Bluesky profile', { actor: input.actor });
+    const actor = actorFromRef(input.actor);
+    ctx.log.info('Fetching Bluesky profile', { actor });
     try {
-      return await getBlueskyService().getProfile(input.actor, ctx);
+      return await getBlueskyService().getProfile(actor, ctx);
     } catch (err) {
       if (err instanceof McpError) {
         const body = (err.data as { responseBody?: string } | undefined)?.responseBody ?? '';
@@ -109,7 +113,7 @@ export const bskyGetProfile = tool('bsky_get_profile', {
         ) {
           throw ctx.fail(
             'actor_not_found',
-            `Actor not found: "${input.actor}"`,
+            `Actor not found: "${actor}"`,
             ctx.recoveryFor('actor_not_found'),
           );
         }

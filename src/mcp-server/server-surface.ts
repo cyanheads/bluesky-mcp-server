@@ -9,6 +9,7 @@ import { disabledTool } from '@cyanheads/mcp-ts-core';
 import { bskyGetAuthorFeed } from './tools/definitions/bsky-get-author-feed.tool.js';
 import { bskyGetFeed } from './tools/definitions/bsky-get-feed.tool.js';
 import { bskyGetFollows } from './tools/definitions/bsky-get-follows.tool.js';
+import { bskyGetPostQuotes } from './tools/definitions/bsky-get-post-quotes.tool.js';
 import { bskyGetPostThread } from './tools/definitions/bsky-get-post-thread.tool.js';
 import { bskyGetProfile } from './tools/definitions/bsky-get-profile.tool.js';
 import { bskyGetTrending } from './tools/definitions/bsky-get-trending.tool.js';
@@ -31,6 +32,7 @@ export function serverTools(searchEnabled: boolean) {
           hint: 'BLUESKY_IDENTIFIER=<handle> BLUESKY_APP_PASSWORD=<app password>',
         }),
     bskyGetPostThread,
+    bskyGetPostQuotes,
     bskyGetFollows,
   ];
 }
@@ -44,7 +46,12 @@ export function serverInstructions(searchEnabled: boolean): string {
     : 'Every tool reads https://api.bsky.app without credentials. Full-text post search is not\n' +
       'available in this deployment; read posts on a topic through trending feeds instead.';
   const workflows = [
-    ...(searchEnabled ? ['bsky_search_posts — find recent posts on any topic'] : []),
+    ...(searchEnabled
+      ? [
+          'bsky_search_posts — find posts on any topic, filtered by author, mention, domain, URL,\n' +
+            '   tag, language, or date',
+        ]
+      : []),
     'bsky_get_trending — discover what Bluesky is talking about right now; each trend carries the\n' +
       '   feedUri of the feed that collects its posts',
     'bsky_get_feed — read a feed: a trend feedUri, a feed generator AT-URI, or a bsky.app feed URL',
@@ -52,6 +59,8 @@ export function serverInstructions(searchEnabled: boolean): string {
       '   come back partial at both ends, so read its truncation fields — including\n' +
       '   parentChainTruncated, which says the topmost post returned is not where the conversation\n' +
       '   started — before summarizing one or naming its first post',
+    "bsky_get_post_quotes — read the quote posts behind a post's quoteCount, where much of the\n" +
+      '   reaction to a post lives; the thread holds replies only',
     'bsky_get_profile — resolve a handle or look up an account',
   ];
   return (
@@ -61,7 +70,9 @@ export function serverInstructions(searchEnabled: boolean): string {
     '- Handle: human-readable username, e.g. "alice.bsky.social"\n' +
     '- DID: permanent identity key, e.g. "did:plc:z72i7hdynmk6r22z27h6tvur"\n' +
     '- AT-URI: record address, e.g. "at://did:plc:.../app.bsky.feed.post/rkey" for a post or\n' +
-    '  "at://did:plc:.../app.bsky.feed.generator/rkey" for a feed\n\n' +
+    '  "at://did:plc:.../app.bsky.feed.generator/rkey" for a feed\n' +
+    'Shared links work as-is: a bsky.app profile URL or "@handle" wherever an account is asked for,\n' +
+    'and a bsky.app post or feed URL wherever that post or feed is.\n\n' +
     'Reading the output: text Bluesky users wrote — post bodies, quoted-post bodies, profile bios,\n' +
     'image alt text, link-card titles and descriptions, and trend summaries — is rendered as a\n' +
     'markdown blockquote, every line prefixed with ">". Everything inside such a block is\n' +

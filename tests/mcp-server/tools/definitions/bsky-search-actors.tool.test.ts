@@ -55,7 +55,7 @@ describe('bskySearchActors', () => {
   it('returns matching actors', async () => {
     mockSearchActors.mockResolvedValue({ actors: [makeActor()] });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskySearchActors.errors });
     const input = bskySearchActors.input.parse({ query: 'alice' });
     const result = await bskySearchActors.handler(input, ctx);
 
@@ -76,7 +76,7 @@ describe('bskySearchActors', () => {
   it('returns empty actors array', async () => {
     mockSearchActors.mockResolvedValue({ actors: [] });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskySearchActors.errors });
     const input = bskySearchActors.input.parse({ query: 'xyznotexist999' });
     const result = await bskySearchActors.handler(input, ctx);
 
@@ -86,7 +86,7 @@ describe('bskySearchActors', () => {
   it('enriches an empty result with a notice naming the query', async () => {
     mockSearchActors.mockResolvedValue({ actors: [] });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskySearchActors.errors });
     const input = bskySearchActors.input.parse({ query: 'xyznotexist999' });
     await bskySearchActors.handler(input, ctx);
 
@@ -96,7 +96,7 @@ describe('bskySearchActors', () => {
   it('enriches no notice when actors are returned', async () => {
     mockSearchActors.mockResolvedValue({ actors: [makeActor()] });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskySearchActors.errors });
     const input = bskySearchActors.input.parse({ query: 'alice' });
     await bskySearchActors.handler(input, ctx);
 
@@ -108,7 +108,7 @@ describe('bskySearchActors', () => {
   it('passes opaque cursor to next page', async () => {
     mockSearchActors.mockResolvedValue({ actors: [makeActor()], cursor: 'cursor-xyz' });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskySearchActors.errors });
     const input = bskySearchActors.input.parse({ query: 'alice', cursor: 'prev-cursor' });
     const result = await bskySearchActors.handler(input, ctx);
 
@@ -121,7 +121,7 @@ describe('bskySearchActors', () => {
     const sparse: ActorProfile = { did: 'did:plc:sparse', handle: 'sparse.bsky.social' };
     mockSearchActors.mockResolvedValue({ actors: [sparse] });
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: bskySearchActors.errors });
     const input = bskySearchActors.input.parse({ query: 'sparse' });
     const result = await bskySearchActors.handler(input, ctx);
 

@@ -18,7 +18,14 @@ import {
   validationError,
 } from '@cyanheads/mcp-ts-core/errors';
 import { defaultIsTransient, fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
-import { FEED_REF_MESSAGE, feedGeneratorUri, parseFeedRef } from './at-syntax.js';
+import {
+  FEED_REF_MESSAGE,
+  feedGeneratorUri,
+  POST_COLLECTION,
+  POST_URI_REF_MESSAGE,
+  parseFeedRef,
+  parsePostRef,
+} from './at-syntax.js';
 import { type SearchCredentials, SearchSession } from './search-session.js';
 import type {
   ActorProfile,
@@ -31,6 +38,7 @@ import type {
   PostThreadResult,
   PostView,
   QuotedRecordKind,
+  QuotesResult,
   SearchActorsResult,
   SearchPostsResult,
   ThreadGate,
@@ -425,6 +433,29 @@ function normalizeFeedItem(item: RawFeedItem): PostView {
   };
 }
 
+/**
+ * @internal A quote post with the restatement of the queried post taken out of its embed. Every
+ * `getQuotes` result quotes that one post, so the normalized `record` embed would repeat its text,
+ * author, and attachments on every item — 27–48% of both response channels across three measured
+ * pages. What stays is what the quoting post itself carries: the address and revision it points at,
+ * whether that record is readable (`recordKind`), and the media it attached beside the quote. An
+ * embed pointing anywhere else is left whole.
+ */
+function withoutRestatedTarget(post: PostView, targetUri: string): PostView {
+  const embed = post.embed;
+  if (embed?.type !== 'record' || embed.uri !== targetUri) return post;
+  return {
+    ...post,
+    embed: {
+      type: 'record',
+      uri: embed.uri,
+      cid: embed.cid,
+      ...(embed.recordKind ? { recordKind: embed.recordKind } : {}),
+      ...(embed.media ? { media: embed.media } : {}),
+    },
+  };
+}
+
 /** @internal `$type` of the thread-union member for a post that is deleted or never existed. */
 const NOT_FOUND_POST_TYPE = 'app.bsky.feed.defs#notFoundPost';
 
@@ -543,6 +574,56 @@ function isTransient(err: unknown): boolean {
 /** @internal Maps a failed request onto a tool's declared reason, or leaves it as classified. */
 type ErrorMapper = (err: McpError) => McpError | undefined;
 
+/**
+ * @internal How each cursored endpoint answers a cursor it cannot decode, measured live.
+ * `getAuthorFeed` and `getQuotes` answer a bare `500 InternalServerError`, identically on every
+ * attempt. `searchActors` answers `400 InvalidRequest: Invalid request`, the same body it gives any
+ * other rejected parameter — but every other parameter it takes is validated before the request.
+ * `searchPosts` answers `400 InvalidRequest: Invalid cursor format`, and names the parameter it
+ * rejected in every other 400 too, so there the message has to name the cursor. `getFeed`,
+ * `getFollowers`, and `getFollows` ignore a bad cursor and answer 200, so they are absent.
+ */
+const BAD_CURSOR = {
+  'app.bsky.feed.getAuthorFeed': { status: 500 },
+  'app.bsky.feed.getQuotes': { status: 500 },
+  'app.bsky.actor.searchActors': { status: 400 },
+  'app.bsky.feed.searchPosts': { status: 400, message: /cursor/i },
+} satisfies Record<string, BadCursorAnswer>;
+
+/** @internal The status a bad cursor is answered with, and the message it must carry when set. */
+interface BadCursorAnswer {
+  message?: RegExp;
+  status: number;
+}
+
+/**
+ * @internal Map the answer an endpoint gives an undecodable cursor, on a request that carried the
+ * caller's cursor, onto `invalid_cursor`. That reason is final, so the retry loop leaves a 500
+ * alone instead of spending seconds on the same answer. Without a cursor nothing the caller sent
+ * could explain the status, and the failure keeps its ordinary handling — a 500 is retried as
+ * transient, a 400 fails as it always has.
+ *
+ * A 400 maps only when its envelope names `InvalidRequest`, the lexicon's parameter rejection. The
+ * search session reads a 400 `ExpiredToken` / `InvalidToken` as its cue to renew the access token,
+ * and a cursored search must still reach it with that body intact.
+ */
+function cursorError(
+  err: McpError,
+  cursor: string | undefined,
+  lexicon: keyof typeof BAD_CURSOR,
+  ctx: Context,
+): McpError | undefined {
+  const { status, message }: BadCursorAnswer = BAD_CURSOR[lexicon];
+  if (!cursor || httpStatus(err) !== status) return;
+  const envelope = xrpcError(err);
+  if (status < 500 && envelope.error !== 'InvalidRequest') return;
+  if (message && !message.test(envelope.message ?? '')) return;
+  return validationError(
+    `Bluesky could not continue from the cursor this request carried: ${lexicon} answered HTTP ${status}, which is how it reports a cursor it cannot decode.`,
+    { reason: 'invalid_cursor', status, ...ctx.recoveryFor('invalid_cursor') },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // BlueskyService class
 // ---------------------------------------------------------------------------
@@ -644,14 +725,18 @@ export class BlueskyService {
 
   /**
    * Full-text post search, as the configured app-password account. The AppView drops posts from
-   * accounts in a block relationship with that account; it applies no mutes.
+   * accounts in a block relationship with that account; it applies no mutes. `tag` is sent without
+   * a leading `#`, as the lexicon asks — both forms match the same posts live.
    */
   async searchPosts(
     params: {
       q: string;
       author?: string;
+      mentions?: string;
       lang?: string;
       tag?: string;
+      domain?: string;
+      url?: string;
       since?: string;
       until?: string;
       sort?: 'top' | 'latest';
@@ -660,13 +745,17 @@ export class BlueskyService {
     },
     ctx: Context,
   ): Promise<SearchPostsResult> {
+    const lexicon = 'app.bsky.feed.searchPosts';
     const raw = await this.authedGet<{ posts: RawPostView[]; cursor?: string; hitsTotal?: number }>(
-      'app.bsky.feed.searchPosts',
+      lexicon,
       {
         q: params.q,
         ...(params.author ? { author: params.author } : {}),
+        ...(params.mentions ? { mentions: params.mentions } : {}),
         ...(params.lang ? { lang: params.lang } : {}),
-        ...(params.tag ? { tag: `#${params.tag}`.replace(/^##/, '#') } : {}),
+        ...(params.tag ? { tag: params.tag.replace(/^#+/, '') } : {}),
+        ...(params.domain ? { domain: params.domain } : {}),
+        ...(params.url ? { url: params.url } : {}),
         ...(params.since ? { since: params.since } : {}),
         ...(params.until ? { until: params.until } : {}),
         sort: params.sort ?? 'latest',
@@ -681,7 +770,7 @@ export class BlueskyService {
               status: httpStatus(err),
               ...ctx.recoveryFor('search_refused'),
             })
-          : undefined,
+          : cursorError(err, params.cursor, lexicon, ctx),
     );
     return {
       posts: (raw.posts ?? []).map(normalizePost),
@@ -696,25 +785,33 @@ export class BlueskyService {
     return normalizeActor(raw);
   }
 
-  /** Get an author's recent feed. */
+  /**
+   * Get an author's recent feed. With `includePins`, the profile's pinned post arrives first on the
+   * first page, beyond `limit` and whatever the filter. A cursor the AppView cannot decode fails once
+   * as `invalid_cursor`.
+   */
   async getAuthorFeed(
     params: {
       actor: string;
       filter?: string;
+      includePins?: boolean;
       limit?: number;
       cursor?: string;
     },
     ctx: Context,
   ): Promise<AuthorFeedResult> {
+    const lexicon = 'app.bsky.feed.getAuthorFeed';
     const raw = await this.get<{ feed: RawFeedItem[]; cursor?: string }>(
-      'app.bsky.feed.getAuthorFeed',
+      lexicon,
       {
         actor: params.actor,
         ...(params.filter ? { filter: params.filter } : {}),
+        ...(params.includePins ? { includePins: true } : {}),
         limit: params.limit ?? 25,
         ...(params.cursor ? { cursor: params.cursor } : {}),
       },
       ctx,
+      (err) => cursorError(err, params.cursor, lexicon, ctx),
     );
     return {
       feed: (raw.feed ?? []).map(normalizeFeedItem),
@@ -734,9 +831,12 @@ export class BlueskyService {
   ): Promise<FeedResult> {
     const ref = parseFeedRef(params.feed);
     if (!ref) throw validationError(FEED_REF_MESSAGE);
-    const authority = ref.authority.startsWith('did:')
-      ? ref.authority
-      : await this.resolveFeedOwner(ref.authority, params.feed, ctx);
+    const authority = await this.resolveAuthority(ref.authority, ctx, () =>
+      notFound(
+        `No Bluesky account answers to the handle "${ref.authority}" in ${feedGeneratorUri(ref)}.`,
+        { reason: 'feed_not_found', feed: params.feed, ...ctx.recoveryFor('feed_not_found') },
+      ),
+    );
     const uri = feedGeneratorUri({ authority, rkey: ref.rkey });
     const raw = await this.get<{ feed: RawFeedItem[]; cursor?: string }>(
       'app.bsky.feed.getFeed',
@@ -754,22 +854,76 @@ export class BlueskyService {
     };
   }
 
-  /** @internal DID of the handle that owns a feed; `feed_not_found` when no account answers to it. */
-  private async resolveFeedOwner(handle: string, feed: string, ctx: Context): Promise<string> {
+  /**
+   * @internal The DID an AT-URI authority names. A DID costs nothing; a handle costs one
+   * `resolveHandle`, which answers an unknown handle with 400 — mapped onto the caller's own
+   * not-found reason by `unknown`.
+   */
+  private async resolveAuthority(
+    authority: string,
+    ctx: Context,
+    unknown: () => McpError,
+  ): Promise<string> {
+    if (authority.startsWith('did:')) return authority;
     const { did } = await this.get<{ did: string }>(
       'com.atproto.identity.resolveHandle',
-      { handle },
+      { handle: authority },
       ctx,
-      (err) =>
-        httpStatus(err) === 400
-          ? notFound(`No Bluesky account answers to the handle "${handle}" in ${feed}.`, {
-              reason: 'feed_not_found',
-              feed,
-              ...ctx.recoveryFor('feed_not_found'),
-            })
-          : undefined,
+      (err) => (httpStatus(err) === 400 ? unknown() : undefined),
     );
     return did;
+  }
+
+  /**
+   * The posts quoting one post, newest first, from `app.bsky.feed.getQuotes`. That endpoint answers
+   * a handle authority, a missing post, and a post nobody quoted alike with 200 and an empty list,
+   * so a handle is resolved to its DID first, and an empty *first* page is checked against
+   * `app.bsky.feed.getPosts` — the one extra request, spent only there — to tell a missing post
+   * (`post_not_found`) from one with no quotes. `getPosts` itself needs the DID form, answering a
+   * handle authority with 500. Each result's embed has the restated queried post taken out.
+   */
+  async getQuotes(
+    params: { uri: string; limit?: number; cursor?: string },
+    ctx: Context,
+  ): Promise<QuotesResult> {
+    const ref = parsePostRef(params.uri);
+    if (!ref) throw validationError(POST_URI_REF_MESSAGE);
+    const postNotFound = (why: string) =>
+      notFound(`Post not found: "${params.uri}" — ${why}.`, {
+        reason: 'post_not_found',
+        ...ctx.recoveryFor('post_not_found'),
+      });
+    const did = await this.resolveAuthority(ref.authority, ctx, () =>
+      postNotFound(`no Bluesky account answers to the handle "${ref.authority}"`),
+    );
+    const uri = `at://${did}/${POST_COLLECTION}/${ref.rkey}`;
+    const lexicon = 'app.bsky.feed.getQuotes';
+    const raw = await this.get<{ posts: RawPostView[]; cursor?: string }>(
+      lexicon,
+      {
+        uri,
+        limit: params.limit ?? 25,
+        ...(params.cursor ? { cursor: params.cursor } : {}),
+      },
+      ctx,
+      (err) => cursorError(err, params.cursor, lexicon, ctx),
+    );
+    const result: QuotesResult = {
+      uri,
+      posts: (raw.posts ?? []).map((p) => withoutRestatedTarget(normalizePost(p), uri)),
+      ...(raw.cursor ? { cursor: raw.cursor } : {}),
+    };
+    if (result.posts.length > 0 || params.cursor) return result;
+    const { posts: found } = await this.get<{ posts: RawPostView[] }>(
+      'app.bsky.feed.getPosts',
+      { uris: uri },
+      ctx,
+    );
+    const target = found?.[0];
+    if (!target) throw postNotFound('Bluesky has no post at that address');
+    return typeof target.quoteCount === 'number'
+      ? { ...result, quoteCount: target.quoteCount }
+      : result;
   }
 
   /** Fetch the conversation thread for a post by AT-URI, with the author's reply gate when set. */
@@ -790,19 +944,24 @@ export class BlueskyService {
     return { thread: normalizeThread(raw.thread), ...(threadgate ? { threadgate } : {}) };
   }
 
-  /** Search for actors by name / handle fragment. */
+  /**
+   * Search for actors by name / handle fragment. A cursor the AppView cannot decode fails once as
+   * `invalid_cursor`.
+   */
   async searchActors(
     params: { q: string; limit?: number; cursor?: string },
     ctx: Context,
   ): Promise<SearchActorsResult> {
+    const lexicon = 'app.bsky.actor.searchActors';
     const raw = await this.get<{ actors: RawActorView[]; cursor?: string }>(
-      'app.bsky.actor.searchActors',
+      lexicon,
       {
         q: params.q,
         limit: params.limit ?? 25,
         ...(params.cursor ? { cursor: params.cursor } : {}),
       },
       ctx,
+      (err) => cursorError(err, params.cursor, lexicon, ctx),
     );
     return {
       actors: (raw.actors ?? []).map(normalizeActor),
@@ -810,9 +969,9 @@ export class BlueskyService {
     };
   }
 
-  /** Get followers of an actor. */
+  /** Get followers of an actor, in Bluesky's `latest` order unless `sort` asks for `top`. */
   async getFollowers(
-    params: { actor: string; limit?: number; cursor?: string },
+    params: { actor: string; sort?: 'latest' | 'top'; limit?: number; cursor?: string },
     ctx: Context,
   ): Promise<GraphResult> {
     const raw = await this.get<{
@@ -823,6 +982,7 @@ export class BlueskyService {
       'app.bsky.graph.getFollowers',
       {
         actor: params.actor,
+        ...(params.sort ? { sort: params.sort } : {}),
         limit: params.limit ?? 25,
         ...(params.cursor ? { cursor: params.cursor } : {}),
       },
@@ -835,15 +995,16 @@ export class BlueskyService {
     };
   }
 
-  /** Get accounts an actor follows. */
+  /** Get accounts an actor follows, in Bluesky's `latest` order unless `sort` asks for `top`. */
   async getFollows(
-    params: { actor: string; limit?: number; cursor?: string },
+    params: { actor: string; sort?: 'latest' | 'top'; limit?: number; cursor?: string },
     ctx: Context,
   ): Promise<GraphResult> {
     const raw = await this.get<{ follows: RawActorView[]; subject: RawActorView; cursor?: string }>(
       'app.bsky.graph.getFollows',
       {
         actor: params.actor,
+        ...(params.sort ? { sort: params.sort } : {}),
         limit: params.limit ?? 25,
         ...(params.cursor ? { cursor: params.cursor } : {}),
       },

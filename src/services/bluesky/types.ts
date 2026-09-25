@@ -253,6 +253,19 @@ export interface FeedResult {
   posts: PostView[];
 }
 
+/** Result of getQuotes — the posts quoting one post, newest first. */
+export interface QuotesResult {
+  cursor?: string;
+  posts: PostView[];
+  /**
+   * The queried post's own `quoteCount`, read only when the first page came back empty and the
+   * post's existence had to be checked. Absent otherwise.
+   */
+  quoteCount?: number;
+  /** DID-form AT-URI of the post whose quotes these are — the form the request was sent in. */
+  uri: string;
+}
+
 /** Result of searchActors. */
 export interface SearchActorsResult {
   actors: ActorProfile[];
