@@ -35,7 +35,45 @@ export const AT_URI_REGEX = new RegExp(`^at://(?:${HANDLE}|${DID})/${NSID}/${RKE
 
 /** Validation message paired with {@link AT_URI_REGEX}. */
 export const AT_URI_MESSAGE =
-  'Must be a full AT-URI of the form at://<handle-or-did>/<collection>/<rkey>, e.g. "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3lc4gpsxr3c2q". Copy it from the "uri" field of a post returned by bsky_search_posts or bsky_get_author_feed.';
+  'Must be a full AT-URI of the form at://<handle-or-did>/<collection>/<rkey>, e.g. "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3lc4gpsxr3c2q". Copy it from the "uri" field of a post returned by bsky_get_author_feed or bsky_get_feed.';
+
+/** Collection NSID of a feed generator record — the only collection `app.bsky.feed.getFeed` reads. */
+export const FEED_GENERATOR_COLLECTION = 'app.bsky.feed.generator';
+
+/**
+ * A feed reference in either form an agent meets one: the generator record's AT-URI, or the
+ * bsky.app page that shows the feed, which is what a shared link and a trend's `link` carry.
+ * Any other collection is refused here because the AppView answers a post AT-URI with the same
+ * `could not find feed` as a missing feed, and an AT-URI with no record key with a 500.
+ */
+export const FEED_REF_REGEX = new RegExp(
+  `^(?:at://(${HANDLE}|${DID})/app\\.bsky\\.feed\\.generator/(${RKEY})|https://bsky\\.app/profile/(${HANDLE}|${DID})/feed/(${RKEY}))$`,
+);
+
+/** Validation message paired with {@link FEED_REF_REGEX}. */
+export const FEED_REF_MESSAGE =
+  'Must be a feed generator AT-URI, at://<handle-or-did>/app.bsky.feed.generator/<rkey> (e.g. "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot"), or the bsky.app page that shows the feed, https://bsky.app/profile/<handle-or-did>/feed/<rkey>. A post AT-URI (app.bsky.feed.post) is not a feed — read a post with bsky_get_post_thread.';
+
+/** The two parts of a feed reference that address the generator record. */
+export interface FeedRef {
+  /** Handle or DID that owns the generator record. */
+  authority: string;
+  /** Record key of the generator. */
+  rkey: string;
+}
+
+/** Split a feed AT-URI or bsky.app feed URL into authority and record key; undefined for anything else. */
+export function parseFeedRef(ref: string): FeedRef | undefined {
+  const m = FEED_REF_REGEX.exec(ref);
+  const authority = m?.[1] ?? m?.[3];
+  const rkey = m?.[2] ?? m?.[4];
+  return authority && rkey ? { authority, rkey } : undefined;
+}
+
+/** The generator record's AT-URI for a feed reference. */
+export function feedGeneratorUri({ authority, rkey }: FeedRef): string {
+  return `at://${authority}/${FEED_GENERATOR_COLLECTION}/${rkey}`;
+}
 
 /** At least one non-whitespace character — a blank or all-space value is not a query. */
 export const NON_BLANK_REGEX = /\S/;

@@ -1,7 +1,7 @@
 <div align="center">
   <h1>@cyanheads/bluesky-mcp-server</h1>
   <p><b>Search posts, profiles, feeds, threads, and trending topics on Bluesky via MCP. STDIO or Streamable HTTP.</b>
-  <div>7 Tools • 1 Resource</div>
+  <div>8 Tools • 1 Resource</div>
   </p>
 </div>
 
@@ -29,19 +29,20 @@
 
 ## Overview
 
-Public Bluesky data over the AT Protocol AppView — no authentication required. Search posts, resolve profiles, walk feeds and threads, and track trending topics from any MCP client. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+Bluesky data over the AT Protocol AppView. Resolve profiles, track trending topics and read the feeds behind them, walk custom feeds, author feeds, and threads — all without an account — and add full-text post search with an optional app password. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
 
 ### Tools
 
 | Tool | Description |
 |:-----|:------------|
-| `bsky_search_posts` | Full-text search across public Bluesky posts, with author, language, tag, date, and sort filters |
+| `bsky_search_posts` | Full-text search across public Bluesky posts, with author, language, tag, date, and sort filters — offered only when an app password is configured |
 | `bsky_get_profile` | Fetch a Bluesky actor's public profile by handle or DID — the handle↔DID resolver |
+| `bsky_get_feed` | Read a feed generator's posts — a trend's feed, Discover, or any custom feed — by AT-URI or bsky.app URL |
 | `bsky_get_author_feed` | A user's recent posts ordered newest-first, filterable by post type |
 | `bsky_get_post_thread` | Fetch the conversation for a post by AT-URI — parent chain upward and reply tree downward, with what Bluesky counted but did not return |
 | `bsky_search_actors` | Find Bluesky accounts by name or handle fragment |
 | `bsky_get_follows` | Paginated social graph edges — who a user follows or who follows them |
-| `bsky_get_trending` | Real-time trending topics on Bluesky with post count, category, status, and the accounts driving each topic |
+| `bsky_get_trending` | Real-time trending topics on Bluesky with a story summary, post count, category, status, the accounts driving each topic, and the feed that collects its posts |
 
 ### Resources
 
@@ -55,12 +56,25 @@ All resource data is also reachable via tools. Use `bsky_get_profile` for progra
 
 ### `bsky_search_posts` <sub>tool</sub>
 
+- Bluesky refuses post search without a signed-in account, so this tool is registered only when `BLUESKY_IDENTIFIER` and `BLUESKY_APP_PASSWORD` are set — without them it is absent from `tools/list` (see [Post search](#post-search))
+- Searches run as that account through its PDS; the first search logs in, the session is reused and refreshed, and a rejected login is not retried. Failures surface as `search_auth_failed` (the login or its renewal was rejected), `search_login_limited` (the account's daily login limit is used up — the error names when searching resumes), or `search_refused` (Bluesky refused the search)
 - Filters: author handle or DID, BCP-47 language, hashtag, `since`/`until` date range, and `top`/`latest` sort; up to 100 results per call via opaque cursor pagination
 - Identifier, language, and date inputs are pattern-validated locally before the upstream call; a well-formed but unindexed language tag (e.g. `"qqq"`) returns unfiltered results rather than an error
 - When Bluesky rejects a parameter, its own explanation is surfaced via the `upstream_rejected_filter` error reason instead of a bare status code
 - `hitsTotal` is capped at 10,000 — a value of exactly 10,000 means "at least that many," not an exact count; `truncated`/`shown`/`cap` disclose when more posts matched than were returned (a cursor alone doesn't imply truncation — Bluesky returns one on every non-empty response)
 - Embeds normalize to a `type`-discriminated union (`images`, `external`, `record`, `video`, `unknown`); a quoted post carries its own attachments up to 3 nesting levels, with `omittedEmbeds` counting what went deeper and `recordKind` naming a quote that's deleted, blocked, detached, or not a post
 - Moderation labels are surfaced as-is, unfiltered
+
+---
+
+### `bsky_get_feed` <sub>tool</sub>
+
+- Takes a feed generator AT-URI (`at://<handle-or-did>/app.bsky.feed.generator/<rkey>`) or its bsky.app page (`https://bsky.app/profile/<handle-or-did>/feed/<rkey>`); a trend's `feedUri` works as-is, and Discover is `at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot`
+- A handle owner costs one extra lookup (`resolveHandle`), a DID owner none; any other collection, such as a post AT-URI, is rejected before the upstream call
+- A post the feed pinned to its top carries `pinned: true`; a repost carries `repostedBy`/`repostedAt`
+- Up to 100 posts per call, paginated via cursor; truncation is disclosed on the cursor, since a feed can return fewer than `limit` with more behind it
+- `feed_not_found` (no such feed or handle), `feed_unavailable` (the feed's generator did not answer — not retried, so a down feed fails fast), `feed_requires_login` (a personalized feed)
+- Always unauthenticated, even when search credentials are set
 
 ---
 
@@ -91,15 +105,16 @@ All resource data is also reachable via tools. Use `bsky_get_profile` for progra
 - When the parent chain stops at `parent_height` short of the conversation root, the topmost node carries `parentChainTruncated: true` — recoverable by fetching that node's AT-URI as its own thread
 - Surfaces the author's reply gate when set (who may reply) and the AT-URIs of any replies the author hid; deleted posts return `notFound: true` and blocked posts `blocked: true`
 - Reply depth renders on the author heading (`### ↳2 Name`) rather than by indentation, so a deeply nested reply never crosses into a markdown code block
-- `invalid_at_uri` and `post_not_found` errors when the AT-URI doesn't resolve; AT-URIs come from `bsky_search_posts` or `bsky_get_author_feed`
+- `invalid_at_uri` and `post_not_found` errors when the AT-URI doesn't resolve; AT-URIs come from the `uri` field of any returned post
+- A feed generator AT-URI (`app.bsky.feed.generator`) is rejected before any request as `uri_is_feed`, pointing to `bsky_get_feed`
 
 ---
 
 ### `bsky_search_actors` <sub>tool</sub>
 
-- Returns ranked profiles with handle, DID, displayName, bio, pronouns when set, and follower count — not `website`, which only `bsky_get_profile` returns
+- Returns ranked profiles with handle, DID, displayName, bio, and pronouns when set — no follower, following, or post counts and no `website`, which only `bsky_get_profile` returns
 - Bio renders as a markdown blockquote in `content[]`, since it's account-authored text
-- Up to 100 results per call, paginated via cursor — cursor pagination is unreliable for unauthenticated search on the public AppView and may return a 403
+- Up to 100 results per call, paginated via cursor; pages often hold fewer than `limit` and still continue, and the last page carries no cursor
 - Use before `bsky_get_profile` or `bsky_get_author_feed` when you have a name but not a confirmed handle
 
 ---
@@ -107,17 +122,18 @@ All resource data is also reachable via tools. Use `bsky_get_profile` for progra
 ### `bsky_get_follows` <sub>tool</sub>
 
 - `direction`: `followers` (who follows the actor) or `following` (who the actor follows)
-- Returns paginated profiles (handle, DID, displayName, bio, pronouns when set, follower count) plus the subject's own profile summary
-- No `website` field on this view — resolve with `bsky_get_profile` when it matters
-- Up to 100 per page, paginated via cursor
+- Returns paginated profiles (handle, DID, displayName, bio, pronouns when set) plus the subject's own profile summary
+- No follower, following, or post counts and no `website` on this view, for the list or the subject — resolve with `bsky_get_profile` when they matter
+- Up to 100 per page, paginated via cursor. A cursor can lead to an empty page when the remaining accounts no longer resolve, which the response reports as the end of the list
 - `actor_not_found` when the handle or DID doesn't resolve
 
 ---
 
 ### `bsky_get_trending` <sub>tool</sub>
 
-- Returns topics with display name, post count, category, status (`hot`/`rising`), start time, and up to 5 representative accounts driving each topic
-- No cursor — returns the current snapshot up to `limit` (default 10, max 25)
+- Returns topics with display name, Bluesky's one-sentence story summary (`description`), post count, category, status (e.g. `hot`, `cooling`, `stale`), start time, and up to 5 representative accounts driving each topic
+- Each trend is backed by a feed generator: `feedUri` is that feed's AT-URI, parsed from the trend's `link`, and `bsky_get_feed` reads its posts; `topic` is the feed's record key, not a search term
+- No cursor — returns the current snapshot up to `limit` (default 10, max 25, Bluesky's own maximum); `truncated` means more topics are trending than `limit`, so it never appears at 25
 - Uses `app.bsky.unspecced.getTrends`, an unstable endpoint Bluesky may change without notice
 
 ---
@@ -134,15 +150,16 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 
 Bluesky-specific:
 
-- No authentication required — all seven tools operate against `api.bsky.app` without credentials
-- Single `BlueskyService` wrapping the AT Protocol public AppView, with a 15s per-request timeout, retry (up to 3 retries, 500ms base delay), and a versioned `User-Agent`
+- Seven of eight tools read `api.bsky.app` without credentials; `bsky_search_posts` runs through an optional app-password session and is left out without one
+- Single `BlueskyService` wrapping the AT Protocol AppView, with a 15s per-request timeout, retry on transient upstream failures (up to 3 retries, 500ms base delay — never for a login, or for a failure already mapped to a tool error), and a versioned `User-Agent`
+- No HTML in any error — a block page from Bluesky's edge is dropped from the error data, leaving the status
 - Embed normalization — raw nested AT Protocol embed objects flattened into a clean `type`-discriminated union
 - Moderation labels surfaced verbatim and unfiltered
 - AT Protocol identifier types (handle, DID, AT-URI) explained at first encounter in each tool's description
 
 Agent-friendly output:
 
-- AT-URIs on every post — chain `bsky_search_posts` → `bsky_get_post_thread` without extra steps
+- AT-URIs on every post — chain `bsky_get_trending` → `bsky_get_feed` → `bsky_get_post_thread` without extra steps
 - Discriminated embed union — `type: "images" | "external" | "record" | "video" | "unknown"` lets callers branch on data instead of parsing `$type` strings; an unmapped lexicon type arrives as `unknown` with its raw `$type` rather than vanishing
 - Third-party text rendered as markdown blockquotes — post bodies, bios, alt text, and link-card text render as `>`-prefixed blockquotes in `content[]`, so a post's own heading or code fence never merges with the server's structure; values that render inline (display names, pronouns, topic names) have line breaks folded to spaces for the same reason
 - Bounded truncation disclosure — thread and pagination shortfalls (`truncated`, `unreturnedReplies`, `parentChainTruncated`, `hitsTotal` at its 10,000 cap) are reported as bounds rather than measurements
@@ -166,7 +183,7 @@ Connect directly — no installation required:
 
 ### Self-Hosted / Local
 
-Add the following to your MCP client configuration file. No API key required.
+Add the following to your MCP client configuration file. No API key required; add `BLUESKY_IDENTIFIER` and `BLUESKY_APP_PASSWORD` to `env` to enable post search.
 
 ```json
 {
@@ -230,7 +247,7 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
 ### Prerequisites
 
 - [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
-- No API key or account required — all tools call `api.bsky.app` without credentials.
+- No API key or account required for anything but post search. See [Post search](#post-search) to enable it.
 
 ### Installation
 
@@ -261,10 +278,12 @@ cp .env.example .env
 
 ## Configuration
 
-This server requires no API keys. All framework configuration is optional.
+This server requires no API keys. Everything below is optional.
 
 | Variable | Description | Default |
 |:---------|:------------|:--------|
+| `BLUESKY_IDENTIFIER` | Handle, DID, or email of the account post search runs as. Set together with `BLUESKY_APP_PASSWORD`, or neither. | — |
+| `BLUESKY_APP_PASSWORD` | App password for that account. Without the pair, `bsky_search_posts` is not offered. | — |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http` | `stdio` |
 | `MCP_SESSION_MODE` | HTTP session mode: `stateful`, `stateless`, or `auto`. Unset or empty, the server resolves to `stateless` from its own `createApp({ sessionMode })` declaration; an explicit value still overrides it. | `stateless` |
 | `MCP_HTTP_PORT` | Port for HTTP server | `3010` |
@@ -275,6 +294,15 @@ This server requires no API keys. All framework configuration is optional.
 | `OTEL_ENABLED` | Enable [OpenTelemetry instrumentation](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry) | `false` |
 
 See [`.env.example`](./.env.example) for the full list of optional overrides.
+
+### Post search
+
+Bluesky refuses `app.bsky.feed.searchPosts` without a signed-in account, so `bsky_search_posts` is registered only when `BLUESKY_IDENTIFIER` and `BLUESKY_APP_PASSWORD` are both set. Setting one without the other fails startup with a message naming the missing variable.
+
+- **Use a dedicated account** with a standard (non-privileged) app password — create one under Settings → Privacy and security → App passwords. The server never needs DM access.
+- **Search runs as that account for every caller.** The AppView leaves out posts from accounts in a block relationship with it, in either direction; it does not apply mutes. On a shared instance, anyone can block the account and drop their posts from its results.
+- **Logins are scarce.** Bluesky limits `createSession` to about 10 per day per account, so the server logs in on the first search — never at startup — reuses the session, refreshes it when the access token expires, and logs in again only when the refresh is rejected. A rejected login is not retried until the process restarts. When Bluesky answers a login or refresh with 429, every search fails as `search_login_limited` without a request until the `ratelimit-reset` time it names (15 minutes when it names none), then logs in again.
+- Credentials and tokens stay in memory; they never appear in logs, errors, or tool output, and no other tool sends them.
 
 ## Running the server
 
@@ -313,9 +341,10 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 
 | Directory | Purpose |
 |:----------|:--------|
-| `src/index.ts` | `createApp()` entry point — registers tools, resource, and inits service. |
-| `src/services/bluesky` | AT Protocol AppView HTTP client with retry, timeout, and `User-Agent`. |
-| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`) — seven read-only Bluesky tools. |
+| `src/index.ts` | `createApp()` entry point — reads config, registers tools and resource, and inits the service. |
+| `src/config` | Server config — the optional app-password pair that enables post search. |
+| `src/services/bluesky` | AT Protocol HTTP client — public AppView reads, the app-password search session, retry, timeout, and `User-Agent`. |
+| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`) — eight read-only Bluesky tools. |
 | `src/mcp-server/resources` | Resource definitions (`*.resource.ts`) — `bsky://profile/{actor}`. |
 | `tests/` | Unit and integration tests mirroring `src/`. |
 

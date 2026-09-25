@@ -139,6 +139,11 @@ export interface PostView {
   indexedAt?: string;
   labels?: Label[];
   likeCount?: number;
+  /**
+   * For feed items: true when the feed pinned this post to its top (`app.bsky.feed.defs#reasonPin`).
+   * A pin says where the post sits, not when it was written — it is often older than the items below.
+   */
+  pinned?: boolean;
   quoteCount?: number;
   replyCount?: number;
   /** For replies: the AT-URI of the post the thread started from. */
@@ -242,6 +247,12 @@ export interface AuthorFeedResult {
   feed: PostView[];
 }
 
+/** Result of getFeed — a feed generator's posts. */
+export interface FeedResult {
+  cursor?: string;
+  posts: PostView[];
+}
+
 /** Result of searchActors. */
 export interface SearchActorsResult {
   actors: ActorProfile[];
@@ -260,11 +271,19 @@ export interface TrendingTopic {
   /** Representative accounts posting about this topic. */
   actors?: ActorProfile[];
   category?: string;
+  /** Bluesky's one-sentence summary of the story behind the trend. */
+  description?: string;
   displayName: string;
+  /**
+   * AT-URI of the feed generator that collects the trend's posts, parsed from `link`. Absent when
+   * `link` is missing or is not a feed page — never assembled from `topic` alone.
+   */
+  feedUri?: string;
   link?: string;
   postCount?: number;
   startedAt?: string;
   status?: string;
+  /** Record key of the trend's feed generator — an identifier, not a search term. */
   topic: string;
 }
 

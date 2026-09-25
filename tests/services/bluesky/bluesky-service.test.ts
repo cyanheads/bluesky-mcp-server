@@ -77,6 +77,79 @@ describe('BlueskyService.getTrends — link normalization', () => {
     );
   });
 
+  it("derives the trend feed's AT-URI from the relative link the endpoint returns", async () => {
+    mockFetch.mockImplementation(() =>
+      fakeResponse({
+        trends: [
+          {
+            topic: '1d558a3bc9ff',
+            displayName: 'Netanyahu condemns Mamdani in UN speech',
+            link: '/profile/did:plc:qrz3lhbyuxbeilrc6nekdqme/feed/1d558a3bc9ff',
+          },
+        ],
+      }),
+    );
+
+    const result = await service.getTrends({ limit: 1 }, createMockContext());
+    expect(result.trends[0]?.feedUri).toBe(
+      'at://did:plc:qrz3lhbyuxbeilrc6nekdqme/app.bsky.feed.generator/1d558a3bc9ff',
+    );
+    expect(result.trends[0]?.link).toBe(
+      'https://bsky.app/profile/did:plc:qrz3lhbyuxbeilrc6nekdqme/feed/1d558a3bc9ff',
+    );
+  });
+
+  it('derives the feed AT-URI from an absolute bsky.app feed link too', async () => {
+    mockFetch.mockImplementation(() =>
+      fakeResponse({
+        trends: [
+          {
+            topic: 'abc',
+            displayName: 'Abc',
+            link: 'https://bsky.app/profile/did:plc:qrz3lhbyuxbeilrc6nekdqme/feed/abc',
+          },
+        ],
+      }),
+    );
+
+    const result = await service.getTrends({ limit: 1 }, createMockContext());
+    expect(result.trends[0]?.feedUri).toBe(
+      'at://did:plc:qrz3lhbyuxbeilrc6nekdqme/app.bsky.feed.generator/abc',
+    );
+  });
+
+  it('fabricates no feed AT-URI for a link that is not a feed', async () => {
+    mockFetch.mockImplementation(() =>
+      fakeResponse({
+        trends: [
+          { topic: 'a', displayName: 'A', link: 'https://bsky.app/search?q=a' },
+          { topic: 'b', displayName: 'B', link: '/profile/did:plc:abc/post/3lc4gpsxr3c2q' },
+          { topic: 'c', displayName: 'C' },
+        ],
+      }),
+    );
+
+    const result = await service.getTrends({ limit: 3 }, createMockContext());
+    for (const trend of result.trends) {
+      expect(trend.feedUri).toBeUndefined();
+    }
+  });
+
+  it('carries the upstream description, and omits it when absent', async () => {
+    mockFetch.mockImplementation(() =>
+      fakeResponse({
+        trends: [
+          { topic: 'a', displayName: 'A', description: 'He called the mayor "antisemitic."' },
+          { topic: 'b', displayName: 'B' },
+        ],
+      }),
+    );
+
+    const result = await service.getTrends({ limit: 2 }, createMockContext());
+    expect(result.trends[0]?.description).toBe('He called the mayor "antisemitic."');
+    expect(result.trends[1]).not.toHaveProperty('description');
+  });
+
   it('omits link when API returns none', async () => {
     mockFetch.mockImplementation(() =>
       fakeResponse({
@@ -177,11 +250,14 @@ describe('BlueskyService — embed normalization', () => {
     mockFetch.mockReset();
   });
 
-  /** Run one embed view through searchPosts and return the normalized embed. */
+  /** Run one embed view through a feed read and return the normalized embed. */
   async function normalize(embed: unknown) {
-    mockFetch.mockImplementation(() => fakeResponse({ posts: [rawPostWithEmbed(embed)] }));
-    const result = await service.searchPosts({ q: 'test' }, createMockContext());
-    return result.posts[0]?.embed;
+    mockFetch.mockImplementation(() => fakeResponse({ feed: [{ post: rawPostWithEmbed(embed) }] }));
+    const result = await service.getAuthorFeed(
+      { actor: 'author.bsky.social' },
+      createMockContext(),
+    );
+    return result.feed[0]?.embed;
   }
 
   it('maps images#view, preferring fullsize and carrying alt', async () => {
@@ -689,18 +765,23 @@ describe('BlueskyService — embed normalization', () => {
   it('omits the embed entirely when the post carries none', async () => {
     mockFetch.mockImplementation(() =>
       fakeResponse({
-        posts: [
+        feed: [
           {
-            uri: 'at://did:plc:author/app.bsky.feed.post/plain',
-            cid: 'bafyrplain',
-            author: { did: 'did:plc:author', handle: 'author.bsky.social' },
-            record: { text: 'no embed' },
+            post: {
+              uri: 'at://did:plc:author/app.bsky.feed.post/plain',
+              cid: 'bafyrplain',
+              author: { did: 'did:plc:author', handle: 'author.bsky.social' },
+              record: { text: 'no embed' },
+            },
           },
         ],
       }),
     );
-    const result = await service.searchPosts({ q: 'test' }, createMockContext());
-    expect(result.posts[0]?.embed).toBeUndefined();
+    const result = await service.getAuthorFeed(
+      { actor: 'author.bsky.social' },
+      createMockContext(),
+    );
+    expect(result.feed[0]?.embed).toBeUndefined();
   });
 
   /**
@@ -812,20 +893,25 @@ describe('BlueskyService — post author normalization', () => {
   it('carries exactly the four fields the post schemas declare', async () => {
     mockFetch.mockImplementation(() =>
       fakeResponse({
-        posts: [
+        feed: [
           {
-            uri: 'at://did:plc:author/app.bsky.feed.post/rkey1',
-            cid: 'bafyrpost',
-            author: RAW_POST_AUTHOR,
-            record: { text: 'post text' },
+            post: {
+              uri: 'at://did:plc:author/app.bsky.feed.post/rkey1',
+              cid: 'bafyrpost',
+              author: RAW_POST_AUTHOR,
+              record: { text: 'post text' },
+            },
           },
         ],
       }),
     );
 
-    const result = await service.searchPosts({ q: 'test' }, createMockContext());
+    const result = await service.getAuthorFeed(
+      { actor: 'author.bsky.social' },
+      createMockContext(),
+    );
 
-    expect(result.posts[0]?.author).toEqual({
+    expect(result.feed[0]?.author).toEqual({
       did: 'did:plc:author',
       handle: 'author.bsky.social',
       displayName: 'Author',
@@ -841,27 +927,64 @@ describe('BlueskyService — post author normalization', () => {
   it("keeps the labeler and timestamp on a post's own labels", async () => {
     mockFetch.mockImplementation(() =>
       fakeResponse({
-        posts: [
+        feed: [
           {
-            uri: 'at://did:plc:author/app.bsky.feed.post/rkey1',
-            cid: 'bafyrpost',
-            author: RAW_POST_AUTHOR,
-            record: { text: 'post text' },
-            labels: [
-              { val: 'porn', src: 'did:plc:labeler', cts: '2026-01-02T03:04:05.000Z' },
-              { val: 'spam' },
-            ],
+            post: {
+              uri: 'at://did:plc:author/app.bsky.feed.post/rkey1',
+              cid: 'bafyrpost',
+              author: RAW_POST_AUTHOR,
+              record: { text: 'post text' },
+              labels: [
+                { val: 'porn', src: 'did:plc:labeler', cts: '2026-01-02T03:04:05.000Z' },
+                { val: 'spam' },
+              ],
+            },
           },
         ],
       }),
     );
 
-    const result = await service.searchPosts({ q: 'test' }, createMockContext());
+    const result = await service.getAuthorFeed(
+      { actor: 'author.bsky.social' },
+      createMockContext(),
+    );
 
-    expect(result.posts[0]?.labels).toEqual([
+    expect(result.feed[0]?.labels).toEqual([
       { val: 'porn', src: 'did:plc:labeler', cts: '2026-01-02T03:04:05.000Z' },
       { val: 'spam' },
     ]);
+  });
+
+  /**
+   * An authenticated read hydrates the session account's relationship to every post and author.
+   * That session is shared by every caller of a hosted instance, so none of it may be mapped.
+   */
+  it("drops the viewer state an authenticated read hydrates for the session's account", async () => {
+    mockFetch.mockImplementation(() =>
+      fakeResponse({
+        feed: [
+          {
+            post: {
+              uri: 'at://did:plc:author/app.bsky.feed.post/rkey1',
+              cid: 'bafyrpost',
+              author: {
+                ...RAW_POST_AUTHOR,
+                viewer: { muted: true, blockedBy: false, mutedOnlyReposts: false },
+              },
+              record: { text: 'post text' },
+              viewer: { bookmarked: true, threadMuted: false, embeddingDisabled: false },
+            },
+          },
+        ],
+      }),
+    );
+
+    const result = await service.getAuthorFeed(
+      { actor: 'author.bsky.social' },
+      createMockContext(),
+    );
+
+    expect(JSON.stringify(result)).not.toMatch(/viewer|muted|bookmarked|blockedBy/);
   });
 
   /**
@@ -990,6 +1113,29 @@ describe('BlueskyService.getAuthorFeed — feed item normalization', () => {
 
     const result = await service.getAuthorFeed({ actor: 'pfrazee.com' }, createMockContext());
     expect(result.feed[0]?.repostedBy).toBeUndefined();
+  });
+
+  it('marks a pinned item as pinned, never as a repost', async () => {
+    mockFetch.mockImplementation(() =>
+      fakeResponse({
+        feed: [
+          // The live reasonPin carries nothing but its $type.
+          { post: OTHER_AUTHOR_POST, reason: { $type: 'app.bsky.feed.defs#reasonPin' } },
+          { post: OTHER_AUTHOR_POST, reason: REPOST_REASON },
+          { post: OTHER_AUTHOR_POST },
+        ],
+      }),
+    );
+
+    const [pin, repost, plain] = (
+      await service.getAuthorFeed({ actor: 'pfrazee.com' }, createMockContext())
+    ).feed;
+    expect(pin?.pinned).toBe(true);
+    expect(pin?.repostedBy).toBeUndefined();
+    expect(pin?.repostedAt).toBeUndefined();
+    expect(repost?.pinned).toBeUndefined();
+    expect(repost?.repostedBy?.handle).toBe('pfrazee.com');
+    expect(plain).not.toHaveProperty('pinned');
   });
 
   it('surfaces both the parent and the root AT-URI of a reply', async () => {

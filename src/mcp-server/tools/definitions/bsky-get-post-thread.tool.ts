@@ -10,7 +10,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { renderPostLines } from '@/mcp-server/tools/post-format.js';
-import { AT_URI_MESSAGE, AT_URI_REGEX } from '@/services/bluesky/at-syntax.js';
+import { AT_URI_MESSAGE, AT_URI_REGEX, parseFeedRef } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 import type {
   PostThreadResult,
@@ -308,8 +308,8 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
   description:
     'Fetch the conversation for a post by AT-URI — the parent chain upward and the reply tree downward. ' +
     'Enter the thread at any point and traverse the discussion. ' +
-    'AT-URIs have the format "at://<handle-or-did>/<collection>/<rkey>" and are returned by bsky_search_posts and ' +
-    'bsky_get_author_feed in the "uri" field of each post. ' +
+    'AT-URIs have the format "at://<handle-or-did>/<collection>/<rkey>" and are returned in the "uri" field ' +
+    'of every post the other post-returning tools emit, such as bsky_get_feed and bsky_get_author_feed. ' +
     'Returns the root post, parent chain, and nested replies with per-post author and engagement data. ' +
     'The response is often a fraction of the conversation: Bluesky holds replies back past a per-post limit ' +
     'and offers no way to page the rest, so a thread with thousands of replies commonly returns a few hundred. ' +
@@ -333,7 +333,7 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
       .describe(
         'AT-URI of the post to fetch, e.g. "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/abc123". ' +
           'All three segments are required — authority (handle or DID), collection, and record key. ' +
-          'Obtain from bsky_search_posts or bsky_get_author_feed.',
+          'Obtain from the "uri" field of a post returned by bsky_get_feed or bsky_get_author_feed.',
       ),
     depth: z
       .number()
@@ -411,18 +411,37 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'The AppView rejected the AT-URI — the shape passed the input pattern but the authority, collection, or record key is not one it can resolve.',
       recovery:
-        'AT-URIs come from the "uri" field of posts returned by bsky_search_posts or bsky_get_author_feed.',
+        'Copy the AT-URI unchanged from the "uri" field of a post returned by bsky_get_feed or bsky_get_author_feed.',
     },
     {
       reason: 'post_not_found',
       code: JsonRpcErrorCode.NotFound,
       when: 'The AT-URI is well-formed but the post was deleted or never existed.',
-      recovery: 'Verify the AT-URI or use bsky_search_posts to find the correct post.',
+      recovery:
+        "Verify the AT-URI, or re-read the author's recent posts with bsky_get_author_feed to find the post's current AT-URI.",
+    },
+    {
+      reason: 'uri_is_feed',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The AT-URI names a feed generator (app.bsky.feed.generator), not a post.',
+      recovery: "Read the feed's posts with bsky_get_feed, passing this AT-URI as its feed.",
     },
   ],
 
   async handler(input, ctx) {
     ctx.log.info('Fetching Bluesky post thread', { uri: input.uri, depth: input.depth });
+
+    /**
+     * A feed AT-URI passes the AT-URI pattern, and the AppView answers it as a missing post, which
+     * would send the caller looking for a post that was never there.
+     */
+    if (parseFeedRef(input.uri)) {
+      throw ctx.fail(
+        'uri_is_feed',
+        `"${input.uri}" is a feed generator, not a post — read its posts with bsky_get_feed.`,
+        ctx.recoveryFor('uri_is_feed'),
+      );
+    }
 
     let result: PostThreadResult;
     try {

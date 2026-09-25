@@ -19,7 +19,9 @@
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio",
         "MCP_AUTH_MODE": "none",
-        "NODE_ENV": "production"
+        "NODE_ENV": "production",
+        "BLUESKY_IDENTIFIER": "${user_config.BLUESKY_IDENTIFIER}",
+        "BLUESKY_APP_PASSWORD": "${user_config.BLUESKY_APP_PASSWORD}"
       }
     }
   },
@@ -28,5 +30,21 @@
   },
   "tools_generated": true,
   "prompts_generated": true,
-  "user_config": {}
+  "user_config": {
+    "BLUESKY_IDENTIFIER": {
+      "title": "Bluesky handle (for post search)",
+      "type": "string",
+      "description": "Optional. The account post search runs as — use a dedicated one. Leave blank (with the app password) and every other tool still works; only post search is left out.",
+      "required": false,
+      "default": ""
+    },
+    "BLUESKY_APP_PASSWORD": {
+      "title": "Bluesky app password (for post search)",
+      "type": "string",
+      "description": "Optional. A standard, non-privileged app password for that account (Settings → Privacy and security → App passwords). Set it together with the handle.",
+      "sensitive": true,
+      "required": false,
+      "default": ""
+    }
+  }
 }

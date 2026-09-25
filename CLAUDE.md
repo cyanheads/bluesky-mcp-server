@@ -123,7 +123,7 @@ await createApp({
 
 `sessionMode` declares the HTTP session posture in `src/` instead of leaving it to a deployment's `MCP_SESSION_MODE`, which still wins whenever it carries a meaningful value (an empty string and an unsubstituted `${…}` placeholder read as unset and fall through to the option). This server declares `stateless`: no tool calls `ctx.requestInput`, so nothing needs a session to answer a mid-handler prompt. Add `require: 'stateful'` on a server whose tools do, so startup fails with a `ConfigurationError` rather than serving a mode in which a 2025-era client can never answer. Stdio is never refused.
 
-`teardown(core)` is the `setup()` counterpart — release a watcher, socket, or non-`unref()`'d timer there. It runs after the transport stops and before the logger closes, on every shutdown path, and a signal-triggered shutdown then exits the process explicitly (0, or 1 if a step never settles within the framework's 10 s ceiling). This server declares none: `initBlueskyService()` constructs a stateless HTTP client that holds no handle to release.
+`teardown(core)` is the `setup()` counterpart — release a watcher, socket, or non-`unref()`'d timer there. It runs after the transport stops and before the logger closes, on every shutdown path, and a signal-triggered shutdown then exits the process explicitly (0, or 1 if a step never settles within the framework's 10 s ceiling). This server declares none: `initBlueskyService()` constructs an HTTP client whose only state is an in-memory search session — no socket, timer, or watcher to release.
 
 ---
 
@@ -193,23 +193,29 @@ See framework CLAUDE.md and the `api-errors` skill for the full auto-classificat
 
 ```text
 src/
-  index.ts                              # createApp() entry point — registers tools, resource, service
+  index.ts                              # createApp() entry point — reads config, registers tools, resource, service
+  config/
+    server-config.ts                    # Optional BLUESKY_IDENTIFIER / BLUESKY_APP_PASSWORD pair that enables post search
   services/
     bluesky/
-      at-syntax.ts                      # AT identifier / AT-URI / ISO 8601 patterns shared by input schemas
-      bluesky-service.ts                # AT Protocol AppView HTTP client (retry, timeout, User-Agent)
-      types.ts                          # Domain types: Post, Actor, Thread, Trend, Embed
+      at-syntax.ts                      # AT identifier / AT-URI / feed-ref / ISO 8601 patterns shared by input schemas
+      bluesky-service.ts                # AT Protocol read client — keyless AppView reads, retry, error mapping, normalization; post search via the session
+      search-session.ts                 # App-password session for post search — lazy login, single-flight renewal, login-rejection and login-limit latches
+      xrpc.ts                           # Shared request plumbing — User-Agent, timeout, XRPC URLs, error-status and HTML-body handling
+      types.ts                          # Domain types: Post, Actor, Thread, Trend, Feed, Embed
   mcp-server/
+    server-surface.ts                   # Tool list + server instructions, both derived from whether search is configured
     tools/
       post-format.ts                    # Shared post renderer + the quoted/inline framings every format() puts around Bluesky-authored text
       definitions/
-        bsky-search-posts.tool.ts       # Full-text post search with filters
+        bsky-search-posts.tool.ts       # Full-text post search with filters (disabledTool() without an app password)
         bsky-get-profile.tool.ts        # Actor profile lookup by handle or DID
+        bsky-get-feed.tool.ts           # A feed generator's posts by AT-URI or bsky.app URL
         bsky-get-author-feed.tool.ts    # User's own posts + their reposts (filtered by type)
         bsky-get-post-thread.tool.ts    # Conversation thread by AT-URI, with truncation and threadgate disclosure
         bsky-search-actors.tool.ts      # Actor discovery by name/handle fragment
         bsky-get-follows.tool.ts        # Social graph edges (followers/following)
-        bsky-get-trending.tool.ts       # Real-time trending topics
+        bsky-get-trending.tool.ts       # Real-time trending topics, each with the feedUri of its feed
     resources/definitions/
       bsky-profile.resource.ts          # bsky://profile/{actor} — actor profile by handle or DID
 ```

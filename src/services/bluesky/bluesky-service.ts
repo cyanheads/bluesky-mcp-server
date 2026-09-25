@@ -1,17 +1,30 @@
 /**
- * @fileoverview BlueskyService — AT Protocol AppView public read client.
- * Wraps https://api.bsky.app/xrpc/ with retry/timeout and response normalization.
+ * @fileoverview BlueskyService — AT Protocol read client. Every read except post search goes to the
+ * public AppView at https://api.bsky.app without credentials. Post search, which Bluesky's edge
+ * refuses without them, runs on the app-password session in `search-session.ts`. Retry, the error
+ * mapping onto each tool's declared reasons, and response normalization live here.
  * @module services/bluesky/bluesky-service
  */
 
 import type { Context } from '@cyanheads/mcp-ts-core';
-import { config } from '@cyanheads/mcp-ts-core/config';
-import { serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
-import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
+import {
+  configurationError,
+  forbidden,
+  JsonRpcErrorCode,
+  McpError,
+  notFound,
+  serviceUnavailable,
+  unauthorized,
+  validationError,
+} from '@cyanheads/mcp-ts-core/errors';
+import { defaultIsTransient, fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
+import { FEED_REF_MESSAGE, feedGeneratorUri, parseFeedRef } from './at-syntax.js';
+import { type SearchCredentials, SearchSession } from './search-session.js';
 import type {
   ActorProfile,
   AuthorFeedResult,
   Embed,
+  FeedResult,
   GraphResult,
   Label,
   PostAuthor,
@@ -25,18 +38,19 @@ import type {
   ThreadPost,
   TrendsResult,
 } from './types.js';
+import {
+  HTML_DOCUMENT,
+  httpStatus,
+  TIMEOUT_MS,
+  USER_AGENT,
+  withoutHtmlBody,
+  type XrpcParams,
+  xrpcError,
+  xrpcUrl,
+} from './xrpc.js';
 
-/** @internal Bluesky AppView base URL — api.bsky.app avoids the 403s that public.api.bsky.app returns for searchPosts from some IPs. */
-const BASE_URL = 'https://api.bsky.app';
-
-/** @internal Request timeout in milliseconds. */
-const TIMEOUT_MS = 15_000;
-
-/**
- * @internal User-Agent header sent on every request, derived from the package
- * manifest so a release cannot ship a stale version string.
- */
-const USER_AGENT = `${config.mcpServerName}/${config.mcpServerVersion}`;
+/** @internal Public Bluesky AppView — every read except post search goes here, unauthenticated. */
+const APPVIEW_URL = 'https://api.bsky.app';
 
 // ---------------------------------------------------------------------------
 // Raw upstream response shapes
@@ -165,7 +179,10 @@ interface RawThreadGate {
   uri?: string;
 }
 
-/** @internal Raw repost/pin marker attached to a feed item (app.bsky.feed.defs#reasonRepost). */
+/**
+ * @internal Why an item sits in a feed: `app.bsky.feed.defs#reasonRepost` (carries `by`) or
+ * `#reasonPin`, which arrives as a bare `$type` with nothing else on it.
+ */
 interface RawFeedReason {
   $type?: string;
   by?: RawActorView;
@@ -386,11 +403,17 @@ function normalizePost(r: RawPostView): PostView {
   };
 }
 
-/** @internal Normalize a feed item, carrying the repost marker through when the item is a repost. */
+/**
+ * @internal Normalize a feed item, carrying its reason through: a pin as `pinned`, a repost as
+ * `repostedBy` / `repostedAt`. Feed generators pin a post to the top of the feed, and without the
+ * marker it reads as the newest item.
+ */
 function normalizeFeedItem(item: RawFeedItem): PostView {
   const post = normalizePost(item.post);
+  const type = item.reason?.$type ?? '';
+  if (type.endsWith('#reasonPin')) return { ...post, pinned: true };
   const by = item.reason?.by;
-  if (!by || !(item.reason?.$type ?? '').endsWith('#reasonRepost')) return post;
+  if (!by || !type.endsWith('#reasonRepost')) return post;
   return {
     ...post,
     repostedBy: {
@@ -501,40 +524,69 @@ function normalizeThreadGate(raw: RawThreadGate | undefined): ThreadGate | undef
 }
 
 // ---------------------------------------------------------------------------
+// Retry and error mapping
+// ---------------------------------------------------------------------------
+
+/**
+ * @internal A failure already mapped onto one of a tool's declared reasons is an answer, not a
+ * transient fault, so the retry loop hands it straight back. Without this a feed generator that is
+ * down — which the AppView reports as a 502 after waiting on it for seconds — would be asked four
+ * times before the caller heard anything.
+ */
+function isTransient(err: unknown): boolean {
+  if (err instanceof McpError && typeof (err.data as { reason?: unknown })?.reason === 'string') {
+    return false;
+  }
+  return defaultIsTransient(err);
+}
+
+/** @internal Maps a failed request onto a tool's declared reason, or leaves it as classified. */
+type ErrorMapper = (err: McpError) => McpError | undefined;
+
+// ---------------------------------------------------------------------------
 // BlueskyService class
 // ---------------------------------------------------------------------------
 
-/** Public-read AT Protocol AppView client. No authentication required. */
+/**
+ * AT Protocol read client. Every method reads the public AppView without credentials except
+ * {@link BlueskyService.searchPosts}, which runs as the configured app-password account.
+ *
+ * The session is shared by every caller of the process, which is why nothing it hydrates for that
+ * account — the `viewer` blocks on posts and authors — is mapped into any result.
+ */
 export class BlueskyService {
-  /** @internal Build a full XRPC URL with query params. */
-  private buildUrl(
-    lexicon: string,
-    params: Record<string, string | number | boolean | undefined>,
-  ): string {
-    const url = new URL(`${BASE_URL}/xrpc/${lexicon}`);
-    for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== '') {
-        url.searchParams.set(k, String(v));
-      }
-    }
-    return url.toString();
+  /** The post-search session; absent when no app password is configured. */
+  private readonly search: SearchSession | undefined;
+
+  constructor(credentials?: SearchCredentials) {
+    this.search = credentials ? new SearchSession(credentials) : undefined;
   }
 
-  /** @internal Fetch JSON from the AppView with retry/timeout. Throws ServiceUnavailable on upstream failure. */
-  private get<T>(
-    lexicon: string,
-    params: Record<string, string | number | boolean | undefined>,
+  /**
+   * @internal Fetch JSON with retry and timeout. Failed requests lose any HTML body, then pass
+   * through `mapError`; a mapped failure is final (see {@link isTransient}).
+   */
+  private fetchJson<T>(
+    url: string,
+    operation: string,
     ctx: Context,
+    options: { headers?: Record<string, string>; mapError?: ErrorMapper | undefined } = {},
   ): Promise<T> {
-    const url = this.buildUrl(lexicon, params);
     return withRetry(
       async () => {
-        const response = await fetchWithTimeout(url, TIMEOUT_MS, ctx, {
-          headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
-          signal: ctx.signal,
-        });
+        let response: Response;
+        try {
+          response = await fetchWithTimeout(url, TIMEOUT_MS, ctx, {
+            headers: { 'User-Agent': USER_AGENT, Accept: 'application/json', ...options.headers },
+            signal: ctx.signal,
+          });
+        } catch (err) {
+          if (!(err instanceof McpError)) throw err;
+          const scrubbed = withoutHtmlBody(err);
+          throw options.mapError?.(scrubbed) ?? scrubbed;
+        }
         const text = await response.text();
-        if (/^\s*<(!DOCTYPE\s+html|html[\s>])/i.test(text)) {
+        if (HTML_DOCUMENT.test(text)) {
           throw serviceUnavailable(
             'Bluesky API returned HTML — likely rate-limited or temporarily unavailable.',
           );
@@ -545,12 +597,44 @@ export class BlueskyService {
           throw serviceUnavailable('Bluesky API returned unparseable response.');
         }
       },
+      { operation, context: ctx, baseDelayMs: 500, signal: ctx.signal, isTransient },
+    );
+  }
+
+  /** @internal Unauthenticated GET against the public AppView. */
+  private get<T>(
+    lexicon: string,
+    params: XrpcParams,
+    ctx: Context,
+    mapError?: ErrorMapper,
+  ): Promise<T> {
+    return this.fetchJson<T>(
+      xrpcUrl(APPVIEW_URL, lexicon, params),
+      `BlueskyService.${lexicon}`,
+      ctx,
       {
-        operation: `BlueskyService.${lexicon}`,
-        context: ctx,
-        baseDelayMs: 500,
-        signal: ctx.signal,
+        mapError,
       },
+    );
+  }
+
+  /** @internal GET through the search session's PDS, which proxies it to the AppView. */
+  private authedGet<T>(
+    lexicon: string,
+    params: XrpcParams,
+    ctx: Context,
+    mapError: ErrorMapper,
+  ): Promise<T> {
+    if (!this.search) {
+      throw configurationError('Post search needs BLUESKY_IDENTIFIER and BLUESKY_APP_PASSWORD.');
+    }
+    return this.search.run(ctx, (route) =>
+      this.fetchJson<T>(
+        xrpcUrl(route.serviceUrl, lexicon, params),
+        `BlueskyService.${lexicon}`,
+        ctx,
+        { headers: route.headers, mapError },
+      ),
     );
   }
 
@@ -558,7 +642,10 @@ export class BlueskyService {
   // Public API methods
   // ---------------------------------------------------------------------------
 
-  /** Full-text post search. */
+  /**
+   * Full-text post search, as the configured app-password account. The AppView drops posts from
+   * accounts in a block relationship with that account; it applies no mutes.
+   */
   async searchPosts(
     params: {
       q: string;
@@ -573,7 +660,7 @@ export class BlueskyService {
     },
     ctx: Context,
   ): Promise<SearchPostsResult> {
-    const raw = await this.get<{ posts: RawPostView[]; cursor?: string; hitsTotal?: number }>(
+    const raw = await this.authedGet<{ posts: RawPostView[]; cursor?: string; hitsTotal?: number }>(
       'app.bsky.feed.searchPosts',
       {
         q: params.q,
@@ -587,6 +674,14 @@ export class BlueskyService {
         ...(params.cursor ? { cursor: params.cursor } : {}),
       },
       ctx,
+      (err) =>
+        err.code === JsonRpcErrorCode.Forbidden
+          ? forbidden('Bluesky refused this search.', {
+              reason: 'search_refused',
+              status: httpStatus(err),
+              ...ctx.recoveryFor('search_refused'),
+            })
+          : undefined,
     );
     return {
       posts: (raw.posts ?? []).map(normalizePost),
@@ -625,6 +720,56 @@ export class BlueskyService {
       feed: (raw.feed ?? []).map(normalizeFeedItem),
       ...(raw.cursor ? { cursor: raw.cursor } : {}),
     };
+  }
+
+  /**
+   * Read a feed generator's posts. Accepts the generator's AT-URI or its bsky.app page. The AppView
+   * only finds a feed by its owner's DID, so a handle authority costs one `resolveHandle` first and
+   * a DID authority costs nothing extra. Always unauthenticated: through the search session a
+   * personalized feed would personalize to that one account for every caller.
+   */
+  async getFeed(
+    params: { feed: string; limit?: number; cursor?: string },
+    ctx: Context,
+  ): Promise<FeedResult> {
+    const ref = parseFeedRef(params.feed);
+    if (!ref) throw validationError(FEED_REF_MESSAGE);
+    const authority = ref.authority.startsWith('did:')
+      ? ref.authority
+      : await this.resolveFeedOwner(ref.authority, params.feed, ctx);
+    const uri = feedGeneratorUri({ authority, rkey: ref.rkey });
+    const raw = await this.get<{ feed: RawFeedItem[]; cursor?: string }>(
+      'app.bsky.feed.getFeed',
+      {
+        feed: uri,
+        limit: params.limit ?? 25,
+        ...(params.cursor ? { cursor: params.cursor } : {}),
+      },
+      ctx,
+      (err) => feedError(err, uri, ctx),
+    );
+    return {
+      posts: (raw.feed ?? []).map(normalizeFeedItem),
+      ...(raw.cursor ? { cursor: raw.cursor } : {}),
+    };
+  }
+
+  /** @internal DID of the handle that owns a feed; `feed_not_found` when no account answers to it. */
+  private async resolveFeedOwner(handle: string, feed: string, ctx: Context): Promise<string> {
+    const { did } = await this.get<{ did: string }>(
+      'com.atproto.identity.resolveHandle',
+      { handle },
+      ctx,
+      (err) =>
+        httpStatus(err) === 400
+          ? notFound(`No Bluesky account answers to the handle "${handle}" in ${feed}.`, {
+              reason: 'feed_not_found',
+              feed,
+              ...ctx.recoveryFor('feed_not_found'),
+            })
+          : undefined,
+    );
+    return did;
   }
 
   /** Fetch the conversation thread for a post by AT-URI, with the author's reply gate when set. */
@@ -711,12 +856,17 @@ export class BlueskyService {
     };
   }
 
-  /** Fetch real-time trending topics (app.bsky.unspecced.getTrends — unspecced endpoint, may change). */
+  /**
+   * Fetch real-time trending topics (app.bsky.unspecced.getTrends — unspecced endpoint, may change).
+   * Each trend is backed by a feed generator: `topic` is its record key and `link` its bsky.app
+   * page, so the feed's AT-URI is parsed from `link` rather than assembled from `topic`.
+   */
   async getTrends(params: { limit?: number }, ctx: Context): Promise<TrendsResult> {
     const raw = await this.get<{
       trends: Array<{
         topic: string;
         displayName?: string;
+        description?: string;
         link?: string;
         startedAt?: string;
         postCount?: number;
@@ -726,22 +876,59 @@ export class BlueskyService {
       }>;
     }>('app.bsky.unspecced.getTrends', { limit: params.limit ?? 10 }, ctx);
     return {
-      trends: (raw.trends ?? []).map((t) => ({
-        topic: t.topic,
-        displayName: t.displayName ?? t.topic,
-        ...(t.link
-          ? {
-              link: t.link.startsWith('/') ? `https://bsky.app${t.link}` : t.link,
-            }
-          : {}),
-        ...(t.startedAt ? { startedAt: t.startedAt } : {}),
-        ...(typeof t.postCount === 'number' ? { postCount: t.postCount } : {}),
-        ...(t.status ? { status: t.status } : {}),
-        ...(t.category ? { category: t.category } : {}),
-        ...(t.actors?.length ? { actors: t.actors.map(normalizeActor) } : {}),
-      })),
+      trends: (raw.trends ?? []).map((t) => {
+        const link = t.link?.startsWith('/') ? `https://bsky.app${t.link}` : t.link;
+        const feed = link ? parseFeedRef(link) : undefined;
+        return {
+          topic: t.topic,
+          displayName: t.displayName ?? t.topic,
+          ...(t.description ? { description: t.description } : {}),
+          ...(link ? { link } : {}),
+          ...(feed ? { feedUri: feedGeneratorUri(feed) } : {}),
+          ...(t.startedAt ? { startedAt: t.startedAt } : {}),
+          ...(typeof t.postCount === 'number' ? { postCount: t.postCount } : {}),
+          ...(t.status ? { status: t.status } : {}),
+          ...(t.category ? { category: t.category } : {}),
+          ...(t.actors?.length ? { actors: t.actors.map(normalizeActor) } : {}),
+        };
+      }),
     };
   }
+}
+
+/**
+ * @internal Map a failed `getFeed` onto `bsky_get_feed`'s reasons. The AppView names every case in
+ * its error message rather than its error name — a missing feed and a post URI both answer
+ * `InvalidRequest: could not find feed`, not the lexicon's `UnknownFeed` — so the message is what
+ * is matched. Unrecognized failures keep their status-derived code.
+ */
+function feedError(err: McpError, uri: string, ctx: Context): McpError | undefined {
+  const { error = '', message = '' } = xrpcError(err);
+  const said = `${error}: ${message}`;
+  if (err.code === JsonRpcErrorCode.Unauthorized) {
+    return unauthorized(
+      `${uri} is a personalized feed, and Bluesky serves it only to a signed-in account.`,
+      { reason: 'feed_requires_login', feed: uri, ...ctx.recoveryFor('feed_requires_login') },
+    );
+  }
+  if (/could not find feed|UnknownFeed/i.test(said)) {
+    return notFound(`Bluesky has no feed at ${uri}.`, {
+      reason: 'feed_not_found',
+      feed: uri,
+      ...ctx.recoveryFor('feed_not_found'),
+    });
+  }
+  if (
+    /could not resolve identity|feed unavailable|UpstreamFailure|Upstream server responded/i.test(
+      said,
+    )
+  ) {
+    return serviceUnavailable(
+      `The feed generator behind ${uri} did not answer (Bluesky reported: ${message || error}).`,
+      { reason: 'feed_unavailable', feed: uri, ...ctx.recoveryFor('feed_unavailable') },
+    );
+  }
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -750,9 +937,12 @@ export class BlueskyService {
 
 let _service: BlueskyService | undefined;
 
-/** Initialize the BlueskyService singleton. Call once in createApp setup(). */
-export function initBlueskyService(): void {
-  _service = new BlueskyService();
+/**
+ * Initialize the BlueskyService singleton. Call once in createApp setup(). Credentials enable post
+ * search; no session is created until the first search.
+ */
+export function initBlueskyService(credentials?: SearchCredentials): void {
+  _service = new BlueskyService(credentials);
 }
 
 /** Get the initialized BlueskyService singleton. Throws if not yet initialized. */

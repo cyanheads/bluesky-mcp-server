@@ -32,6 +32,19 @@
       ],
       "environmentVariables": [
         {
+          "name": "BLUESKY_IDENTIFIER",
+          "description": "Handle, DID, or email of the Bluesky account post search runs as. Optional: without it and BLUESKY_APP_PASSWORD, bsky_search_posts is not offered, since Bluesky refuses search without a signed-in account. Use a dedicated account — search leaves out posts from accounts in a block relationship with it.",
+          "format": "string",
+          "isRequired": false
+        },
+        {
+          "name": "BLUESKY_APP_PASSWORD",
+          "description": "App password for BLUESKY_IDENTIFIER (a standard, non-privileged one — Settings → Privacy and security → App passwords). Optional; required together with BLUESKY_IDENTIFIER to enable bsky_search_posts.",
+          "format": "string",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
           "name": "MCP_LOG_LEVEL",
           "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
           "format": "string",
@@ -60,6 +73,19 @@
         }
       ],
       "environmentVariables": [
+        {
+          "name": "BLUESKY_IDENTIFIER",
+          "description": "Handle, DID, or email of the Bluesky account post search runs as. Optional: without it and BLUESKY_APP_PASSWORD, bsky_search_posts is not offered, since Bluesky refuses search without a signed-in account. Use a dedicated account — search leaves out posts from accounts in a block relationship with it.",
+          "format": "string",
+          "isRequired": false
+        },
+        {
+          "name": "BLUESKY_APP_PASSWORD",
+          "description": "App password for BLUESKY_IDENTIFIER (a standard, non-privileged one — Settings → Privacy and security → App passwords). Optional; required together with BLUESKY_IDENTIFIER to enable bsky_search_posts.",
+          "format": "string",
+          "isRequired": false,
+          "isSecret": true
+        },
         {
           "name": "MCP_HTTP_HOST",
           "description": "The hostname for the HTTP server.",

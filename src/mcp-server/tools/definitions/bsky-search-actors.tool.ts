@@ -26,7 +26,6 @@ const ActorResultSchema = z
           'text bounded only by length, not a fixed vocabulary — read it as written rather than parsing it.',
       ),
     avatar: z.string().optional().describe('URL of the profile avatar image.'),
-    followersCount: z.number().optional().describe('Number of followers.'),
     labels: z
       .array(
         z
@@ -45,10 +44,10 @@ export const bskySearchActors = tool('bsky_search_actors', {
   title: 'Search Bluesky Actors',
   description:
     'Find Bluesky accounts by name or handle fragment. Returns ranked profiles with handle, ' +
-    'DID, displayName, bio, pronouns when the account set them, and follower count — but not website, ' +
-    'which only bsky_get_profile returns. Use before bsky_get_profile or bsky_get_author_feed ' +
-    'when you have a name but not a confirmed handle. Supports cursor-based pagination for browsing ' +
-    'beyond the first page of results.',
+    'DID, displayName, bio, and pronouns when the account set them. Follower, following, and post ' +
+    'counts and the website are not on this view — bsky_get_profile returns them for one account. ' +
+    'Use before bsky_get_profile or bsky_get_author_feed when you have a name but not a confirmed ' +
+    'handle. Supports cursor-based pagination for browsing beyond the first page of results.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     query: z
@@ -71,10 +70,7 @@ export const bskySearchActors = tool('bsky_search_actors', {
       .max(2048)
       .optional()
       .describe(
-        'Opaque pagination cursor from a previous response. ' +
-          'Note: the public Bluesky AppView restricts cursor-based search pagination for unauthenticated ' +
-          'requests — passing a cursor may return a 403 error. Cursor pagination is reliable only for ' +
-          'bsky_get_author_feed and bsky_get_follows.',
+        'Opaque pagination cursor from a previous response to the same query. Omit for the first page.',
       ),
   }),
   output: z.object({
@@ -83,9 +79,7 @@ export const bskySearchActors = tool('bsky_search_actors', {
       .string()
       .optional()
       .describe(
-        'Opaque cursor returned by the API. ' +
-          'Unreliable for unauthenticated search requests on the public AppView — ' +
-          'passing it on a subsequent call may return a 403 error.',
+        'Opaque cursor for the next page — pass it back with the same query. Absent on the last page.',
       ),
   }),
 
@@ -94,7 +88,10 @@ export const bskySearchActors = tool('bsky_search_actors', {
     truncated: z
       .boolean()
       .optional()
-      .describe('True when more actors match than were returned on this page.'),
+      .describe(
+        'True when Bluesky returned a cursor for another page, whatever this page held — pages often ' +
+          'hold fewer actors than limit and still continue.',
+      ),
     shown: z.number().optional().describe('Number of actors returned on this page.'),
     cap: z.number().optional().describe('The limit applied to this page.'),
     notice: z.string().optional().describe('Guidance when the result set is empty or constrained.'),
@@ -111,13 +108,13 @@ export const bskySearchActors = tool('bsky_search_actors', {
       ctx.enrich.truncated({
         shown: result.actors.length,
         cap: input.limit,
-        guidance:
-          'More actors match than were returned. Note: cursor pagination is unreliable for unauthenticated search on the public AppView — refine the query instead.',
+        guidance: 'Pass the returned cursor to fetch the next page of actors.',
       });
-    }
-    if (result.actors.length === 0) {
+    } else if (result.actors.length === 0) {
       ctx.enrich.notice(
-        `No actors matched "${input.query}". Try a different name or handle fragment.`,
+        input.cursor
+          ? `No more actors match "${input.query}" — the previous page was the last.`
+          : `No actors matched "${input.query}". Try a different name or handle fragment.`,
       );
     }
     return { actors: result.actors, ...(result.cursor ? { cursor: result.cursor } : {}) };
@@ -125,7 +122,7 @@ export const bskySearchActors = tool('bsky_search_actors', {
 
   format: (result) => {
     if (result.actors.length === 0) {
-      return [{ type: 'text', text: 'No matching actors found.' }];
+      return [{ type: 'text', text: 'No actors on this page.' }];
     }
     const lines = result.actors.map((a) => {
       const parts = [`## @${a.handle}`];
@@ -133,8 +130,6 @@ export const bskySearchActors = tool('bsky_search_actors', {
       if (a.displayName) parts.push(`**Name:** ${inlineUserText(a.displayName)}`);
       if (a.pronouns) parts.push(`**Pronouns:** ${inlineUserText(a.pronouns)}`);
       if (a.description) parts.push(...quoteUserText(a.description));
-      if (a.followersCount != null)
-        parts.push(`**Followers:** ${a.followersCount.toLocaleString()}`);
       if (a.labels?.length) {
         const labelParts = a.labels.map((l) => {
           const val = inlineUserText(l.val);

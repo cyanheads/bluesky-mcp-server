@@ -1,34 +1,55 @@
 /**
- * @fileoverview Fetch real-time trending topics on Bluesky. Topic names and the display
- * names of the accounts driving them render inside lines this file writes, so both go
- * through the shared inline framing.
+ * @fileoverview Fetch real-time trending topics on Bluesky. Each trend is backed by a feed
+ * generator, and its `feedUri` is how an agent reads the trend's posts through bsky_get_feed.
+ * Topic names and the display names of the accounts driving them render inside lines this file
+ * writes, so both go through the shared inline framing; the story summary is quoted.
  * @module mcp-server/tools/definitions/bsky-get-trending
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { actorLabel, inlineUserText } from '@/mcp-server/tools/post-format.js';
+import { actorLabel, inlineUserText, quoteUserText } from '@/mcp-server/tools/post-format.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
+
+/** `app.bsky.unspecced.getTrends` lexicon `maximum` for `limit`. */
+const TRENDS_MAX = 25;
 
 const TrendSchema = z
   .object({
     topic: z
       .string()
       .describe(
-        'Opaque topic slug, e.g. "ailaunch2025". Use as a search term in bsky_search_posts.',
+        'Record key of the feed generator behind this trend, e.g. "1d558a3bc9ff" — an identifier, ' +
+          "not a search term. Read the trend's posts through feedUri.",
       ),
     displayName: z.string().describe('Human-readable topic name, e.g. "AI Launch 2025".'),
+    description: z
+      .string()
+      .optional()
+      .describe(
+        "Bluesky's one-sentence summary of the story behind the trend. Third-party text, rendered quoted.",
+      ),
+    feedUri: z
+      .string()
+      .optional()
+      .describe(
+        "AT-URI of the feed that collects this trend's posts — pass it to bsky_get_feed as-is to read " +
+          'them. Parsed from link; absent when link is missing or is not a feed page.',
+      ),
     link: z
       .string()
       .optional()
       .describe(
-        'Full URL associated with this trending topic (e.g. https://bsky.app/…), if provided.',
+        "The trend feed's page on bsky.app (https://bsky.app/profile/…/feed/…), if provided.",
       ),
     startedAt: z
       .string()
       .optional()
       .describe('ISO 8601 timestamp when this topic started trending.'),
     postCount: z.number().optional().describe('Approximate number of posts about this topic.'),
-    status: z.string().optional().describe('Velocity signal, e.g. "hot" or "rising".'),
+    status: z
+      .string()
+      .optional()
+      .describe('Velocity signal as Bluesky reports it, e.g. "hot", "cooling", or "stale".'),
     category: z
       .string()
       .optional()
@@ -55,20 +76,23 @@ export const bskyGetTrending = tool('bsky_get_trending', {
   title: 'Get Bluesky Trending Topics',
   description:
     'Fetch the current real-time trending topics on Bluesky. Returns topics with display name, ' +
-    'post count, category (politics, sports, pop-culture, etc.), status (hot/rising), start time, and ' +
-    'the representative accounts driving each topic — so "who is talking about this" needs no follow-up search. ' +
-    'Entry point for "what is Bluesky talking about right now". Pair with bsky_search_posts to drill ' +
-    'into any trending topic. Note: uses the app.bsky.unspecced.getTrends endpoint, which is not part ' +
-    "of Bluesky's stable lexicon and may change without notice.",
+    "Bluesky's one-sentence summary of the story, post count, category (politics, sports, pop-culture, " +
+    'etc.), status, start time, and the representative accounts driving each topic — so "who is talking ' +
+    'about this" needs no follow-up call. Entry point for "what is Bluesky talking about right now". ' +
+    "Each trend is a feed: pass its feedUri to bsky_get_feed to read the trend's posts. Note: uses the " +
+    "app.bsky.unspecced.getTrends endpoint, which is not part of Bluesky's stable lexicon and may change " +
+    'without notice.',
   annotations: { readOnlyHint: true, idempotentHint: false, openWorldHint: true },
   input: z.object({
     limit: z
       .number()
       .int()
       .min(1)
-      .max(25)
+      .max(TRENDS_MAX)
       .default(10)
-      .describe('Maximum number of trending topics to return (1–25). Default 10.'),
+      .describe(
+        "Maximum number of trending topics to return (1–25). Default 10. 25 is Bluesky's maximum.",
+      ),
   }),
   output: z.object({
     trends: z.array(TrendSchema).describe('Current trending topics, ordered by prominence.'),
@@ -79,7 +103,10 @@ export const bskyGetTrending = tool('bsky_get_trending', {
     truncated: z
       .boolean()
       .optional()
-      .describe('True when the topic list was capped at the requested limit; more may exist.'),
+      .describe(
+        'True when more topics were trending than limit — raising limit shows them. Never set at ' +
+          "limit 25, Bluesky's maximum.",
+      ),
     shown: z.number().optional().describe('Number of trending topics returned.'),
     cap: z.number().optional().describe('The limit applied to this request.'),
     notice: z.string().optional().describe('Guidance when the result set is empty or constrained.'),
@@ -87,17 +114,25 @@ export const bskyGetTrending = tool('bsky_get_trending', {
 
   async handler(input, ctx) {
     ctx.log.info('Fetching Bluesky trending topics', { limit: input.limit });
-    const result = await getBlueskyService().getTrends({ limit: input.limit }, ctx);
-    ctx.enrich({ totalReturned: result.trends.length });
-    if (result.trends.length >= input.limit) {
+    /**
+     * getTrends has no cursor or total, and serves the first N topics of one ranked list, so one
+     * topic past the limit is an exact "more are trending" sentinel. At 25 there is nothing past
+     * the ceiling to ask for — the endpoint answers 26 with HTTP 400.
+     */
+    const result = await getBlueskyService().getTrends(
+      { limit: Math.min(input.limit + 1, TRENDS_MAX) },
+      ctx,
+    );
+    const trends = result.trends.slice(0, input.limit);
+    ctx.enrich({ totalReturned: trends.length });
+    if (result.trends.length > input.limit) {
       ctx.enrich.truncated({
-        shown: result.trends.length,
+        shown: trends.length,
         cap: input.limit,
-        guidance:
-          'The topic list was capped at the requested limit — raise limit (max 25) for more.',
+        guidance: 'More topics are trending — raise limit (max 25) to see them.',
       });
     }
-    return { trends: result.trends };
+    return { trends };
   },
 
   format: (result) => {
@@ -111,8 +146,10 @@ export const bskyGetTrending = tool('bsky_get_trending', {
       if (t.category) meta.push(t.category);
       if (t.status) meta.push(t.status);
       if (meta.length) parts.push(`   ${meta.join(' · ')}`);
+      if (t.description) parts.push(...quoteUserText(t.description).map((l) => `   ${l}`));
       if (t.startedAt) parts.push(`   Started: ${t.startedAt}`);
       if (t.topic !== t.displayName) parts.push(`   Topic: \`${t.topic}\``);
+      if (t.feedUri) parts.push(`   Feed: \`${t.feedUri}\` — read with bsky_get_feed`);
       if (t.link) parts.push(`   Link: ${t.link}`);
       if (t.actors?.length) {
         parts.push('   Voices:');

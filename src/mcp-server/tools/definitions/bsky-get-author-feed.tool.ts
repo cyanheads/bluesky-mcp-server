@@ -35,6 +35,7 @@ const EmbedSchema = z
       'recordKind is absent for an ordinary quoted post and otherwise names what stood in for one: ' +
       '"notFound" | "blocked" | "detached" (the quote exists but cannot be read) or ' +
       '"generator" | "list" | "starterPack" | "labeler" | "unknown" (the quoted record is not a post). ' +
+      'A "generator" quote is a feed: pass its uri to bsky_get_feed to read it. ' +
       'When recordKind is set, text and authorHandle are absent because that variant does not carry them — ' +
       'do not read the quote as an empty post. ' +
       'video: { playlist?, thumbnail?, presentation? }. ' +

@@ -19,15 +19,12 @@ const SUBJECT: ActorProfile = {
   did: 'did:plc:subject',
   handle: 'alice.bsky.social',
   displayName: 'Alice',
-  followersCount: 500,
-  followsCount: 100,
 };
 
 const FOLLOWER: ActorProfile = {
   did: 'did:plc:follower1',
   handle: 'bob.bsky.social',
   displayName: 'Bob',
-  followersCount: 50,
 };
 
 const makeGraphResult = (overrides: Partial<GraphResult> = {}): GraphResult => ({
@@ -84,7 +81,7 @@ describe('bskyGetFollows', () => {
     expect(result.actors[0]).toMatchObject({ handle: 'bob.bsky.social' });
     expect(result.subject.did).toBe('did:plc:subject');
     expect(result.subject.handle).toBe('alice.bsky.social');
-    expect(result.subject.followersCount).toBe(500);
+    expect(result.subject.displayName).toBe('Alice');
   });
 
   it('calls getFollowers service method for direction=followers', async () => {
@@ -210,8 +207,8 @@ describe('bskyGetFollows', () => {
     });
     const result = await bskyGetFollows.handler(input, ctx);
 
-    expect(result.subject.followersCount).toBeUndefined();
-    expect(result.subject.followsCount).toBeUndefined();
+    expect(result.subject).toEqual({ did: 'did:plc:sparse', handle: 'sparse.bsky.social' });
+    expect(() => bskyGetFollows.output.parse(result)).not.toThrow();
   });
 
   // --- format() ---

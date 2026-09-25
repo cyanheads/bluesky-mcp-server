@@ -1,6 +1,6 @@
 /**
  * @fileoverview Shared markdown rendering for a normalized Bluesky post.
- * Every tool that emits posts into content[] renders through here, so the search,
+ * Every tool that emits posts into content[] renders through here, so the search, feed,
  * author-feed, and thread formatters carry the same fields structuredContent does —
  * every field of a normalized post and of its embed, with nothing left to one channel.
  * {@link renderLabelList} is here for the same reason, since a moderation label reads
@@ -74,6 +74,7 @@ export interface RenderablePost {
   indexedAt?: string | undefined;
   labels?: Array<{ val: string; src?: string | undefined; cts?: string | undefined }> | undefined;
   likeCount?: number | undefined;
+  pinned?: boolean | undefined;
   quoteCount?: number | undefined;
   replyCount?: number | undefined;
   replyRootUri?: string | undefined;
@@ -93,7 +94,7 @@ const QUOTED_RECORD_LABELS: Record<string, string> = {
   notFound: 'Quoted post unavailable — deleted or never existed',
   blocked: 'Quoted post unavailable — hidden by a block',
   detached: 'Quoted post unavailable — detached by its author',
-  generator: 'Quoted feed generator (not a post)',
+  generator: 'Quoted feed generator (not a post) — read its posts with bsky_get_feed',
   list: 'Quoted list (not a post)',
   starterPack: 'Quoted starter pack (not a post)',
   labeler: 'Quoted labeler service (not a post)',
@@ -269,6 +270,7 @@ export function renderEmbedLines(embed: unknown, nested = false): string[] {
  */
 export function renderPostLines(post: RenderablePost, headingPrefix = ''): string[] {
   const lines: string[] = [];
+  if (post.pinned) lines.push('📌 Pinned to the top of this feed');
   if (post.repostedBy) {
     const when = post.repostedAt ? ` · ${post.repostedAt}` : '';
     lines.push(`🔁 Reposted by ${actorLabel(post.repostedBy)} \`${post.repostedBy.did}\`${when}`);

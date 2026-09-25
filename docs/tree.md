@@ -1,6 +1,6 @@
 # bluesky-mcp-server - Directory Structure
 
-Generated on: 2026-09-20 18:29:08
+Generated on: 2026-09-25 09:19:54
 
 ```text
 bluesky-mcp-server/
@@ -136,49 +136,65 @@ bluesky-mcp-server/
 │   ├── release-github.ts
 │   └── tree.ts
 ├── src/
+│   ├── config/
+│   │   └── server-config.ts
 │   ├── mcp-server/
 │   │   ├── prompts/
 │   │   │   └── definitions/
 │   │   ├── resources/
 │   │   │   └── definitions/
 │   │   │       └── bsky-profile.resource.ts
-│   │   └── tools/
-│   │       ├── definitions/
-│   │       │   ├── bsky-get-author-feed.tool.ts
-│   │       │   ├── bsky-get-follows.tool.ts
-│   │       │   ├── bsky-get-post-thread.tool.ts
-│   │       │   ├── bsky-get-profile.tool.ts
-│   │       │   ├── bsky-get-trending.tool.ts
-│   │       │   ├── bsky-search-actors.tool.ts
-│   │       │   └── bsky-search-posts.tool.ts
-│   │       └── post-format.ts
+│   │   ├── tools/
+│   │   │   ├── definitions/
+│   │   │   │   ├── bsky-get-author-feed.tool.ts
+│   │   │   │   ├── bsky-get-feed.tool.ts
+│   │   │   │   ├── bsky-get-follows.tool.ts
+│   │   │   │   ├── bsky-get-post-thread.tool.ts
+│   │   │   │   ├── bsky-get-profile.tool.ts
+│   │   │   │   ├── bsky-get-trending.tool.ts
+│   │   │   │   ├── bsky-search-actors.tool.ts
+│   │   │   │   └── bsky-search-posts.tool.ts
+│   │   │   └── post-format.ts
+│   │   └── server-surface.ts
 │   ├── services/
 │   │   └── bluesky/
 │   │       ├── at-syntax.ts
 │   │       ├── bluesky-service.ts
-│   │       └── types.ts
+│   │       ├── search-session.ts
+│   │       ├── types.ts
+│   │       └── xrpc.ts
 │   └── index.ts
 ├── tests/
+│   ├── config/
+│   │   └── server-config.test.ts
 │   ├── mcp-server/
 │   │   ├── resources/
 │   │   │   └── definitions/
 │   │   │       └── bsky-profile.resource.test.ts
-│   │   └── tools/
-│   │       ├── definitions/
-│   │       │   ├── bsky-get-author-feed.tool.test.ts
-│   │       │   ├── bsky-get-follows.tool.test.ts
-│   │       │   ├── bsky-get-post-thread.tool.test.ts
-│   │       │   ├── bsky-get-profile.tool.test.ts
-│   │       │   ├── bsky-get-trending.tool.test.ts
-│   │       │   ├── bsky-search-actors.tool.test.ts
-│   │       │   └── bsky-search-posts.tool.test.ts
-│   │       └── post-format.test.ts
+│   │   ├── tools/
+│   │   │   ├── definitions/
+│   │   │   │   ├── bsky-get-author-feed.tool.test.ts
+│   │   │   │   ├── bsky-get-feed.tool.test.ts
+│   │   │   │   ├── bsky-get-follows.paging.test.ts
+│   │   │   │   ├── bsky-get-follows.tool.test.ts
+│   │   │   │   ├── bsky-get-post-thread.tool.test.ts
+│   │   │   │   ├── bsky-get-profile.tool.test.ts
+│   │   │   │   ├── bsky-get-trending.paging.test.ts
+│   │   │   │   ├── bsky-get-trending.tool.test.ts
+│   │   │   │   ├── bsky-search-actors.paging.test.ts
+│   │   │   │   ├── bsky-search-actors.tool.test.ts
+│   │   │   │   ├── bsky-search-posts.auth.test.ts
+│   │   │   │   └── bsky-search-posts.tool.test.ts
+│   │   │   └── post-format.test.ts
+│   │   └── tool-surface.test.ts
 │   ├── prompts/
 │   ├── resources/
 │   ├── services/
 │   │   └── bluesky/
+│   │       ├── bluesky-service.http.test.ts
 │   │       └── bluesky-service.test.ts
-│   └── tools/
+│   ├── tools/
+│   └── entrypoint.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes

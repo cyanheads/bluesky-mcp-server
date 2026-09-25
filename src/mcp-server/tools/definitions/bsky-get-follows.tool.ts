@@ -28,7 +28,6 @@ const ActorSchema = z
           'text bounded only by length, not a fixed vocabulary — read it as written rather than parsing it.',
       ),
     avatar: z.string().optional().describe('Avatar image URL.'),
-    followersCount: z.number().optional().describe('Number of followers.'),
     labels: z
       .array(
         z
@@ -48,10 +47,11 @@ export const bskyGetFollows = tool('bsky_get_follows', {
   title: 'Get Bluesky Social Graph',
   description:
     'Fetch the social graph edges for a Bluesky account — who follows them, or who they follow. ' +
-    'Returns paginated actor profiles (handle, DID, displayName, bio, pronouns when set, follower count) ' +
-    'plus a summary of the subject account — website is not on this view, only on bsky_get_profile. ' +
-    'Accounts with large social graphs return only the first page; use ' +
-    'cursor pagination to walk through the full list.',
+    'Returns paginated actor profiles (handle, DID, displayName, bio, pronouns when set) plus a ' +
+    'summary of the subject account. Follower, following, and post counts and the website are not ' +
+    'on this view, for the listed accounts or the subject — bsky_get_profile returns them for one ' +
+    'account. Accounts with large social graphs return only the first page; use cursor pagination ' +
+    'to walk through the full list.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     actor: z
@@ -94,8 +94,6 @@ export const bskyGetFollows = tool('bsky_get_follows', {
           .describe(
             'Free-form pronouns the subject account set, e.g. "they/he". Absent when it set none.',
           ),
-        followersCount: z.number().optional().describe("Subject's follower count."),
-        followsCount: z.number().optional().describe("Subject's following count."),
       })
       .describe('Profile summary of the queried actor.'),
     cursor: z
@@ -118,7 +116,10 @@ export const bskyGetFollows = tool('bsky_get_follows', {
     truncated: z
       .boolean()
       .optional()
-      .describe('True when more actors exist beyond this page (a cursor was returned).'),
+      .describe(
+        'True when Bluesky returned a cursor, whatever this page held. A cursor is not proof more ' +
+          'accounts exist: the next page can come back empty when the remaining accounts are unavailable.',
+      ),
     shown: z.number().optional().describe('Number of actors returned on this page.'),
     cap: z.number().optional().describe('The limit applied to this page.'),
     notice: z.string().optional().describe('Guidance when the result set is empty or constrained.'),
@@ -159,18 +160,22 @@ export const bskyGetFollows = tool('bsky_get_follows', {
     }
 
     ctx.enrich({ totalReturned: result.actors.length });
+    const listed = input.direction === 'followers' ? 'followers' : 'followed accounts';
     if (result.cursor) {
       ctx.enrich.truncated({
         shown: result.actors.length,
         cap: input.limit,
-        guidance: `More ${input.direction} exist — pass the returned cursor to fetch the next page.`,
+        guidance: `Pass the returned cursor to fetch the next page of ${listed}. It can come back empty when the remaining accounts are unavailable.`,
       });
-    }
-    if (result.actors.length === 0) {
-      ctx.enrich.notice(`No ${input.direction} found for actor "${input.actor}".`);
+    } else if (result.actors.length === 0) {
+      ctx.enrich.notice(
+        input.cursor
+          ? `No more ${listed} — the previous page was the last.`
+          : `No ${listed} found for actor "${input.actor}".`,
+      );
     }
 
-    const { followersCount, followsCount, did, handle, displayName, pronouns } = result.subject;
+    const { did, handle, displayName, pronouns } = result.subject;
     return {
       actors: result.actors,
       subject: {
@@ -178,8 +183,6 @@ export const bskyGetFollows = tool('bsky_get_follows', {
         handle,
         ...(displayName ? { displayName } : {}),
         ...(pronouns ? { pronouns } : {}),
-        ...(followersCount != null ? { followersCount } : {}),
-        ...(followsCount != null ? { followsCount } : {}),
       },
       ...(result.cursor ? { cursor: result.cursor } : {}),
     };
@@ -190,13 +193,9 @@ export const bskyGetFollows = tool('bsky_get_follows', {
     header.push(`**DID:** \`${result.subject.did}\``);
     if (result.subject.pronouns)
       header.push(`**Pronouns:** ${inlineUserText(result.subject.pronouns)}`);
-    if (result.subject.followersCount != null)
-      header.push(`Followers: ${result.subject.followersCount.toLocaleString()}`);
-    if (result.subject.followsCount != null)
-      header.push(`Following: ${result.subject.followsCount.toLocaleString()}`);
 
     if (result.actors.length === 0) {
-      return [{ type: 'text', text: `${header.join('\n')}\n\n*No accounts found.*` }];
+      return [{ type: 'text', text: `${header.join('\n')}\n\n*No accounts on this page.*` }];
     }
 
     const actorLines = result.actors.map((a) => {
@@ -205,8 +204,6 @@ export const bskyGetFollows = tool('bsky_get_follows', {
       if (a.displayName) parts.push(`**Name:** ${inlineUserText(a.displayName)}`);
       if (a.pronouns) parts.push(`**Pronouns:** ${inlineUserText(a.pronouns)}`);
       if (a.description) parts.push(...quoteUserText(a.description));
-      if (a.followersCount != null)
-        parts.push(`**Followers:** ${a.followersCount.toLocaleString()}`);
       if (a.labels?.length)
         parts.push(`**Labels:** ${a.labels.map((l) => inlineUserText(l.val)).join(', ')}`);
       if (a.avatar) parts.push(`**Avatar:** ${a.avatar}`);

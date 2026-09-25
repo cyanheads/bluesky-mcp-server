@@ -19,7 +19,6 @@ const makeActor = (overrides: Partial<ActorProfile> = {}): ActorProfile => ({
   handle: 'alice.bsky.social',
   displayName: 'Alice',
   description: 'About Alice',
-  followersCount: 100,
   ...overrides,
 });
 
@@ -129,7 +128,7 @@ describe('bskySearchActors', () => {
     const [actor] = result.actors;
     expect(actor).toBeDefined();
     expect(actor?.displayName).toBeUndefined();
-    expect(actor?.followersCount).toBeUndefined();
+    expect(actor?.description).toBeUndefined();
     expect(() => bskySearchActors.output.parse(result)).not.toThrow();
   });
 
@@ -144,10 +143,9 @@ describe('bskySearchActors', () => {
     expect(text).toContain('Alice');
   });
 
-  it('renders follower count', () => {
-    const blocks = bskySearchActors.format!({ actors: [makeActor()] });
-    const text = (blocks[0] as { text: string }).text;
-    expect(text).toMatch(/100/);
+  it('renders no follower line — profileView carries no counts', () => {
+    const text = (bskySearchActors.format!({ actors: [makeActor()] })[0] as { text: string }).text;
+    expect(text).not.toContain('Followers');
   });
 
   it('renders empty message when no actors', () => {

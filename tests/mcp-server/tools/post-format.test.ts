@@ -121,6 +121,17 @@ describe('actorLabel', () => {
 });
 
 describe('renderPostLines', () => {
+  it('opens a pinned post with the pin marker, above the author heading', () => {
+    const lines = renderPostLines(makePost({ pinned: true }));
+    expect(lines[0]).toBe('📌 Pinned to the top of this feed');
+    expect(lines[1]?.startsWith('### ')).toBe(true);
+  });
+
+  it('renders no pin marker on an unpinned post', () => {
+    expect(renderPostLines(makePost()).join('\n')).not.toContain('Pinned');
+    expect(renderPostLines(makePost({ pinned: false })).join('\n')).not.toContain('Pinned');
+  });
+
   it('frames the post body as a blockquote', () => {
     const lines = renderPostLines(makePost({ text: 'Hello Bluesky' }));
     expect(lines).toContain('> Hello Bluesky');
@@ -212,6 +223,19 @@ describe('renderPostLines', () => {
 });
 
 describe('renderEmbedLines', () => {
+  it('points a quoted feed generator at bsky_get_feed', () => {
+    const [line] = renderEmbedLines({
+      type: 'record',
+      uri: 'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot',
+      cid: '',
+      recordKind: 'generator',
+    });
+    expect(line).toContain('bsky_get_feed');
+    expect(line).toContain(
+      'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot',
+    );
+  });
+
   it('frames image alt text and keeps every image URL', () => {
     const lines = renderEmbedLines({
       type: 'images',

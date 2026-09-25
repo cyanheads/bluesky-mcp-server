@@ -4,6 +4,7 @@
     "args": ["-y", "@cyanheads/bluesky-mcp-server"],
     "env": {
       "MCP_TRANSPORT_TYPE": "stdio"
-    }
+    },
+    "env_vars": ["BLUESKY_IDENTIFIER", "BLUESKY_APP_PASSWORD"]
   }
 }
