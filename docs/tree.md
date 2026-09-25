@@ -1,6 +1,6 @@
 # bluesky-mcp-server - Directory Structure
 
-Generated on: 2026-09-25 09:24:12
+Generated on: 2026-09-25 11:03:15
 
 ```text
 bluesky-mcp-server/
@@ -28,6 +28,7 @@ bluesky-mcp-server/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
 │   ├── 0.4.x/
+│   ├── 0.5.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -150,6 +151,7 @@ bluesky-mcp-server/
 │   │   │   │   ├── bsky-get-author-feed.tool.ts
 │   │   │   │   ├── bsky-get-feed.tool.ts
 │   │   │   │   ├── bsky-get-follows.tool.ts
+│   │   │   │   ├── bsky-get-post-quotes.tool.ts
 │   │   │   │   ├── bsky-get-post-thread.tool.ts
 │   │   │   │   ├── bsky-get-profile.tool.ts
 │   │   │   │   ├── bsky-get-trending.tool.ts
@@ -174,10 +176,12 @@ bluesky-mcp-server/
 │   │   │       └── bsky-profile.resource.test.ts
 │   │   ├── tools/
 │   │   │   ├── definitions/
+│   │   │   │   ├── bsky-get-author-feed.paging.test.ts
 │   │   │   │   ├── bsky-get-author-feed.tool.test.ts
 │   │   │   │   ├── bsky-get-feed.tool.test.ts
 │   │   │   │   ├── bsky-get-follows.paging.test.ts
 │   │   │   │   ├── bsky-get-follows.tool.test.ts
+│   │   │   │   ├── bsky-get-post-quotes.tool.test.ts
 │   │   │   │   ├── bsky-get-post-thread.tool.test.ts
 │   │   │   │   ├── bsky-get-profile.tool.test.ts
 │   │   │   │   ├── bsky-get-trending.paging.test.ts
@@ -185,13 +189,17 @@ bluesky-mcp-server/
 │   │   │   │   ├── bsky-search-actors.paging.test.ts
 │   │   │   │   ├── bsky-search-actors.tool.test.ts
 │   │   │   │   ├── bsky-search-posts.auth.test.ts
+│   │   │   │   ├── bsky-search-posts.params.test.ts
 │   │   │   │   └── bsky-search-posts.tool.test.ts
 │   │   │   └── post-format.test.ts
+│   │   ├── empty-page-cursor.test.ts
+│   │   ├── input-forms.test.ts
 │   │   └── tool-surface.test.ts
 │   ├── prompts/
 │   ├── resources/
 │   ├── services/
 │   │   └── bluesky/
+│   │       ├── at-syntax.test.ts
 │   │       ├── bluesky-service.http.test.ts
 │   │       └── bluesky-service.test.ts
 │   ├── tools/
