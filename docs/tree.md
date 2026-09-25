@@ -1,6 +1,6 @@
 # bluesky-mcp-server - Directory Structure
 
-Generated on: 2026-09-25 11:03:15
+Generated on: 2026-09-25 13:24:23
 
 ```text
 bluesky-mcp-server/
@@ -157,7 +157,8 @@ bluesky-mcp-server/
 │   │   │   │   ├── bsky-get-trending.tool.ts
 │   │   │   │   ├── bsky-search-actors.tool.ts
 │   │   │   │   └── bsky-search-posts.tool.ts
-│   │   │   └── post-format.ts
+│   │   │   ├── post-format.ts
+│   │   │   └── response-budget.ts
 │   │   └── server-surface.ts
 │   ├── services/
 │   │   └── bluesky/
@@ -182,6 +183,7 @@ bluesky-mcp-server/
 │   │   │   │   ├── bsky-get-follows.paging.test.ts
 │   │   │   │   ├── bsky-get-follows.tool.test.ts
 │   │   │   │   ├── bsky-get-post-quotes.tool.test.ts
+│   │   │   │   ├── bsky-get-post-thread.budget.test.ts
 │   │   │   │   ├── bsky-get-post-thread.tool.test.ts
 │   │   │   │   ├── bsky-get-profile.tool.test.ts
 │   │   │   │   ├── bsky-get-trending.paging.test.ts
@@ -191,7 +193,13 @@ bluesky-mcp-server/
 │   │   │   │   ├── bsky-search-posts.auth.test.ts
 │   │   │   │   ├── bsky-search-posts.params.test.ts
 │   │   │   │   └── bsky-search-posts.tool.test.ts
-│   │   │   └── post-format.test.ts
+│   │   │   ├── budget-fixtures.ts
+│   │   │   ├── markdown-escaping.test.ts
+│   │   │   ├── post-format.test.ts
+│   │   │   ├── quote-boundaries.test.ts
+│   │   │   ├── response-budget.characterization.test.ts
+│   │   │   ├── response-budget.paged.test.ts
+│   │   │   └── response-budget.test.ts
 │   │   ├── empty-page-cursor.test.ts
 │   │   ├── input-forms.test.ts
 │   │   └── tool-surface.test.ts
@@ -201,7 +209,8 @@ bluesky-mcp-server/
 │   │   └── bluesky/
 │   │       ├── at-syntax.test.ts
 │   │       ├── bluesky-service.http.test.ts
-│   │       └── bluesky-service.test.ts
+│   │       ├── bluesky-service.test.ts
+│   │       └── verification.http.test.ts
 │   ├── tools/
 │   └── entrypoint.test.ts
 ├── .dockerignore

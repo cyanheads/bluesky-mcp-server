@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.1](changelog/0.5.x/0.5.1.md) — 2026-09-25 · 🛡️ Security
+
+Post tools hold each response surface to 48,000 bytes, cut only between whole posts; accounts and post authors carry Bluesky verification state; Markdown and raw HTML in Bluesky-authored text are escaped in content[], and each quote ends before the next server line.
+
 ## [0.5.0](changelog/0.5.x/0.5.0.md) — 2026-09-25 · ⚠️ Breaking
 
 New bsky_get_post_quotes; bsky.app URLs and @handles accepted wherever an account or post is asked for; new search, author-feed, and follows filters. Malformed cursors and three-letter search languages now fail instead of returning retried 500s or unfiltered results.
