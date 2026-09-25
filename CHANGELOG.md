@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-09-25 · ⚠️ Breaking
+
+New bsky_get_feed reads trend and custom feeds; bsky_search_posts now runs on an optional app password and is left out of tools/list without one, since Bluesky refuses keyless search.
+
 ## [0.3.2](changelog/0.3.x/0.3.2.md) — 2026-09-20
 
 Adopts mcp-ts-core 0.13.x: structured argument-rejection envelopes, request-cancellation handling, and HTTP-status reclassification; this server now declares sessionMode: 'stateless' in source and corrects its env-var docs and post_not_found description

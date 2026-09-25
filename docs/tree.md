@@ -1,6 +1,6 @@
 # bluesky-mcp-server - Directory Structure
 
-Generated on: 2026-09-25 09:19:54
+Generated on: 2026-09-25 09:24:12
 
 ```text
 bluesky-mcp-server/
@@ -27,6 +27,7 @@ bluesky-mcp-server/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
+│   ├── 0.4.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
