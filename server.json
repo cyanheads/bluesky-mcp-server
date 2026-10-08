@@ -6,7 +6,7 @@
     "url": "https://github.com/cyanheads/bluesky-mcp-server",
     "source": "github"
   },
-  "version": "0.5.1",
+  "version": "0.5.2",
   "remotes": [
     {
       "type": "streamable-http",
@@ -18,18 +18,8 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/bluesky-mcp-server",
-      "runtimeHint": "bun",
-      "version": "0.5.1",
-      "packageArguments": [
-        {
-          "type": "positional",
-          "value": "run"
-        },
-        {
-          "type": "positional",
-          "value": "start:stdio"
-        }
-      ],
+      "runtimeHint": "npx",
+      "version": "0.5.2",
       "environmentVariables": [
         {
           "name": "BLUESKY_IDENTIFIER",
@@ -60,19 +50,15 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/bluesky-mcp-server",
-      "runtimeHint": "bun",
-      "version": "0.5.1",
-      "packageArguments": [
-        {
-          "type": "positional",
-          "value": "run"
-        },
-        {
-          "type": "positional",
-          "value": "start:http"
-        }
-      ],
+      "runtimeHint": "npx",
+      "version": "0.5.2",
       "environmentVariables": [
+        {
+          "name": "MCP_TRANSPORT_TYPE",
+          "description": "Selects the HTTP transport.",
+          "format": "string",
+          "value": "http"
+        },
         {
           "name": "BLUESKY_IDENTIFIER",
           "description": "Handle, DID, or email of the Bluesky account post search runs as. Optional: without it and BLUESKY_APP_PASSWORD, bsky_search_posts is not offered, since Bluesky refuses search without a signed-in account. Use a dedicated account — search leaves out posts from accounts in a block relationship with it.",

@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.2](changelog/0.5.x/0.5.2.md) — 2026-10-08
+
+Built on mcp-ts-core 0.13.14: tool errors carry a request id, numeric and boolean strings for number and boolean inputs are repaired before validation, error data no longer carries stack traces or request context, and Docker images install dependencies in a build-platform stage.
+
 ## [0.5.1](changelog/0.5.x/0.5.1.md) — 2026-09-25 · 🛡️ Security
 
 Post tools hold each response surface to 48,000 bytes, cut only between whole posts; accounts and post authors carry Bluesky verification state; Markdown and raw HTML in Bluesky-authored text are escaped in content[], and each quote ends before the next server line.
