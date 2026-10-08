@@ -675,7 +675,6 @@ function cursorError(
   err: McpError,
   cursor: string | undefined,
   lexicon: keyof typeof BAD_CURSOR,
-  ctx: Context,
 ): McpError | undefined {
   const { status, message }: BadCursorAnswer = BAD_CURSOR[lexicon];
   if (!cursor || httpStatus(err) !== status) return;
@@ -684,7 +683,7 @@ function cursorError(
   if (message && !message.test(envelope.message ?? '')) return;
   return validationError(
     `Bluesky could not continue from the cursor this request carried: ${lexicon} answered HTTP ${status}, which is how it reports a cursor it cannot decode.`,
-    { reason: 'invalid_cursor', status, ...ctx.recoveryFor('invalid_cursor') },
+    { reason: 'invalid_cursor', status },
   );
 }
 
@@ -832,9 +831,8 @@ export class BlueskyService {
           ? forbidden('Bluesky refused this search.', {
               reason: 'search_refused',
               status: httpStatus(err),
-              ...ctx.recoveryFor('search_refused'),
             })
-          : cursorError(err, params.cursor, lexicon, ctx),
+          : cursorError(err, params.cursor, lexicon),
     );
     return {
       posts: (raw.posts ?? []).map(normalizePost),
@@ -877,7 +875,7 @@ export class BlueskyService {
         ...(params.cursor ? { cursor: params.cursor } : {}),
       },
       ctx,
-      (err) => (params.cursorAccepted ? undefined : cursorError(err, params.cursor, lexicon, ctx)),
+      (err) => (params.cursorAccepted ? undefined : cursorError(err, params.cursor, lexicon)),
     );
     return {
       feed: (raw.feed ?? []).map(normalizeFeedItem),
@@ -900,7 +898,7 @@ export class BlueskyService {
     const authority = await this.resolveAuthority(ref.authority, ctx, () =>
       notFound(
         `No Bluesky account answers to the handle "${ref.authority}" in ${feedGeneratorUri(ref)}.`,
-        { reason: 'feed_not_found', feed: params.feed, ...ctx.recoveryFor('feed_not_found') },
+        { reason: 'feed_not_found', feed: params.feed },
       ),
     );
     const uri = feedGeneratorUri({ authority, rkey: ref.rkey });
@@ -912,7 +910,7 @@ export class BlueskyService {
         ...(params.cursor ? { cursor: params.cursor } : {}),
       },
       ctx,
-      (err) => feedError(err, uri, ctx),
+      (err) => feedError(err, uri),
     );
     return {
       feedUri: uri,
@@ -962,10 +960,7 @@ export class BlueskyService {
     const ref = parsePostRef(params.uri);
     if (!ref) throw validationError(POST_URI_REF_MESSAGE);
     const postNotFound = (why: string) =>
-      notFound(`Post not found: "${params.uri}" — ${why}.`, {
-        reason: 'post_not_found',
-        ...ctx.recoveryFor('post_not_found'),
-      });
+      notFound(`Post not found: "${params.uri}" — ${why}.`, { reason: 'post_not_found' });
     const did = await this.resolveAuthority(ref.authority, ctx, () =>
       postNotFound(`no Bluesky account answers to the handle "${ref.authority}"`),
     );
@@ -979,7 +974,7 @@ export class BlueskyService {
         ...(params.cursor ? { cursor: params.cursor } : {}),
       },
       ctx,
-      (err) => (params.cursorAccepted ? undefined : cursorError(err, params.cursor, lexicon, ctx)),
+      (err) => (params.cursorAccepted ? undefined : cursorError(err, params.cursor, lexicon)),
     );
     const result: QuotesResult = {
       uri,
@@ -1034,7 +1029,7 @@ export class BlueskyService {
         ...(params.cursor ? { cursor: params.cursor } : {}),
       },
       ctx,
-      (err) => cursorError(err, params.cursor, lexicon, ctx),
+      (err) => cursorError(err, params.cursor, lexicon),
     );
     return {
       actors: (raw.actors ?? []).map(normalizeActorSummary),
@@ -1136,21 +1131,17 @@ export class BlueskyService {
  * `InvalidRequest: could not find feed`, not the lexicon's `UnknownFeed` — so the message is what
  * is matched. Unrecognized failures keep their status-derived code.
  */
-function feedError(err: McpError, uri: string, ctx: Context): McpError | undefined {
+function feedError(err: McpError, uri: string): McpError | undefined {
   const { error = '', message = '' } = xrpcError(err);
   const said = `${error}: ${message}`;
   if (err.code === JsonRpcErrorCode.Unauthorized) {
     return unauthorized(
       `${uri} is a personalized feed, and Bluesky serves it only to a signed-in account.`,
-      { reason: 'feed_requires_login', feed: uri, ...ctx.recoveryFor('feed_requires_login') },
+      { reason: 'feed_requires_login', feed: uri },
     );
   }
   if (/could not find feed|UnknownFeed/i.test(said)) {
-    return notFound(`Bluesky has no feed at ${uri}.`, {
-      reason: 'feed_not_found',
-      feed: uri,
-      ...ctx.recoveryFor('feed_not_found'),
-    });
+    return notFound(`Bluesky has no feed at ${uri}.`, { reason: 'feed_not_found', feed: uri });
   }
   if (
     /could not resolve identity|feed unavailable|UpstreamFailure|Upstream server responded/i.test(
@@ -1159,7 +1150,7 @@ function feedError(err: McpError, uri: string, ctx: Context): McpError | undefin
   ) {
     return serviceUnavailable(
       `The feed generator behind ${uri} did not answer (Bluesky reported: ${message || error}).`,
-      { reason: 'feed_unavailable', feed: uri, ...ctx.recoveryFor('feed_unavailable') },
+      { reason: 'feed_unavailable', feed: uri },
     );
   }
   return;

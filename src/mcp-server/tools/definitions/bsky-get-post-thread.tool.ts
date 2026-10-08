@@ -710,7 +710,6 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
       throw ctx.fail(
         'uri_is_feed',
         `"${uri}" is a feed generator, not a post — read its posts with bsky_get_feed.`,
-        ctx.recoveryFor('uri_is_feed'),
       );
     }
 
@@ -724,18 +723,10 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
       if (err instanceof McpError) {
         const body = (err.data as { responseBody?: string } | undefined)?.responseBody ?? '';
         if (body.includes('Invalid at-uri')) {
-          throw ctx.fail(
-            'invalid_at_uri',
-            `Bluesky rejected the AT-URI "${uri}".`,
-            ctx.recoveryFor('invalid_at_uri'),
-          );
+          throw ctx.fail('invalid_at_uri', `Bluesky rejected the AT-URI "${uri}".`);
         }
         if (body.includes('NotFound') || body.includes('not found') || body.includes('Not Found')) {
-          throw ctx.fail(
-            'post_not_found',
-            `Post not found: "${uri}"`,
-            ctx.recoveryFor('post_not_found'),
-          );
+          throw ctx.fail('post_not_found', `Post not found: "${uri}"`);
         }
       }
       throw err;

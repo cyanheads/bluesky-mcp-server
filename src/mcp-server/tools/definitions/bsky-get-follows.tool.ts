@@ -192,11 +192,7 @@ export const bskyGetFollows = tool('bsky_get_follows', {
           err.data &&
           (body.includes('not found') || body.includes('Not Found') || body.includes('NotFound'))
         ) {
-          throw ctx.fail(
-            'actor_not_found',
-            `Actor not found: "${actor}"`,
-            ctx.recoveryFor('actor_not_found'),
-          );
+          throw ctx.fail('actor_not_found', `Actor not found: "${actor}"`);
         }
       }
       throw err;

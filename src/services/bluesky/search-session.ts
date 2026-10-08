@@ -105,12 +105,9 @@ function isCredentialRejection(err: unknown): boolean {
   return status === 400 || status === 401;
 }
 
-/** @internal `search_auth_failed`, with the calling tool's declared recovery. */
-function searchAuthFailed(ctx: Context, message: string): McpError {
-  return unauthorized(message, {
-    reason: 'search_auth_failed',
-    ...ctx.recoveryFor('search_auth_failed'),
-  });
+/** @internal `search_auth_failed`; the calling tool's declared recovery fills in at its boundary. */
+function searchAuthFailed(message: string): McpError {
+  return unauthorized(message, { reason: 'search_auth_failed' });
 }
 
 /**
@@ -208,7 +205,6 @@ export class SearchSession {
     } catch (err) {
       if (isTokenRejection(err)) {
         throw searchAuthFailed(
-          ctx,
           `Bluesky refused the search session it had just issued (${describeRejection(err)}).`,
         );
       }
@@ -300,7 +296,7 @@ export class SearchSession {
 
   /** Log in with the app password. Spends one of the account's daily logins. */
   private async create(ctx: Context): Promise<Session> {
-    if (this.loginRejection) throw searchAuthFailed(ctx, this.loginRejection);
+    if (this.loginRejection) throw searchAuthFailed(this.loginRejection);
     const { identifier, appPassword } = this.credentials;
     let result: { headers: Headers; raw: RawSession };
     try {
@@ -310,7 +306,7 @@ export class SearchSession {
     } catch (err) {
       if (!isCredentialRejection(err)) throw err;
       this.loginRejection = `Bluesky rejected the login configured for search (${describeRejection(err)}).`;
-      throw searchAuthFailed(ctx, this.loginRejection);
+      throw searchAuthFailed(this.loginRejection);
     }
     /** Server-side only: `ctx.log` would carry this to every client of a shared instance. */
     logger.info(
