@@ -6,7 +6,7 @@
     "url": "https://github.com/cyanheads/bluesky-mcp-server",
     "source": "github"
   },
-  "version": "0.5.2",
+  "version": "0.6.0",
   "remotes": [
     {
       "type": "streamable-http",
@@ -19,7 +19,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/bluesky-mcp-server",
       "runtimeHint": "npx",
-      "version": "0.5.2",
+      "version": "0.6.0",
       "environmentVariables": [
         {
           "name": "BLUESKY_CLAMP_READ_LIMITS",
@@ -58,7 +58,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/bluesky-mcp-server",
       "runtimeHint": "npx",
-      "version": "0.5.2",
+      "version": "0.6.0",
       "environmentVariables": [
         {
           "name": "MCP_TRANSPORT_TYPE",

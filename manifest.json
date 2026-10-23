@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.3",
   "name": "bluesky-mcp-server",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Search Bluesky posts and feeds; read profiles, threads, and trends. STDIO or Streamable HTTP.",
   "author": { "name": "cyanheads" },
   "repository": {

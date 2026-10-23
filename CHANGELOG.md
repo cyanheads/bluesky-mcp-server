@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.6.0](changelog/0.6.x/0.6.0.md) — 2026-10-22
+
+Feed discovery and richer Bluesky reads
+
 ## [0.5.2](changelog/0.5.x/0.5.2.md) — 2026-10-08
 
 Built on mcp-ts-core 0.13.14: tool errors carry a request id, numeric and boolean strings for number and boolean inputs are repaired before validation, error data no longer carries stack traces or request context, and Docker images install dependencies in a build-platform stage.

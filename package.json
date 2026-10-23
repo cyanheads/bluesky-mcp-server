@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/bluesky-mcp-server",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "mcpName": "io.github.cyanheads/bluesky-mcp-server",
   "description": "Search Bluesky posts and feeds; read profiles, threads, and trends. STDIO or Streamable HTTP.",
   "type": "module",
