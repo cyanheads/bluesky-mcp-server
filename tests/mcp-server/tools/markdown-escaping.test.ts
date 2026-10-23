@@ -13,6 +13,7 @@ import { Parser } from 'commonmark';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { bskyGetAuthorFeed } from '@/mcp-server/tools/definitions/bsky-get-author-feed.tool.js';
 import { bskyGetPostThread } from '@/mcp-server/tools/definitions/bsky-get-post-thread.tool.js';
+import { bskySearchFeeds } from '@/mcp-server/tools/definitions/bsky-search-feeds.tool.js';
 import { inlineUserText, quoteUserText } from '@/mcp-server/tools/post-format.js';
 import { initBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
@@ -289,6 +290,48 @@ function expectQuotesHoldAsData(markdown: string) {
     expect(parse(block.join('\n')).types.filter((t) => !LITERAL.has(t))).toEqual([]);
   }
 }
+
+describe('escaping through bsky_search_feeds', () => {
+  it.each(FRAMED_HOSTILE)('retains hostile catalog text %j on both surfaces', async (source) => {
+    const feedUri = 'at://did:plc:alice/app.bsky.feed.generator/science';
+    http.route({
+      match: (request) =>
+        new URL(request.url).pathname === '/xrpc/app.bsky.unspecced.getPopularFeedGenerators',
+      respond: () =>
+        Response.json({
+          feeds: [
+            {
+              uri: feedUri,
+              displayName: source,
+              description: source,
+              creator: { did: 'did:plc:alice', handle: 'alice.bsky.social', displayName: source },
+            },
+          ],
+          cursor: source,
+        }),
+    });
+    const result = await runToolContract(bskySearchFeeds, { query: 'science' });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({
+      feeds: [
+        { feedUri, displayName: source, description: source, creator: { displayName: source } },
+      ],
+      cursor: source,
+      truncated: true,
+    });
+    const text = textOf(result);
+    expectQuotesHoldAsData(text);
+    const parsed = parse(text);
+    expect(parsed.types.filter((type) => type === 'heading')).toHaveLength(1);
+    expect(parsed.types.filter((type) => type === 'link')).toHaveLength(1);
+    expect(parsed.types).not.toContain('html_inline');
+    expect(parsed.types).not.toContain('html_block');
+    expect(parsed.types).not.toContain('image');
+    expect(parsed.text).toContain(shownText(source));
+    expect(text).toContain('**Cursor:**');
+    expect(text).toContain('**Creator name:**');
+  });
+});
 
 describe('escaping through bsky_get_author_feed, a quoted post inside a post', () => {
   it('renders every level of quoted text as data and keeps structuredContent raw', async () => {

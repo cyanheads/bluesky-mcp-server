@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.cyanheads/bluesky-mcp-server",
-  "description": "Search posts, profiles, feeds, threads, and trending topics on Bluesky.",
+  "description": "Search Bluesky posts and feeds; read profiles, threads, and trends. STDIO or Streamable HTTP.",
   "repository": {
     "url": "https://github.com/cyanheads/bluesky-mcp-server",
     "source": "github"
@@ -21,6 +21,13 @@
       "runtimeHint": "npx",
       "version": "0.5.2",
       "environmentVariables": [
+        {
+          "name": "BLUESKY_CLAMP_READ_LIMITS",
+          "description": "Clamp oversized read limits with a notice; false restores rejection.",
+          "format": "boolean",
+          "isRequired": false,
+          "default": "true"
+        },
         {
           "name": "BLUESKY_IDENTIFIER",
           "description": "Handle, DID, or email of the Bluesky account post search runs as. Optional: without it and BLUESKY_APP_PASSWORD, bsky_search_posts is not offered, since Bluesky refuses search without a signed-in account. Use a dedicated account — search leaves out posts from accounts in a block relationship with it.",
@@ -58,6 +65,13 @@
           "description": "Selects the HTTP transport.",
           "format": "string",
           "value": "http"
+        },
+        {
+          "name": "BLUESKY_CLAMP_READ_LIMITS",
+          "description": "Clamp oversized read limits with a notice; false restores rejection.",
+          "format": "boolean",
+          "isRequired": false,
+          "default": "true"
         },
         {
           "name": "BLUESKY_IDENTIFIER",

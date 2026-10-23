@@ -3,6 +3,8 @@
  * @module services/bluesky/types
  */
 
+import type { PostFacet } from './post-facets.js';
+
 /** A Bluesky actor label (moderation / content warning). */
 export interface Label {
   cts?: string;
@@ -52,6 +54,7 @@ export type Embed =
        */
       cid: string;
       text?: string;
+      facets?: PostFacet[];
       authorHandle?: string;
       /**
        * The quoted post's own embeds, from `app.bsky.embed.record#viewRecord.embeds`. A quote of an
@@ -122,7 +125,17 @@ export interface VerificationState extends VerificationStatus {
   verifications: Verification[];
 }
 
-/** Public actor profile returned by getProfile / searchActors / etc. */
+/** An outbound button on a detailed profile, in the account's display order. */
+export interface ProfileLink {
+  cid: string;
+  icon?: string;
+  labels?: Label[];
+  title?: string;
+  uri: string;
+  url: string;
+}
+
+/** Public actor profile returned by getProfile. */
 export interface ActorProfile {
   avatar?: string;
   createdAt?: string;
@@ -134,6 +147,7 @@ export interface ActorProfile {
   handle: string;
   indexedAt?: string;
   labels?: Label[];
+  links?: ProfileLink[];
   /** AT-URI of pinned post, if present. */
   pinnedPostUri?: string;
   postsCount?: number;
@@ -148,7 +162,7 @@ export interface ActorProfile {
    */
   verification?: VerificationState;
   /**
-   * The one outbound link a profile carries in a field of its own, rather than inside the bio.
+   * The legacy website field, independent of the ordered profile links and biography.
    * `format: "uri"` in the lexicon, so it is a URL by construction.
    */
   website?: string;
@@ -158,7 +172,7 @@ export interface ActorProfile {
  * An account as the actor lists carry it (`searchActors`, and the follow graph's entries and
  * subject): the profile fields a `profileView` has, with verification narrowed to the two statuses.
  */
-export interface ActorSummary extends Omit<ActorProfile, 'verification'> {
+export interface ActorSummary extends Omit<ActorProfile, 'verification' | 'links'> {
   verification?: VerificationStatus;
 }
 
@@ -190,6 +204,7 @@ export interface PostView {
   cid: string;
   createdAt?: string;
   embed?: Embed;
+  facets?: PostFacet[];
   indexedAt?: string;
   labels?: Label[];
   likeCount?: number;
@@ -332,7 +347,7 @@ export interface FeedResult {
   posts: PostView[];
 }
 
-/** Result of getQuotes — the posts quoting one post, newest first. */
+/** Result of getQuotes — posts in provider order: latest newest-first or top by descending like count. */
 export interface QuotesResult {
   cursor?: string;
   posts: PostView[];
@@ -349,6 +364,21 @@ export interface QuotesResult {
 export interface SearchActorsResult {
   actors: ActorSummary[];
   cursor?: string;
+}
+
+/** A public feed generator listed in the provider's catalog, in provider order. */
+export interface CatalogFeed {
+  creator: { did: string; handle: string; displayName?: string };
+  description?: string;
+  displayName: string;
+  /** Generator AT-URI accepted directly by bsky_get_feed. */
+  feedUri: string;
+}
+
+/** One page from the unstable public feed-generator catalog. */
+export interface SearchFeedsResult {
+  cursor?: string;
+  feeds: CatalogFeed[];
 }
 
 /** Result of getFollowers / getFollows. */

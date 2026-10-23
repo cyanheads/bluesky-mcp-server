@@ -6,7 +6,7 @@
  * @module services/bluesky/bluesky-service
  */
 
-import type { Context } from '@cyanheads/mcp-ts-core';
+import { type Context, z } from '@cyanheads/mcp-ts-core';
 import {
   configurationError,
   forbidden,
@@ -26,6 +26,7 @@ import {
   parseFeedRef,
   parsePostRef,
 } from './at-syntax.js';
+import type { PostFacet } from './post-facets.js';
 import { type SearchCredentials, SearchSession } from './search-session.js';
 import type {
   ActorProfile,
@@ -38,9 +39,11 @@ import type {
   PostAuthor,
   PostThreadResult,
   PostView,
+  ProfileLink,
   QuotedRecordKind,
   QuotesResult,
   SearchActorsResult,
+  SearchFeedsResult,
   SearchPostsResult,
   ThreadGate,
   ThreadGateRule,
@@ -62,6 +65,23 @@ import {
 
 /** @internal Public Bluesky AppView — every read except post search goes here, unauthenticated. */
 const APPVIEW_URL = 'https://api.bsky.app';
+
+/** @internal The catalog's required generator identity and sparse author-supplied metadata. */
+const CatalogPageSchema = z.object({
+  feeds: z.array(
+    z.object({
+      uri: z.string(),
+      displayName: z.string(),
+      description: z.string().optional(),
+      creator: z.object({
+        did: z.string(),
+        handle: z.string(),
+        displayName: z.string().optional(),
+      }),
+    }),
+  ),
+  cursor: z.string().optional(),
+});
 
 // ---------------------------------------------------------------------------
 // Raw upstream response shapes
@@ -116,6 +136,7 @@ interface RawActorView {
 /** @internal Raw post record (lexicon fields). */
 interface RawPostRecord {
   createdAt?: string;
+  facets?: PostFacet[];
   reply?: { parent?: { uri?: string }; root?: { uri?: string } };
   text: string;
 }
@@ -143,7 +164,7 @@ interface RawViewRecord {
   /** The quoted post's own embeds — the same `$type`-tagged views as a post's top-level `embed`. */
   embeds?: RawEmbed[];
   uri?: string;
-  value?: { text?: string };
+  value?: { text?: string; facets?: PostFacet[] };
 }
 
 /** @internal Raw embed from AppView — $type discriminated. */
@@ -405,6 +426,7 @@ function normalizeQuote(
     cid: rec?.cid ?? '',
     ...(kind ? { recordKind: kind } : {}),
     ...(rec?.value?.text ? { text: rec.value.text } : {}),
+    ...(rec?.value?.facets !== undefined ? { facets: rec.value.facets } : {}),
     ...(rec?.author?.handle ? { authorHandle: rec.author.handle } : {}),
     ...(embeds.length ? { embeds } : {}),
     ...(media ? { media } : {}),
@@ -451,6 +473,7 @@ function normalizePost(r: RawPostView): PostView {
     uri: r.uri,
     cid: r.cid,
     text: r.record.text,
+    ...(r.record.facets !== undefined ? { facets: r.record.facets } : {}),
     author: normalizePostAuthor(r.author),
     ...(typeof r.replyCount === 'number' ? { replyCount: r.replyCount } : {}),
     ...(typeof r.repostCount === 'number' ? { repostCount: r.repostCount } : {}),
@@ -714,15 +737,19 @@ export class BlueskyService {
     url: string,
     operation: string,
     ctx: Context,
-    options: { headers?: Record<string, string>; mapError?: ErrorMapper | undefined } = {},
+    options: {
+      headers?: Record<string, string>;
+      mapError?: ErrorMapper | undefined;
+      deadlineMs?: number | undefined;
+    } = {},
   ): Promise<T> {
     return withRetry(
-      async () => {
+      async ({ signal }) => {
         let response: Response;
         try {
           response = await fetchWithTimeout(url, TIMEOUT_MS, ctx, {
             headers: { 'User-Agent': USER_AGENT, Accept: 'application/json', ...options.headers },
-            signal: ctx.signal,
+            signal,
           });
         } catch (err) {
           if (!(err instanceof McpError)) throw err;
@@ -741,7 +768,14 @@ export class BlueskyService {
           throw serviceUnavailable('Bluesky API returned unparseable response.');
         }
       },
-      { operation, context: ctx, baseDelayMs: 500, signal: ctx.signal, isTransient },
+      {
+        operation,
+        context: ctx,
+        baseDelayMs: 500,
+        signal: ctx.signal,
+        isTransient,
+        ...(options.deadlineMs !== undefined ? { deadlineMs: options.deadlineMs } : {}),
+      },
     );
   }
 
@@ -751,6 +785,7 @@ export class BlueskyService {
     params: XrpcParams,
     ctx: Context,
     mapError?: ErrorMapper,
+    deadlineMs?: number,
   ): Promise<T> {
     return this.fetchJson<T>(
       xrpcUrl(APPVIEW_URL, lexicon, params),
@@ -758,6 +793,7 @@ export class BlueskyService {
       ctx,
       {
         mapError,
+        deadlineMs,
       },
     );
   }
@@ -841,10 +877,72 @@ export class BlueskyService {
     };
   }
 
+  /** Search provider catalog metadata, never post text; the upstream unspecced API may change. */
+  async searchFeeds(
+    params: { query: string; limit: number; cursor?: string },
+    ctx: Context,
+  ): Promise<SearchFeedsResult> {
+    const raw = CatalogPageSchema.parse(
+      await this.get<unknown>(
+        'app.bsky.unspecced.getPopularFeedGenerators',
+        params,
+        ctx,
+        (err) =>
+          [404, 410].includes(httpStatus(err) ?? 0)
+            ? serviceUnavailable('The public Bluesky feed catalog is unavailable.', {
+                reason: 'catalog_unavailable',
+              })
+            : undefined,
+        45_000,
+      ),
+    );
+    return {
+      feeds: raw.feeds.map((feed) => ({
+        feedUri: feed.uri,
+        displayName: feed.displayName,
+        ...(feed.description !== undefined ? { description: feed.description } : {}),
+        creator: {
+          did: feed.creator.did,
+          handle: feed.creator.handle,
+          ...(feed.creator.displayName !== undefined
+            ? { displayName: feed.creator.displayName }
+            : {}),
+        },
+      })),
+      ...(raw.cursor ? { cursor: raw.cursor } : {}),
+    };
+  }
+
   /** Fetch an actor's public profile. */
   async getProfile(actor: string, ctx: Context): Promise<ActorProfile> {
-    const raw = await this.get<RawActorView>('app.bsky.actor.getProfile', { actor }, ctx);
-    return normalizeActor(raw);
+    const raw = await this.get<RawActorView & { links?: ProfileLink[] }>(
+      'app.bsky.actor.getProfile',
+      { actor },
+      ctx,
+    );
+    return {
+      ...normalizeActor(raw),
+      ...(raw.links !== undefined
+        ? {
+            links: raw.links.map((link) => ({
+              uri: link.uri,
+              cid: link.cid,
+              url: link.url,
+              ...(link.title !== undefined ? { title: link.title } : {}),
+              ...(link.icon !== undefined ? { icon: link.icon } : {}),
+              ...(link.labels !== undefined
+                ? {
+                    labels: link.labels.map((label) => ({
+                      val: label.val,
+                      ...(label.src !== undefined ? { src: label.src } : {}),
+                      ...(label.cts !== undefined ? { cts: label.cts } : {}),
+                    })),
+                  }
+                : {}),
+            })),
+          }
+        : {}),
+    };
   }
 
   /**
@@ -940,7 +1038,7 @@ export class BlueskyService {
   }
 
   /**
-   * The posts quoting one post, newest first, from `app.bsky.feed.getQuotes`. That endpoint answers
+   * The posts quoting one post in provider order: latest (newest first) or top (descending like count). That endpoint answers
    * a handle authority, a missing post, and a post nobody quoted alike with 200 and an empty list,
    * so a handle is resolved to its DID first, and an empty *first* page is checked against
    * `app.bsky.feed.getPosts` — the one extra request, spent only there — to tell a missing post
@@ -950,6 +1048,7 @@ export class BlueskyService {
   async getQuotes(
     params: {
       uri: string;
+      sort?: 'latest' | 'top';
       limit?: number;
       cursor?: string;
       /** Bluesky already answered a request carrying `cursor` — see {@link cursorError}. */
@@ -970,6 +1069,7 @@ export class BlueskyService {
       lexicon,
       {
         uri,
+        sort: params.sort ?? 'latest',
         limit: params.limit ?? 25,
         ...(params.cursor ? { cursor: params.cursor } : {}),
       },

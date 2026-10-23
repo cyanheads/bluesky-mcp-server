@@ -12,6 +12,7 @@
 import { type ContentBlock, tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { renderPostLines } from '@/mcp-server/tools/post-format.js';
+import { clampReadLimit, composeNotices, readLimitSchema } from '@/mcp-server/tools/read-limits.js';
 import {
   applyEnrichment,
   type EnrichmentValue,
@@ -349,7 +350,7 @@ function cutThread(target: ThreadPost, kept: ReadonlySet<ThreadPost>) {
  * them as the uncut response reports them, so its survey is the uncut one with `nodes` set to the
  * posts kept. The budget pair describes the posts left out.
  */
-function threadEnrichment(survey: ThreadSurvey, cut?: ThreadBudgetCut) {
+function threadEnrichment(survey: ThreadSurvey, cut?: ThreadBudgetCut, clampNotice?: string) {
   const enrichment: Record<string, EnrichmentValue> = { totalReturned: survey.nodes };
   if (survey.unreturnedReplies > 0) {
     enrichment.truncated = true;
@@ -361,7 +362,9 @@ function threadEnrichment(survey: ThreadSurvey, cut?: ThreadBudgetCut) {
     enrichment.budgetOmitted = cut.omitted;
   }
   if (survey.unreturnedReplies > 0 || survey.parentChainTopUri || cut) {
-    enrichment.notice = truncationNotice(survey, cut);
+    enrichment.notice = composeNotices(clampNotice, truncationNotice(survey, cut));
+  } else if (clampNotice) {
+    enrichment.notice = clampNotice;
   }
   return enrichment;
 }
@@ -412,7 +415,7 @@ function gateAudience(gate: ThreadGateView): string {
 }
 
 /**
- * Thread node schema — uses passthrough so all post fields (uri, cid, text, author, engagement counts,
+ * Thread node schema — uses passthrough so all post fields (uri, cid, text, facets, author, engagement counts,
  * createdAt, labels, embed, replyToUri, replyRootUri) and thread structure (parent, replies, truncated,
  * truncationReason, unreturnedReplies, notFound, blocked) flow through structuredContent without
  * format-parity constraints on the recursive tree shape.
@@ -427,7 +430,7 @@ const ThreadNodeSchema: z.ZodType<unknown> = z
   .passthrough()
   .describe(
     'The conversation thread rooted at the requested post — a recursive node tree. Each node has: ' +
-      'post: { uri, cid, text, author: { did, handle, displayName?, avatar?, verification? }, replyCount?, repostCount?, likeCount?, quoteCount?, indexedAt?, createdAt?, labels?: [{ val, src?, cts? }], embed?, replyToUri?, replyRootUri? }. ' +
+      'post: { uri, cid, text, facets?, author: { did, handle, displayName?, avatar?, verification? }, replyCount?, repostCount?, likeCount?, quoteCount?, indexedAt?, createdAt?, labels?: [{ val, src?, cts? }], embed?, replyToUri?, replyRootUri? }. facets: [{ index: { byteStart, byteEnd }, features: [{ $type, uri? (link), did? (mention), tag? }] }] — UTF-8 byte ranges with exclusive ends on the unchanged text, including quoted record facets under embed. ' +
       'author.verification: { verifiedStatus, trustedVerifierStatus } — whether a trusted verifier verified the author and whether the author is one, each "valid", "invalid" (verified once, no longer holds), or "none", passed through as Bluesky sends it; absent when Bluesky sent none. ' +
       'quoteCount counts quote posts, which are not part of the thread — read them with bsky_get_post_quotes. ' +
       'parent?: parent thread node. replies?: array of child thread nodes. ' +
@@ -588,26 +591,18 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
           'The post\'s bsky.app page, e.g. "https://bsky.app/profile/bsky.app/post/abc123", is accepted and ' +
           'read as the AT-URI it names; a trailing "/", "?…", or "#…" on it is ignored.',
       ),
-    depth: z
-      .number()
-      .int()
-      .min(0)
-      .max(MAX_REPLY_DEPTH)
+    depth: readLimitSchema(MAX_REPLY_DEPTH, 0)
       .default(6)
       .describe(
-        `How many levels of replies to include below the target post. Default 6, maximum ${MAX_REPLY_DEPTH} — ` +
+        `How many levels of replies to include below the target post. Default 6; values above ${MAX_REPLY_DEPTH} are clamped with notice unless strict limits are configured — ` +
           `Bluesky itself returns no more than ${MAX_REPLY_DEPTH} levels however deep the request. ` +
           'Depth does not widen the reply tree either: the per-post reply limit is independent of it. ' +
           "To read below the deepest level returned, fetch an edge node's AT-URI as its own thread.",
       ),
-    parent_height: z
-      .number()
-      .int()
-      .min(0)
-      .max(MAX_PARENT_HEIGHT)
+    parent_height: readLimitSchema(MAX_PARENT_HEIGHT, 0)
       .default(80)
       .describe(
-        `How many parent posts to include in the parent chain above the target post. Default 80, maximum ${MAX_PARENT_HEIGHT}. ` +
+        `How many parent posts to include in the parent chain above the target post. Default 80; values above ${MAX_PARENT_HEIGHT} are clamped with notice unless strict limits are configured. ` +
           'The chain is returned level for level up to this many posts and stops early at the conversation root. ' +
           'When it stops at this bound instead, the topmost node carries "parentChainTruncated: true" — fetch ' +
           "that node's AT-URI as its own thread to read above it. Set to 0 to skip the chain entirely; a reply " +
@@ -698,6 +693,21 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
   ],
 
   async handler(input, ctx) {
+    const depth = clampReadLimit(
+      ctx,
+      'bsky_get_post_thread',
+      'depth',
+      input.depth,
+      MAX_REPLY_DEPTH,
+    );
+    const parentHeight = clampReadLimit(
+      ctx,
+      'bsky_get_post_thread',
+      'parent_height',
+      input.parent_height,
+      MAX_PARENT_HEIGHT,
+    );
+    const clampNotice = composeNotices(depth.notice, parentHeight.notice);
     /** A bsky.app post URL becomes its AT-URI; the handle it carries is kept, since the AppView resolves one. */
     const uri = atUriFromRef(input.uri);
     ctx.log.info('Fetching Bluesky post thread', { uri, depth: input.depth });
@@ -716,7 +726,7 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
     let result: PostThreadResult;
     try {
       result = await getBlueskyService().getPostThread(
-        { uri, depth: input.depth, parentHeight: input.parent_height },
+        { uri, depth: depth.applied, parentHeight: parentHeight.applied },
         ctx,
       );
     } catch (err) {
@@ -736,7 +746,7 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
     const measure = (response: PostThreadResult, enrichment: Record<string, EnrichmentValue>) =>
       measureResponse(ThreadOutput.parse(response), formatThread, enrichment);
     const survey = surveyThread(result.thread, gate);
-    const whole = threadEnrichment(survey);
+    const whole = threadEnrichment(survey, undefined, clampNotice);
     const order = budgetOrder(result.thread);
     if (order.length === 1 || fitsBudget(measure(result, whole))) {
       applyEnrichment(ctx, whole);
@@ -762,6 +772,7 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
           omittedDirect: cut.omittedDirect,
           omittedParents: cut.omittedParents,
         },
+        clampNotice,
       );
       return { response, enrichment };
     };

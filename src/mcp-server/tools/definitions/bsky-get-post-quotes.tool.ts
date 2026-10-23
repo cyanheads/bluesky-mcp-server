@@ -1,5 +1,5 @@
 /**
- * @fileoverview Read the quote posts behind a Bluesky post's quoteCount — newest first, without
+ * @fileoverview Read the quote posts behind a Bluesky post's quoteCount in provider order, without
  * credentials. Every result quotes the same post, so each result's embed is cut back to the address
  * of that post and the media the quoting post attached; the queried post itself is not restated.
  * @module mcp-server/tools/definitions/bsky-get-post-quotes
@@ -8,6 +8,7 @@
 import { type ContentBlock, tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { renderPostLines } from '@/mcp-server/tools/post-format.js';
+import { clampReadLimit, readLimitSchema } from '@/mcp-server/tools/read-limits.js';
 import { pageEnrichment, respondWithinBudget } from '@/mcp-server/tools/response-budget.js';
 import {
   atUriFromRef,
@@ -15,6 +16,7 @@ import {
   POST_URI_REF_REGEX,
 } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
+import { FacetSchema } from '@/services/bluesky/post-facets.js';
 
 /**
  * Embed uses passthrough so the normalized union flows through structuredContent whole; the fields
@@ -32,7 +34,7 @@ const EmbedSchema = z
       "quoting post attached alongside the quote. The queried post's own text, author, and attachments " +
       'are not restated on each result. Other shapes, should an embed point elsewhere: images: ' +
       '{ images: [{ url, alt }] }; external: { uri, title, description }; record: { uri, cid, text?, ' +
-      'authorHandle?, embeds?, media?, omittedEmbeds?, recordKind? }; video: { playlist?, thumbnail?, ' +
+      'facets?, authorHandle?, embeds?, media?, omittedEmbeds?, recordKind? } — facets retain UTF-8 byte ranges and full link, mention, or tag features; video: { playlist?, thumbnail?, ' +
       'presentation? }; unknown: { raw }.',
   );
 
@@ -46,6 +48,12 @@ const PostSchema = z
       ),
     cid: z.string().describe('Content Identifier (CID) of the quote post record.'),
     text: z.string().describe('Full text of the quote post — the commentary on the queried post.'),
+    facets: z
+      .array(FacetSchema)
+      .optional()
+      .describe(
+        'Rich-text facets on the unchanged commentary, with UTF-8 byte ranges and full link, mention, or tag values.',
+      ),
     author: z
       .object({
         did: z
@@ -130,7 +138,10 @@ const QuotesOutput = z.object({
       'AT-URI of the post whose quotes these are, in DID form — the form Bluesky was asked in, whatever ' +
         'form the input took.',
     ),
-  posts: z.array(PostSchema).describe('Posts quoting the queried post, newest first.'),
+  sort: z
+    .enum(['latest', 'top'])
+    .describe('Applied provider ordering: latest is newest first; top is descending like count.'),
+  posts: z.array(PostSchema).describe('Posts quoting the queried post, in the applied sort order.'),
   cursor: z
     .string()
     .optional()
@@ -139,7 +150,7 @@ const QuotesOutput = z.object({
 
 /** Module-level so the handler can measure the rendered page against the response budget. */
 function formatQuotes(result: z.infer<typeof QuotesOutput>): ContentBlock[] {
-  const header = `## Quotes of \`${result.uri}\``;
+  const header = `## Quotes of \`${result.uri}\`\nSort: ${result.sort}`;
   const footer = result.cursor ? `\n\n---\n*cursor: \`${result.cursor}\`*` : '';
   if (result.posts.length === 0) {
     return [{ type: 'text', text: `${header}\n\nNo quote posts on this page.${footer}` }];
@@ -154,7 +165,7 @@ export const bskyGetPostQuotes = tool('bsky_get_post_quotes', {
   title: 'Get Bluesky Post Quotes',
   description:
     'Read the quote posts behind a Bluesky post\'s "quoteCount" — the posts that embed it with ' +
-    'commentary of their own, newest first. On Bluesky this is where much of the reaction to a post ' +
+    'commentary of their own. Sort latest (default) is newest first; top is descending like count as ordered by Bluesky. On Bluesky this is where much of the reaction to a post ' +
     "lives; bsky_get_post_thread returns replies only. Accepts the post's AT-URI " +
     '(at://<handle-or-did>/app.bsky.feed.post/<rkey>) from the "uri" field of any returned post, or its ' +
     'bsky.app URL (https://bsky.app/profile/<handle-or-did>/post/<rkey>); a handle costs one extra ' +
@@ -174,14 +185,16 @@ export const bskyGetPostQuotes = tool('bsky_get_post_quotes', {
           '"https://bsky.app/profile/bsky.app/post/3l6oveex3ii2l"; a trailing "/", "?…", or "#…" on the URL is ' +
           'ignored. Posts only — a feed, profile, or list address is rejected.',
       ),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(100)
+    sort: z
+      .enum(['latest', 'top'])
+      .default('latest')
+      .describe(
+        'Provider ordering: latest is newest first (default); top is descending like count. Reuse cursors with the same post and sort.',
+      ),
+    limit: readLimitSchema(100)
       .default(25)
       .describe(
-        'Maximum number of quote posts to return (1–100). Default 25. Pages often hold fewer than the ' +
+        'Maximum number of quote posts to return; values above 100 are clamped with notice unless strict limits are configured. Default 25. Pages often hold fewer than the ' +
           'limit and still continue — follow the cursor, not the count. A page that would pass the ' +
           '48,000-byte response budget comes back with fewer quotes and "budgetCapped: true"; its cursor ' +
           'continues from the first quote it left out.',
@@ -191,7 +204,7 @@ export const bskyGetPostQuotes = tool('bsky_get_post_quotes', {
       .max(2048)
       .optional()
       .describe(
-        'Opaque pagination cursor from a previous response for the same post, passed back unchanged. ' +
+        'Opaque pagination cursor from a previous response for the same post and sort, passed back unchanged. ' +
           'Omit for the first page.',
       ),
   }),
@@ -240,31 +253,38 @@ export const bskyGetPostQuotes = tool('bsky_get_post_quotes', {
       code: JsonRpcErrorCode.ValidationError,
       when: 'Bluesky could not continue from the cursor the request carried — it answers a cursor it cannot decode with HTTP 500.',
       recovery:
-        'Drop the cursor to start again from the first page, or pass the cursor exactly as the previous response for this same post returned it.',
+        'Drop the cursor to start again from the first page, or pass the cursor exactly as the previous response for this same post and sort returned it.',
       thrownBy: 'service',
     },
   ],
 
   async handler(input, ctx) {
+    const limit = clampReadLimit(ctx, 'bsky_get_post_quotes', 'limit', input.limit, 100);
     const uri = atUriFromRef(input.uri);
     ctx.log.info('Fetching Bluesky post quotes', { uri, limit: input.limit });
     /** `cursorAccepted` on a re-request: Bluesky just answered this cursor, so a 500 is not about it. */
     const fetchPage = (postUri: string, limit: number, cursorAccepted = false) =>
       getBlueskyService().getQuotes(
-        { uri: postUri, limit, ...(input.cursor ? { cursor: input.cursor, cursorAccepted } : {}) },
+        {
+          uri: postUri,
+          sort: input.sort,
+          limit,
+          ...(input.cursor ? { cursor: input.cursor, cursorAccepted } : {}),
+        },
         ctx,
       );
 
-    const first = await fetchPage(uri, input.limit);
+    const first = await fetchPage(uri, limit.applied);
     return respondWithinBudget(ctx, first, {
       count: (page) => page.posts.length,
-      limit: input.limit,
+      limit: limit.applied,
       slice: (page, kept) => ({ ...page, posts: page.posts.slice(0, kept) }),
       /** The DID form the first page resolved, so a handle is looked up once per call. */
       refetch: (limit) => fetchPage(first.uri, limit, true),
       respond: (page, requested) => ({
         output: {
           uri: page.uri,
+          sort: input.sort,
           posts: page.posts,
           ...(page.cursor ? { cursor: page.cursor } : {}),
         },
@@ -275,10 +295,11 @@ export const bskyGetPostQuotes = tool('bsky_get_post_quotes', {
         enrichment: pageEnrichment({
           shown: page.posts.length,
           cursor: page.cursor,
-          limit: input.limit,
+          limit: limit.applied,
+          clampNotice: limit.notice,
           requested,
           noun: 'quotes',
-          more: 'More quotes exist — pass the returned cursor to fetch the next page.',
+          more: 'More quotes exist — pass the returned cursor with the same post and sort to fetch the next page.',
           empty: input.cursor
             ? 'No more quotes — the previous page was the last.'
             : page.quoteCount

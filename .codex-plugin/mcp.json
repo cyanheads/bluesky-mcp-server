@@ -5,6 +5,6 @@
     "env": {
       "MCP_TRANSPORT_TYPE": "stdio"
     },
-    "env_vars": ["BLUESKY_IDENTIFIER", "BLUESKY_APP_PASSWORD"]
+    "env_vars": ["BLUESKY_IDENTIFIER", "BLUESKY_APP_PASSWORD", "BLUESKY_CLAMP_READ_LIMITS"]
   }
 }

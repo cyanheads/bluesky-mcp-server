@@ -1,7 +1,7 @@
 {
   "name": "bluesky-mcp-server",
   "version": "0.5.2",
-  "description": "Search posts, profiles, feeds, threads, and trending topics on Bluesky via MCP. STDIO or Streamable HTTP.",
+  "description": "Search Bluesky posts and feeds; read profiles, threads, and trends. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads",
     "email": "casey@caseyjhand.com",
@@ -14,8 +14,8 @@
   "mcpServers": "./.codex-plugin/mcp.json",
   "interface": {
     "displayName": "bluesky-mcp-server",
-    "shortDescription": "Search posts, profiles, feeds, threads, and trending topics on Bluesky via MCP. STDIO or Streamable HTTP.",
-    "longDescription": "bluesky-mcp-server gives agents read-only access to Bluesky over the AT Protocol AppView. Without any credential it exposes actor profile lookup by handle or DID, trending topics and the feeds behind them, custom feeds by AT-URI or bsky.app link, author feeds, conversation threads by AT-URI, actor discovery, and follower and following graph edges, plus a bsky://profile/{actor} resource. Full-text post search, which Bluesky serves only to a signed-in account, is added when you set BLUESKY_IDENTIFIER and BLUESKY_APP_PASSWORD. Built on @cyanheads/mcp-ts-core, it runs over STDIO for local clients or Streamable HTTP for hosted deployments.",
+    "shortDescription": "Search Bluesky posts and feeds; read profiles, threads, and trends. STDIO or Streamable HTTP.",
+    "longDescription": "bluesky-mcp-server gives agents read-only access to Bluesky over the AT Protocol AppView. Without any credential it exposes actor profile lookup by handle or DID, feed catalog metadata search, trending topics and the feeds behind them, custom feeds by AT-URI or bsky.app link, author feeds, conversation threads by AT-URI, actor discovery, and follower and following graph edges, plus a bsky://profile/{actor} resource. Feed catalog search uses an unstable upstream endpoint and returns generator URIs for reading posts. Full-text post search, which Bluesky serves only to a signed-in account, is added when you set BLUESKY_IDENTIFIER and BLUESKY_APP_PASSWORD. Built on @cyanheads/mcp-ts-core, it runs over STDIO for local clients or Streamable HTTP for hosted deployments.",
     "developerName": "cyanheads",
     "category": "social",
     "capabilities": ["Read"],

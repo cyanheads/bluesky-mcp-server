@@ -1,8 +1,10 @@
-# Bluesky MCP Server — Design
+# bluesky-mcp-server — Design
 
 ## MCP Surface
 
 ### Tools
+
+Ten read-only tools; nine are keyless. Only post search requires the optional app-password pair. Numeric caps below are the applied upstream limits: oversized requests clamp by default, while `BLUESKY_CLAMP_READ_LIMITS=false` restores rejection.
 
 | Name | Description | Key Inputs | Annotations |
 |:-----|:------------|:-----------|:------------|
@@ -11,8 +13,9 @@
 | `bsky_get_feed` | Read the posts a feed generator serves — a trend's feed, Discover, a feed quoted in a post, or any custom feed — in the order it ranks them. Pinned items carry `pinned: true`, reposts `repostedBy`/`repostedAt`. Always unauthenticated (decision 22). | `feed` (generator AT-URI or bsky.app feed URL, handle or DID owner, required), `limit` (≤100, default 25), `cursor` | `readOnlyHint: true`, `openWorldHint: true` |
 | `bsky_get_author_feed` | A user's recent feed ordered newest-first — their own posts and their reposts. Filter by post type to exclude replies, restrict to the actor's own media or video posts, or take everything; the three non-media filters include reposts, which carry `repostedBy`/`repostedAt`, and the two media filters return none. `include_pins` adds the profile's pinned post, marked `pinned: true`, on the first page. Enrichment reports the `originalPosts` / `reposts` split of the page, since `limit` counts both. Returns posts with full text, engagement, embeds, and AT-URIs for thread drilling. | `actor` (handle or DID, also `@handle` or a bsky.app profile URL, required), `filter` (posts\_with\_replies\|posts\_no\_replies\|posts\_with\_media\|posts\_and\_author\_threads\|posts\_with\_video), `include_pins` (default false), `limit`, `cursor` | `readOnlyHint: true` |
 | `bsky_get_post_thread` | Fetch the conversation for a post by AT-URI — the parent chain upward and the reply tree downward. Useful for reading a discussion from any entry point. Returns root post, parent chain, and nested replies with per-post author and engagement data, the author's reply gate when one is set, and both ways the response falls short: per-node `truncated` / `unreturnedReplies` / `truncationReason` for the reply tree, `parentChainTruncated` on the topmost parent when the chain was cut, and a thread-wide total in enrichment. Over the 48,000-byte response budget it is cut between whole posts, with the frontier marked by `budgetOmittedReplyUris` / `budgetOmittedReplies` / `budgetOmittedParents` (decision 32). Replies only — quotes are `bsky_get_post_quotes`. | `uri` (AT-URI matching `at://<handle-or-did>/<collection>/<rkey>`, or a bsky.app post URL, required — obtain from the `uri` field of any returned post), `depth` (reply tree depth, default 6, max 10), `parent_height` (parent chain height, default 80, max 100) | `readOnlyHint: true` |
-| `bsky_get_post_quotes` | The quote posts behind a post's `quoteCount`, newest first, in the shared post shape. Each result's embed is cut back to the queried post's address and the quoting post's own media (decision 27). | `uri` (post AT-URI or bsky.app post URL, required), `limit` (≤100, default 25), `cursor` | `readOnlyHint: true`, `openWorldHint: true` |
+| `bsky_get_post_quotes` | The quote posts behind a post's `quoteCount`, in provider order: latest newest-first or top by descending like count. Each result's embed is cut back to the queried post's address and the quoting post's own media (decision 27). | `uri` (post AT-URI or bsky.app post URL, required), `sort` (latest, default, or top), `limit` (applied cap 100, default 25), `cursor` (same post and sort) | `readOnlyHint: true`, `openWorldHint: true` |
 | `bsky_search_actors` | Find Bluesky accounts by name or handle fragment. Returns ranked profiles (handle, DID, displayName, description, pronouns when set, verification statuses) — counts, website, and who verified an account are `bsky_get_profile`'s (decisions 25, 31). Use before `bsky_get_profile` or `bsky_get_author_feed` when you have a name but not a confirmed handle. | `query` (required), `limit`, `cursor` | `readOnlyHint: true` |
+| `bsky_search_feeds` | Search provider feed catalog names and descriptions, not post text. Returns generator `feedUri`, display name, optional description, and creator DID/handle/display name in provider order. Pass a feedUri to `bsky_get_feed`; the upstream unspecced catalog is unstable. | `query` (required), `limit` (applied cap 100, default 25), `cursor` (opaque, same query) | `readOnlyHint: true`, `openWorldHint: true` |
 | `bsky_get_follows` | Fetch the social graph edges for an account — who they follow or who follows them. Returns paginated profiles (handle, DID, displayName, description, pronouns when set, verification statuses) plus the subject's profile summary — counts, website, and who verified an account are `bsky_get_profile`'s (decisions 25, 31). `sort: top` asks for Bluesky's own ranking of prominent accounts instead of the most recent follows (decision 30). | `actor` (handle or DID, also `@handle` or a bsky.app profile URL, required), `direction` (followers\|following, required), `sort` (latest\|top, omitted sends none), `limit`, `cursor` | `readOnlyHint: true` |
 | `bsky_get_trending` | Fetch real-time trending topics on Bluesky. Returns topics with display name, Bluesky's one-sentence story summary, post count, category (politics, sports, pop-culture, etc.), status (e.g. hot, cooling, stale), start time, the representative accounts driving each topic, and `feedUri` — the AT-URI of the feed that collects the trend's posts. Entry point for "what is Bluesky talking about right now" — pass a `feedUri` to `bsky_get_feed` to drill into a trend (decision 23). | `limit` (default 10, max 25 — Bluesky's own maximum) | `readOnlyHint: true`, `openWorldHint: true` |
 
@@ -30,26 +33,28 @@ None for this launch. The tool surface is self-contained and goal-driven; no rec
 
 ## Overview
 
-Bluesky MCP Server exposes the AT Protocol AppView as a read-only MCP surface — actor profiles, trending topics and the feeds behind them, custom feeds, author feeds, conversation threads, and social graph edges without authentication, plus full-text post search when an app password is configured. The primary API is `https://api.bsky.app/xrpc/` (the keyless public AppView); post search goes through the configured account's PDS. Post data is identified by AT-URIs; accounts by handle or DID. The server is designed for social listening, trend analysis, journalist/researcher workflows, and any agent that needs "what is Bluesky saying about X."
+bluesky-mcp-server exposes the AT Protocol AppView as a read-only MCP surface — actor profiles, feed catalog search, trending topics and the feeds behind them, custom feeds, author feeds, conversation threads, and social graph edges without authentication, plus full-text post search when an app password is configured. The primary API is `https://api.bsky.app/xrpc/` (the keyless public AppView); post search goes through the configured account's PDS. Post data is identified by AT-URIs; accounts by handle or DID. The server supports social listening, trend analysis, and journalist/researcher workflows.
 
 ---
 
 ## Requirements
 
-- **Public reads by default** — eight of the nine tools operate against `api.bsky.app` with no credentials
+- **Public reads by default** — nine of the ten tools operate against `api.bsky.app` with no credentials
 - **No authentication required** at runtime for the core surface; no env vars required for launch
 - Full-text post search with author, mention, language, tag, domain, URL, date, and sort filters, behind an optional app password (Bluesky refuses search without a signed-in account)
 - Custom and trending feeds readable by AT-URI or bsky.app URL
-- Profile resolution (handle ↔ DID, bio, counts, avatar, labels)
+- Profile resolution (handle ↔ DID, bio, counts, avatar, labels, and ordered profile links)
 - Author feeds filtered by post type
 - Thread traversal by AT-URI (parent chain + reply tree)
 - The quote posts behind a post's `quoteCount`
 - Identifiers accepted as a caller shares them: `@handle`, and bsky.app profile, post, and feed URLs
 - Actor discovery by name/handle fragment
+- Feed discovery by provider catalog metadata, followed by reading a returned generator URI
 - Social graph edges (followers/following), paginated
 - AT Protocol identifier types exposed clearly: handle, DID, AT-URI
 - Moderation labels surfaced on posts and profiles — not filtered silently
 - Embeds (images, external link cards, quoted posts and their own attachments) normalized into a clean structure
+- Optional rich-text facets retained separately from unchanged post and quoted text: inclusive/exclusive UTF-8 byte ranges and full link URIs, mention DIDs, or tags. Metadata preserves destinations that abbreviated display text cannot recover; no byte offsets are applied as JavaScript string indices. The feature union stays open to upstream extensions, which render as literal metadata rather than rejecting the surrounding post; known variants retain typed validation. Facets participate in both response budgets and follow the existing embed-depth bound. Queried-target reduction removes target facets with the restated text, keeping quoting-post and retained-media facets.
 - Pagination via opaque cursors on all list/search tools
 - Post-returning responses held to 48,000 bytes per surface, cut only between whole posts (decision 32)
 - Rate limit: `api.bsky.app` is unauthenticated — service layer must use backoff and a descriptive `User-Agent`
@@ -66,7 +71,7 @@ Single service. All tools call through `getBlueskyService()`. Service holds an H
 - Base URL: `https://api.bsky.app` for every read but post search
 - `User-Agent: @cyanheads/bluesky-mcp-server/<version>`
 - Retry: `withRetry`, base delay 500ms (rate-limit recovery), max 3 retries — skipped for a failure already mapped onto a tool's declared reason, and never used for a login or refresh
-- Timeout: 15s via `fetchWithTimeout`
+- Timeout: 15s per attempt via `fetchWithTimeout`; catalog search also shares a 45s deadline across retries, backoff, and body reads
 - Error data scrubbed of HTML: an edge block page captured as the error body is dropped, leaving the status
 
 ---
@@ -77,6 +82,9 @@ Single service. All tools call through `getBlueskyService()`. Service holds an H
 |:--------|:---------|:------------|
 | `BLUESKY_IDENTIFIER` | No | Handle, DID, or email of the account post search runs as |
 | `BLUESKY_APP_PASSWORD` | No | App password for that account |
+| `BLUESKY_CLAMP_READ_LIMITS` | No | Defaults to `true`; clamp oversized read requests to existing caps with disclosure. `false` restores rejecting schemas and advertised maxima. |
+
+The clamp flag is parsed independently when input schemas are built, so declaring a tool does not validate the credential pair.
 
 `src/config/server-config.ts` parses the pair with `parseEnvConfig`, so a blank value — what an MCPB or plugin host forwards for an option left empty — reads as unset. Both set enables post search; neither leaves it off; one without the other fails startup with a `ConfigurationError` that names the missing variable, since half a login cannot enable search and quietly leaving it off would hide the typo. The pair is read before `createApp()`, because the tool list depends on it; a failed read builds the list with search off and is raised again from `setup()`, so it reaches the framework's configuration-error banner instead of a raw stack. The base URLs and User-Agent are hardcoded in the service.
 
@@ -84,7 +92,7 @@ Single service. All tools call through `getBlueskyService()`. Service holds an H
 
 ## Implementation Order
 
-1. **BlueskyService** — HTTP client with retry/timeout, `User-Agent`, base URL. Methods: `searchPosts`, `getProfile`, `getAuthorFeed`, `getFeed`, `getPostThread`, `getQuotes`, `searchActors`, `getFollowers`, `getFollows`, `getTrends`.
+1. **BlueskyService** — HTTP client with retry/timeout, `User-Agent`, base URL. Methods: `searchPosts`, `getProfile`, `getAuthorFeed`, `getFeed`, `getPostThread`, `getQuotes`, `searchActors`, `searchFeeds`, `getFollowers`, `getFollows`, `getTrends`.
 2. **`bsky_get_profile`** — simplest single-entity GET; validates the service layer.
 3. **`bsky_search_actors`** — second simplest; same actor shape as profile.
 4. **`bsky_get_trending`** — single GET, simple flat result; no cursor needed.
@@ -111,6 +119,7 @@ Each step is independently testable.
 | Handle | resolve to DID (feed owner) | `com.atproto.identity.resolveHandle` |
 | Feed | get author feed (filtered) | `app.bsky.feed.getAuthorFeed` |
 | Feed generator | get its posts | `app.bsky.feed.getFeed` |
+| Feed catalog | search names and descriptions | `app.bsky.unspecced.getPopularFeedGenerators` |
 | Thread | get by AT-URI (depth + parent) | `app.bsky.feed.getPostThread` |
 | Quote posts | get the posts quoting a post; check a post exists | `app.bsky.feed.getQuotes`, `app.bsky.feed.getPosts` |
 | Actor | search by name/query | `app.bsky.actor.searchActors` |
@@ -175,6 +184,7 @@ The `thread` / `parent` / `replies` slots of `app.bsky.feed.getPostThread` are o
 A present key with a short array is reported as `'unavailable'`, deliberately naming no cause. `replyCount` is a broader number than "replies that exist and were held back": walking 748 live threads (94,366 nodes) found 1,930 shortfall nodes carrying a `replyCount` of 3 or less, and 1,244 reporting `replyCount: 1` beside an empty `replies` array — far below the 166–200 replies the per-post limit actually returns on high-fan-out nodes. Re-rooting those nodes reproduces the empty array, `app.bsky.unspecced.getPostThreadV2` answers `hasOtherReplies: false`, and `getPostThreadOtherV2` returns nothing: the AppView's own accounting says nothing is being held back, so the counter is simply still including replies that have left the index — deleted, from a departed account, hidden by the author, or filtered by moderation. Naming the per-post limit as the cause would have published a fabricated explanation on 54 of those 748 threads, whose entire reported shortfall sits on nodes too small for the limit to bind. So the number ships as an upper bound on what is missing, the prose lists both causes without choosing between them, and the one claim that holds either way — that no further request closes the gap — is the actionable part. The comparison is suppressed while walking the parent chain: a parent always has replies the request never asked for, and parent nodes carry no `replies` key of their own, so nothing below them is skipped. `format()` renders the shortfall inline under the node it belongs to, and the handler totals it across the thread into enrichment.
 
 **14. `depth` maxes at the AppView's own tree cap; `parent_height` at a measured practical ceiling.**
+Oversized integer requests are clamped before upstream work: depth to 10 and parent_height to 100, with each requested/applied value disclosed in the single notice. Zero remains valid for both fields; defaults remain 6 and 80. `BLUESKY_CLAMP_READ_LIMITS=false` restores rejecting schemas and their advertised maxima. This preserves the work bounds while returning useful data without a correction call.
 Both parameters accept up to 1000 upstream, and 1001 is a hard `InvalidRequest`, so neither new bound can ever be the more permissive of the two. They behave nothing alike below that. `depth` is silently ignored past 10: walking 748 threads at `depth` 1000 — deep narrow chains, wide shallow trees, quoted and gated threads, 94,366 nodes in all — never returned a reply below level 10, and a 1,805-reply thread comes back byte-identical at `depth` 10, 20, 50, and 1000 (365 nodes, 10 levels) while re-rooting at a level-10 node proves the tree continues below. So `depth` maxes at 10; advertising more would promise levels the AppView will not send, and would not widen the tree either, since the per-post reply limit is independent of depth. `parent_height` *is* honored level for level (a request for 9 returns 9, for 15 returns the 10 that exist), so its bound is a cost decision: chains cost roughly 1.5 KB upstream per level, and 244 sampled live replies put the median chain at 1 post, p90 at 11, and p99 at 96. 100 covers that instead of the 1000 that would admit a megabyte of ancestors. Chains beyond it do exist — the longest sampled ran 645 posts — and unlike the reply-tree cap this one is recoverable: re-rooting at the topmost parent returned continues upward. Neither default moves — 6 and 80 are the lexicon defaults and already exceed what most conversations hold.
 
 **15. The threadgate ships with the thread, because it is the one missing-reply cause attributable to a person.**
@@ -271,6 +281,7 @@ People share Bluesky content as bsky.app links and `@handle`s, and each maps one
 - *Out:* `go.bsky.app` short links, which need a redirect fetch, and `bsky_search_actors` `query`, which is free text.
 
 **27. `bsky_get_post_quotes` reads `getQuotes`, and checks an empty first page before calling it empty.**
+Quote ordering is forwarded to the provider: `latest` (the default) is newest first and `top` orders by descending like count. Local sorting of a latest page cannot discover top quotes outside that page. Every initial request and budget refetch preserves sort and incoming cursor; cursors belong to the same post and sort. The applied `sort` is declared output and rendered even on empty pages, so it participates in both response budgets.
 Every post carries `quoteCount`, and on Bluesky quote posts are where much of the commentary lives; `getPostThread` returns replies only. `app.bsky.feed.getQuotes` is keyless, but it answers a handle authority, a missing post, a non-post collection, and a post nobody quoted alike with 200 and `posts: []`, so:
 
 - *Collection pinned:* the input pattern admits a post AT-URI or bsky.app post URL only; a feed, profile, or list address fails before any request.
@@ -308,6 +319,7 @@ The AppView attaches `app.bsky.actor.defs#verificationState` to `profileViewBasi
 - *Out of scope:* repost `by` and quoted-post authors, which are not the account being cited and are each one `bsky_get_profile` away, and trend voices, held to three fields by decision 8 — the statuses would add 10.5% to a 25-trend response.
 
 **32. The five post tools hold each response surface to 48,000 bytes, cutting only between whole records.**
+Read-limit clamp notices join cursor, empty-page, thread-shortfall, and budget guidance before every candidate is measured. Each field is clamped, logged, and counted once per call; budget refetches use the applied value or less and retain the original disclosure. The same flag restores strict validation across all nine bounded read tools; upstream caps and defaults stay unchanged.
 `limit`, `depth`, and `parent_height` bound how many records a response carries, never how many bytes. Measured on 0.5.0 (2026-09-25): a post costs 0.8–1.2 KB per surface, a `limit: 100` page 80–117 KB, and one thread (`3msqpuobiwk2t`) 470 KB at `depth: 10` and 172 KB even at `depth: 1, parent_height: 0` — width comes from fan-out, which no input controls. Claude Code swaps any result over 25,000 tokens for a file reference. `src/mcp-server/tools/response-budget.ts` holds the mechanism. Decisions:
 
 - *One constant, per surface, not configurable:* `RESPONSE_BUDGET_BYTES = 48_000`, applied to `structuredContent` and `content[]` separately, since a client forwards one of the two. Every default-`limit` page measured came in at 30.2 KB per surface or less, so defaults are untouched; 48 KB of identifier-dense JSON (random-base32 CIDs, DIDs, AT-URIs, nearer 2–3 characters per token than prose's 4) stays under 25,000 tokens, where 64 KB would not. A budget on the combined wire payload was rejected: it halves each surface to ~24 KB and would cut ordinary default pages. No env var — callers already lower size with `limit` and `depth`, and the budget only ever lowers what they get.
@@ -322,8 +334,14 @@ Measured live on 2026-09-25, keyless, each surface before (the same upstream ans
 
 ---
 
+**33. Feed discovery is a separate, keyless catalog search.**
+`bsky_search_feeds` reads `app.bsky.unspecced.getPopularFeedGenerators` through the existing public AppView client, even when post-search credentials are configured. Catalog metadata and post text are different search domains, so discovery returns generator identity and creator metadata; `bsky_get_feed` reads the selected feed. No destination page is fetched and no catalog is traversed automatically. The caller chooses whether to follow each opaque cursor with the same query. Presence of a cursor alone controls continuation; a full page without one is terminal, and an empty continuation page without one reports exhaustion rather than no initial matches.
+
+The tool preserves provider order without synthetic relevance scores, and returns `feedUri`, `displayName`, optional `description`, and `creator: { did, handle, displayName? }` on both surfaces. The raw catalog response is schema-parsed at the service boundary; absent metadata stays absent and supplied blank strings stay present. Names, descriptions, and creator identity use the shared quoted-data renderer, preserving line structure and literal Markdown/HTML. Feed AT-URIs render as usable links. Limits use the shared default-on clamp (default 25, maximum 100), with the same strict off switch and composed notices. The unstable endpoint can disappear: HTTP 404/410 maps to `catalog_unavailable`, whose recovery offers trending feeds. Catalog requests and retries share one 45-second deadline, including response-body reads; caller cancellation retains its own outcome.
+
 ## Known Limitations
 
+- **Feed catalog discovery uses an unstable endpoint**: `app.bsky.unspecced.getPopularFeedGenerators` searches provider catalog metadata, not post text or every feed. It may change or disappear; `catalog_unavailable` routes discovery to trending feeds.
 - **`searchPosts` result freshness**: The AppView indexes with some lag (seconds to minutes). Real-time posts may not appear immediately.
 - **`getPostThread` per-post reply limit**: The AppView returns only part of a post's replies and offers no way to fetch the rest. A 1,805-reply thread returns ~163 top-level replies, invariant across `depth` 1–1000, and no node in a 748-thread walk ever returned more than 200; `app.bsky.feed.getPostThread` has no cursor on `replies`, and the unstable `app.bsky.unspecced.getPostThreadV2` / `getPostThreadOtherV2` pair returns *fewer* replies for the same thread while reporting `hasOtherReplies: false`. The server therefore discloses the shortfall rather than working around it — see design decision 13.
 - **`replyCount` counts more than the thread can return**: Bluesky's per-post reply counter is not reduced when a reply leaves the index, so a post routinely reports replies that no request can produce — 1,244 nodes in a 748-thread walk reported `replyCount: 1` beside an empty `replies` array. `unreturnedReplies` and the thread-wide total are therefore upper bounds on what is missing, not counts of readable replies.
@@ -351,7 +369,7 @@ Measured live on 2026-09-25, keyless, each surface before (the same upstream ans
 
 **Confirmed response shapes (live probe 2026-06-04):**
 
-`getProfile` → `{ did, handle, displayName, description, pronouns?, website?, avatar, banner, followersCount, followsCount, postsCount, labels, indexedAt, createdAt, associated, verification, status?, pinnedPost? }` — `pronouns` and `website` are declared on `app.bsky.actor.defs#profileViewDetailed` and returned live for accounts that set them (`nerdynanny.com` carries both). `pronouns` is also declared on `profileView` and `profileViewBasic` and comes back on `searchActors`; `website` is on `profileViewDetailed` alone. `verification` is `{ verifiedStatus, trustedVerifierStatus, verifications: [{ issuer, issuerHandle?, issuerDisplayName?, uri, isValid, createdAt }] }`, absent (not `none`) for an account neither verified nor a trusted verifier; every actor view carries it (decision 31). `banner` and `status` are returned but not mapped.
+`getProfile` → `{ did, handle, displayName, description, pronouns?, website?, links?, avatar, banner, followersCount, followsCount, postsCount, labels, indexedAt, createdAt, associated, verification, status?, pinnedPost? }` — `pronouns` and `website` are declared on `app.bsky.actor.defs#profileViewDetailed` and returned live for accounts that set them (`nerdynanny.com` carries both). `links` is detailed-profile only, in upstream display order: `{ uri, cid, url, title?, icon?, labels?: [{ val, src?, cts? }] }`. The tool and profile resource preserve omitted versus empty arrays and optional fields; titles use account-authored framing and destinations render as usable CommonMark links. No links are inferred from the bio or added to actor summaries, because those views do not return them. `pronouns` is also declared on `profileView` and `profileViewBasic` and comes back on `searchActors`; `website` is on `profileViewDetailed` alone. `verification` is `{ verifiedStatus, trustedVerifierStatus, verifications: [{ issuer, issuerHandle?, issuerDisplayName?, uri, isValid, createdAt }] }`, absent (not `none`) for an account neither verified nor a trusted verifier; every actor view carries it (decision 31). `banner` and `status` are returned but not mapped.
 
 `searchActors` → `{ actors: [{ did, handle, displayName, description, avatar, labels, createdAt, indexedAt, associated, verification }], cursor? }`
 
@@ -371,7 +389,7 @@ Measured live on 2026-09-25, keyless, each surface before (the same upstream ans
 
 `com.atproto.identity.resolveHandle` → `{ did }`; an unknown handle answers 400 `Unable to resolve handle`.
 
-`getQuotes` → `{ uri, posts: [...postViews], cursor?, cid? }` — newest first; cursors are ISO timestamps. Keyless. `limit` 1–100 (lexicon default 50). A handle authority, a missing post, and a non-post collection all answer 200 with `posts: []`; a malformed `uri` answers 400 `Invalid at-uri`, a malformed cursor 500 `InternalServerError`, an empty cursor the first page.
+`getQuotes` → `{ uri, posts: [...postViews], cursor?, cid? }` — `sort: latest` (default) is newest first; `sort: top` is descending like count. Cursors are opaque and reused with the same post and sort. Keyless. `limit` 1–100 (lexicon default 50). A handle authority, a missing post, and a non-post collection all answer 200 with `posts: []`; a malformed `uri` answers 400 `Invalid at-uri`, a malformed cursor 500 `InternalServerError`, an empty cursor the first page.
 
 `getPosts` → `{ posts: [...postViews] }` — the requested posts that exist; a DID authority only (a handle answers 500).
 
@@ -427,3 +445,6 @@ Domain failure modes per tool — these map directly to `errors: [{ reason, code
 
 **`bsky_get_trending`**
 - No domain-specific error contracts beyond baseline (`ServiceUnavailable` for upstream failures, `ValidationError` for invalid param values). The endpoint returns an empty list rather than an error when nothing is trending, as `searchActors` does for a zero-match query.
+
+**`bsky_search_feeds`**
+- `catalog_unavailable` — `ServiceUnavailable` — the unstable catalog endpoint answers HTTP 404 or 410. Recovery: try later, or use `bsky_get_trending` and read its feedUri with `bsky_get_feed`. Other HTTP failures retain the shared status mapping; transient failures retry within the catalog’s total deadline. Empty pages are successful results with distinct initial, continuation, and exhaustion guidance.

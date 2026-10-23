@@ -16,6 +16,7 @@ import {
   quoteUserText,
   verificationSuffix,
 } from '@/mcp-server/tools/post-format.js';
+import { clampReadLimit, composeNotices, readLimitSchema } from '@/mcp-server/tools/read-limits.js';
 import { ACTOR_REF_MESSAGE, ACTOR_REF_REGEX, actorFromRef } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 import type { GraphResult } from '@/services/bluesky/types.js';
@@ -107,13 +108,11 @@ export const bskyGetFollows = tool('bsky_get_follows', {
           'recent follows first; "top" is Bluesky\'s own ranking, which surfaces prominent accounts but is ' +
           'not a follower-count order. Pass a cursor back with the same sort it came from.',
       ),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(100)
+    limit: readLimitSchema(100)
       .default(25)
-      .describe('Maximum number of actors to return per page (1–100). Default 25.'),
+      .describe(
+        'Maximum number of actors to return per page. Default 25; values above 100 are clamped with a notice unless read-limit clamping is disabled.',
+      ),
     cursor: z
       .string()
       .max(2048)
@@ -166,6 +165,13 @@ export const bskyGetFollows = tool('bsky_get_follows', {
   },
 
   async handler(input, ctx) {
+    const { applied: limit, notice: clampNotice } = clampReadLimit(
+      ctx,
+      'bsky_get_follows',
+      'limit',
+      input.limit,
+      100,
+    );
     const actor = actorFromRef(input.actor);
     ctx.log.info('Fetching Bluesky social graph', {
       actor,
@@ -176,7 +182,7 @@ export const bskyGetFollows = tool('bsky_get_follows', {
     const params = {
       actor,
       ...(input.sort ? { sort: input.sort } : {}),
-      limit: input.limit,
+      limit,
       ...(input.cursor ? { cursor: input.cursor } : {}),
     };
     let result: GraphResult;
@@ -203,15 +209,23 @@ export const bskyGetFollows = tool('bsky_get_follows', {
     if (result.cursor) {
       ctx.enrich.truncated({
         shown: result.actors.length,
-        cap: input.limit,
-        guidance: `Pass the returned cursor to fetch the next page of ${listed}. It can come back empty when the remaining accounts are unavailable.`,
+        cap: limit,
+        guidance: composeNotices(
+          clampNotice,
+          `Pass the returned cursor to fetch the next page of ${listed}. It can come back empty when the remaining accounts are unavailable.`,
+        ),
       });
     } else if (result.actors.length === 0) {
       ctx.enrich.notice(
-        input.cursor
-          ? `No more ${listed} — the previous page was the last.`
-          : `No ${listed} found for actor "${actor}".`,
+        composeNotices(
+          clampNotice,
+          input.cursor
+            ? `No more ${listed} — the previous page was the last.`
+            : `No ${listed} found for actor "${actor}".`,
+        ),
       );
+    } else if (clampNotice) {
+      ctx.enrich.notice(clampNotice);
     }
 
     const { did, handle, displayName, pronouns, verification } = result.subject;

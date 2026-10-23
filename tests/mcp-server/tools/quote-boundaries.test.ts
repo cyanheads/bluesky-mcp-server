@@ -20,6 +20,7 @@ import { bskyGetPostThread } from '@/mcp-server/tools/definitions/bsky-get-post-
 import { bskyGetProfile } from '@/mcp-server/tools/definitions/bsky-get-profile.tool.js';
 import { bskyGetTrending } from '@/mcp-server/tools/definitions/bsky-get-trending.tool.js';
 import { bskySearchActors } from '@/mcp-server/tools/definitions/bsky-search-actors.tool.js';
+import { bskySearchFeeds } from '@/mcp-server/tools/definitions/bsky-search-feeds.tool.js';
 import type { RenderablePost } from '@/mcp-server/tools/post-format.js';
 import { renderEmbedLines, renderPostLines } from '@/mcp-server/tools/post-format.js';
 import { initBlueskyService } from '@/services/bluesky/bluesky-service.js';
@@ -213,6 +214,42 @@ const rawActor = (did: string, handle: string, extra: Record<string, unknown> = 
 });
 
 describe('bios and summaries through the tools', () => {
+  it('bsky_search_feeds: each catalog value ends before the next label or feed record', async () => {
+    http.route({
+      match: (request) =>
+        new URL(request.url).pathname === '/xrpc/app.bsky.unspecced.getPopularFeedGenerators',
+      respond: () =>
+        Response.json({
+          feeds: [1, 2].map((index) => ({
+            uri: `at://did:plc:creator/app.bsky.feed.generator/feed${index}`,
+            displayName: `Name ${index}`,
+            description: `Description ${index}`,
+            creator: {
+              did: 'did:plc:creator',
+              handle: 'creator.bsky.social',
+              displayName: `Creator ${index}`,
+            },
+          })),
+          cursor: 'next',
+        }),
+    });
+    const result = await runToolContract(bskySearchFeeds, { query: 'science' });
+    expect(result.isError).toBeFalsy();
+    expect(outermostQuotes(textOf(result))).toEqual([
+      'Name 1',
+      'Description 1',
+      'did:plc:creator',
+      'creator.bsky.social',
+      'Creator 1',
+      'Name 2',
+      'Description 2',
+      'did:plc:creator',
+      'creator.bsky.social',
+      'Creator 2',
+      'next',
+      'Pass the returned cursor with the same query to fetch the next page of feeds.',
+    ]);
+  });
   it('bsky_get_profile: the bio ends before the pinned-post and label lines of a sparse profile', async () => {
     http.route({
       match: /app\.bsky\.actor\.getProfile/,

@@ -9,9 +9,11 @@
 import { type ContentBlock, tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { renderPostLines } from '@/mcp-server/tools/post-format.js';
+import { clampReadLimit, readLimitSchema } from '@/mcp-server/tools/read-limits.js';
 import { pageEnrichment, respondWithinBudget } from '@/mcp-server/tools/response-budget.js';
 import { ACTOR_REF_MESSAGE, ACTOR_REF_REGEX, actorFromRef } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
+import { FacetSchema } from '@/services/bluesky/post-facets.js';
 import type { AuthorFeedResult } from '@/services/bluesky/types.js';
 
 /**
@@ -27,7 +29,7 @@ const EmbedSchema = z
       'type: "images" | "external" | "record" | "video" | "unknown". ' +
       'images: array of { url, alt } — also carries app.bsky.embed.gallery embeds. ' +
       'external: { uri, title, description }. ' +
-      'record: { uri, cid, text?, authorHandle?, embeds?, media?, omittedEmbeds?, recordKind? } — embeds is the ' +
+      'record: { uri, cid, text?, facets?, authorHandle?, embeds?, media?, omittedEmbeds?, recordKind? } — facets retain UTF-8 byte ranges and link URI, mention DID, or tag features on the original text; embeds is the ' +
       "quoted post's own attachments, so a quote of an image post carries those images here; media is the " +
       'image/video/link attached alongside the quote by the post doing the quoting, on a recordWithMedia ' +
       'embed. Both are embeds of these same shapes. Bluesky fills embeds for the post being quoted and no ' +
@@ -53,6 +55,12 @@ const PostSchema = z
       ),
     cid: z.string().describe('Content Identifier (CID) of the post record.'),
     text: z.string().describe('Full text content of the post.'),
+    facets: z
+      .array(FacetSchema)
+      .optional()
+      .describe(
+        'Rich-text facets on the unchanged text, with UTF-8 byte ranges and full link, mention, or tag values.',
+      ),
     author: z
       .object({
         did: z
@@ -234,14 +242,10 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
           'page. It arrives in addition to "limit", whether or not it matches "filter", and is not repeated ' +
           'on later pages. Default false.',
       ),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(100)
+    limit: readLimitSchema(100)
       .default(25)
       .describe(
-        'Maximum number of posts to return (1–100). Default 25. A page that would pass the 48,000-byte ' +
+        'Maximum number of posts to return. Default 25; values above 100 are clamped with a notice unless read-limit clamping is disabled. A page that would pass the 48,000-byte ' +
           'response budget comes back with fewer posts and "budgetCapped: true"; its cursor continues ' +
           'from the first post it left out.',
       ),
@@ -309,6 +313,13 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
   },
 
   async handler(input, ctx) {
+    const { applied: limit, notice: clampNotice } = clampReadLimit(
+      ctx,
+      'bsky_get_author_feed',
+      'limit',
+      input.limit,
+      100,
+    );
     const actor = actorFromRef(input.actor);
     ctx.log.info('Fetching Bluesky author feed', {
       actor,
@@ -343,9 +354,9 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
       }
     };
 
-    return respondWithinBudget(ctx, await fetchPage(input.limit), {
+    return respondWithinBudget(ctx, await fetchPage(limit), {
       count: (page) => page.feed.length,
-      limit: input.limit,
+      limit,
       /** A profile's pinned post arrives in addition to `limit`, so it is not counted toward one. */
       limitFor: (page, kept) =>
         kept - page.feed.slice(0, kept).filter((post) => post.pinned).length,
@@ -362,9 +373,10 @@ export const bskyGetAuthorFeed = tool('bsky_get_author_feed', {
         return {
           output: { posts: page.feed, ...(page.cursor ? { cursor: page.cursor } : {}) },
           enrichment: pageEnrichment({
+            clampNotice,
             shown: page.feed.length,
             cursor: page.cursor,
-            limit: input.limit,
+            limit,
             requested,
             noun: 'posts',
             more: 'More posts exist — pass the returned cursor to fetch the next page.',

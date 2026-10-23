@@ -85,6 +85,27 @@ async function thread(uri: string, extra: Record<string, number> = {}) {
 }
 
 describe('the breadth-first cut', () => {
+  it('measures both clamp sentences with the budget and preserves a nested frontier', async () => {
+    const tree = buildTree({ branching: [4, 3, 3], chain: 2, descriptionBytes: 600 });
+    routeThread(http, tree);
+    const result = await thread(postUri('root'), { depth: 11, parent_height: 101 });
+    const out = sc(result);
+    expect(out).toMatchObject({ budgetCapped: true });
+    expect(out.notice).toContain(
+      'depth 11 requested; 10 applied. parent_height 101 requested; 100 applied.',
+    );
+    expect(out.notice).toContain('48,000');
+    expect(textOf(result)).toContain(String(out.notice));
+    expect(surfaces(result).structured).toBeLessThanOrEqual(BUDGET);
+    expect(surfaces(result).content).toBeLessThanOrEqual(BUDGET);
+    expect(
+      replies(out.thread).some(({ node, level }) => level > 1 && node.budgetOmittedReplies),
+    ).toBe(true);
+    const request = new URL(http.calls[0]?.request.url ?? '');
+    expect(request.searchParams.get('depth')).toBe('10');
+    expect(request.searchParams.get('parentHeight')).toBe('100');
+  });
+
   it('cut at level 3: keeps levels 1–2 whole, a prefix of level 3, and marks each level-2 node it cut below', async () => {
     const tree = buildTree({ branching: [4, 3, 3], descriptionBytes: 600 });
     routeThread(http, tree);

@@ -88,7 +88,7 @@ const param = (i: number, name: string) =>
 
 /** Asserts the declared reason, its recovery on both surfaces, and the request count. */
 async function expectFailure(
-  input: { uri: string; cursor?: string },
+  input: { uri: string; cursor?: string; sort?: 'latest' | 'top' },
   reason: string,
   code: number,
 ) {
@@ -106,6 +106,104 @@ async function expectFailure(
 // ---------------------------------------------------------------------------
 
 describe('bsky_get_post_quotes — reading quotes', () => {
+  it.each([undefined, 'latest', 'top'] as const)(
+    'forwards sort %s and returns its context on both surfaces',
+    async (sort) => {
+      http.route({
+        match: /app\.bsky\.feed\.getQuotes/,
+        respond: () => quotesPage([quote('a')], 'next'),
+      });
+      const result = await runToolContract(bskyGetPostQuotes, {
+        uri: TARGET,
+        ...(sort ? { sort } : {}),
+      });
+      expect(result.isError).toBeFalsy();
+      expect(param(0, 'sort')).toBe(sort ?? 'latest');
+      expect(structured(result)).toMatchObject({ sort: sort ?? 'latest', cursor: 'next' });
+      expect(textOf(result)).toContain(`Sort: ${sort ?? 'latest'}`);
+      expect(structured(result).notice).toContain('same post and sort');
+    },
+  );
+
+  it('preserves provider quote order and sparse fields without local ranking', async () => {
+    http.route({
+      match: /app\.bsky\.feed\.getQuotes/,
+      respond: () =>
+        quotesPage([
+          quote('first', { likeCount: 1 }),
+          quote('second', { likeCount: 99 }),
+          {
+            uri: 'at://did:plc:quoter/app.bsky.feed.post/sparse',
+            cid: 'bafysparse',
+            author: { did: 'did:plc:quoter', handle: 'quoter.bsky.social' },
+            record: { text: 'sparse' },
+          },
+        ]),
+    });
+    const result = await runToolContract(bskyGetPostQuotes, { uri: TARGET });
+    expect(result.isError).toBeFalsy();
+    expect(structured(result).posts.map((post) => post.uri)).toEqual([
+      'at://did:plc:quoter/app.bsky.feed.post/first',
+      'at://did:plc:quoter/app.bsky.feed.post/second',
+      'at://did:plc:quoter/app.bsky.feed.post/sparse',
+    ]);
+    expect(structured(result).posts[2]).not.toHaveProperty('likeCount');
+    expect(textOf(result).indexOf('> commentary first')).toBeLessThan(
+      textOf(result).indexOf('> commentary second'),
+    );
+    expect(textOf(result)).toContain('> sparse');
+  });
+
+  it.each(['latest', 'top'] as const)(
+    'keeps %s context on empty first and terminal pages',
+    async (sort) => {
+      http.route(
+        { match: /app\.bsky\.feed\.getQuotes/, respond: () => quotesPage([]) },
+        {
+          match: /app\.bsky\.feed\.getPosts/,
+          respond: () => Response.json({ posts: [{ ...quote('t'), uri: TARGET, quoteCount: 0 }] }),
+        },
+      );
+      const first = await runToolContract(bskyGetPostQuotes, { uri: TARGET, sort });
+      expect(first.isError).toBeFalsy();
+      expect(structured(first)).toMatchObject({
+        sort,
+        posts: [],
+        notice: `${TARGET} has no quotes.`,
+      });
+      expect(textOf(first)).toContain(`Sort: ${sort}`);
+      expect(paths()).toEqual(['app.bsky.feed.getQuotes', 'app.bsky.feed.getPosts']);
+      const terminal = await runToolContract(bskyGetPostQuotes, {
+        uri: TARGET,
+        sort,
+        cursor: 'past-the-end',
+      });
+      expect(structured(terminal)).toMatchObject({
+        sort,
+        posts: [],
+        notice: 'No more quotes — the previous page was the last.',
+      });
+      expect(textOf(terminal)).toContain(`Sort: ${sort}`);
+      expect(paths()).toEqual([
+        'app.bsky.feed.getQuotes',
+        'app.bsky.feed.getPosts',
+        'app.bsky.feed.getQuotes',
+      ]);
+      expect(param(2, 'sort')).toBe(sort);
+      expect(param(2, 'cursor')).toBe('past-the-end');
+    },
+  );
+
+  it.each(['popular', '', 1])('rejects invalid sort %s before requests', async (sort) => {
+    const runRaw = runToolContract<Parameters<typeof runToolContract>[0]>;
+    const result = await runRaw(bskyGetPostQuotes, { uri: TARGET, sort });
+    expect(errorOf(result)).toMatchObject({
+      code: JsonRpcErrorCode.InvalidParams,
+      data: { reason: 'invalid_arguments' },
+    });
+    expect(http.calls).toHaveLength(0);
+  });
+
   it('reads a DID-authority post in one request, unauthenticated', async () => {
     http.route({ match: /app\.bsky\.feed\.getQuotes/, respond: () => quotesPage([quote('a')]) });
 
@@ -468,18 +566,22 @@ describe('bsky_get_post_quotes — the restated queried post', () => {
 });
 
 describe('bsky_get_post_quotes — cursors', () => {
-  it('fails a cursor Bluesky answers with 500 once, as invalid_cursor', async () => {
-    http.route({
-      match: /app\.bsky\.feed\.getQuotes/,
-      respond: () => xrpcError(500, 'InternalServerError', 'Internal Server Error'),
-    });
-    await expectFailure(
-      { uri: TARGET, cursor: 'garbage' },
-      'invalid_cursor',
-      JsonRpcErrorCode.ValidationError,
-    );
-    expect(http.calls).toHaveLength(1);
-  });
+  it.each(['latest', 'top'] as const)(
+    'fails a %s cursor Bluesky answers with 500 once, as invalid_cursor',
+    async (sort) => {
+      http.route({
+        match: /app\.bsky\.feed\.getQuotes/,
+        respond: () => xrpcError(500, 'InternalServerError', 'Internal Server Error'),
+      });
+      await expectFailure(
+        { uri: TARGET, sort, cursor: 'garbage' },
+        'invalid_cursor',
+        JsonRpcErrorCode.ValidationError,
+      );
+      expect(http.calls).toHaveLength(1);
+      expect(param(0, 'sort')).toBe(sort);
+    },
+  );
 
   it('still retries a 500 on the first page', async () => {
     http.route(
@@ -514,7 +616,7 @@ describe('bsky_get_post_quotes — input', () => {
     expect(http.calls).toHaveLength(0);
   });
 
-  it.each([0, 101])('rejects limit %i at the schema', async (limit) => {
+  it.each([0, -1])('rejects limit %i at the schema', async (limit) => {
     const result = await runToolContract(bskyGetPostQuotes, { uri: TARGET, limit });
     expect(errorOf(result).code).toBe(JsonRpcErrorCode.InvalidParams);
     expect(http.calls).toHaveLength(0);
@@ -528,9 +630,9 @@ describe('bsky_get_post_quotes — input', () => {
 
 describe('bsky_get_post_quotes — format()', () => {
   it('names the queried post on an empty page', () => {
-    const [block] = bskyGetPostQuotes.format?.({ uri: TARGET, posts: [] }) ?? [];
+    const [block] = bskyGetPostQuotes.format?.({ uri: TARGET, sort: 'latest', posts: [] }) ?? [];
     expect((block as { text: string }).text).toBe(
-      `## Quotes of \`${TARGET}\`\n\nNo quote posts on this page.`,
+      `## Quotes of \`${TARGET}\`\nSort: latest\n\nNo quote posts on this page.`,
     );
   });
 });

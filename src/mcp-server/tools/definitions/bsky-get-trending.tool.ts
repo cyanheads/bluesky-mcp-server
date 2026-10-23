@@ -13,6 +13,7 @@ import {
   inlineUserText,
   quoteUserText,
 } from '@/mcp-server/tools/post-format.js';
+import { clampReadLimit, readLimitSchema } from '@/mcp-server/tools/read-limits.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
 /** `app.bsky.unspecced.getTrends` lexicon `maximum` for `limit`. */
@@ -89,14 +90,10 @@ export const bskyGetTrending = tool('bsky_get_trending', {
     'without notice.',
   annotations: { readOnlyHint: true, idempotentHint: false, openWorldHint: true },
   input: z.object({
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(TRENDS_MAX)
+    limit: readLimitSchema(TRENDS_MAX)
       .default(10)
       .describe(
-        "Maximum number of trending topics to return (1–25). Default 10. 25 is Bluesky's maximum.",
+        "Maximum number of trending topics to return. Default 10. Values above Bluesky's maximum of 25 are clamped with notice unless strict limits are configured.",
       ),
   }),
   output: z.object({
@@ -118,6 +115,7 @@ export const bskyGetTrending = tool('bsky_get_trending', {
   },
 
   async handler(input, ctx) {
+    const limit = clampReadLimit(ctx, 'bsky_get_trending', 'limit', input.limit, TRENDS_MAX);
     ctx.log.info('Fetching Bluesky trending topics', { limit: input.limit });
     /**
      * getTrends has no cursor or total, and serves the first N topics of one ranked list, so one
@@ -125,15 +123,16 @@ export const bskyGetTrending = tool('bsky_get_trending', {
      * the ceiling to ask for — the endpoint answers 26 with HTTP 400.
      */
     const result = await getBlueskyService().getTrends(
-      { limit: Math.min(input.limit + 1, TRENDS_MAX) },
+      { limit: Math.min(limit.applied + 1, TRENDS_MAX) },
       ctx,
     );
-    const trends = result.trends.slice(0, input.limit);
+    const trends = result.trends.slice(0, limit.applied);
+    if (limit.notice) ctx.enrich.notice(limit.notice);
     ctx.enrich({ totalReturned: trends.length });
-    if (result.trends.length > input.limit) {
+    if (result.trends.length > limit.applied) {
       ctx.enrich.truncated({
         shown: trends.length,
-        cap: input.limit,
+        cap: limit.applied,
         guidance: 'More topics are trending — raise limit (max 25) to see them.',
       });
     }

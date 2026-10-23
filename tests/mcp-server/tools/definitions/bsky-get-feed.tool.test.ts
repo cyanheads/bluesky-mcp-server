@@ -142,6 +142,35 @@ describe('bsky_get_feed — reading a feed', () => {
     expect(textOf(result)).toContain('The feed returned no posts');
   });
 
+  it('keeps a nonempty terminal continuation free of empty guidance', async () => {
+    http.route({
+      match: /app\.bsky\.feed\.getFeed/,
+      respond: Response.json({ feed: [{ post: post('last') }] }),
+    });
+    const result = await runToolContract(bskyGetFeed, { feed: WHATS_HOT, cursor: 'previous' });
+    expect(result.isError).toBeFalsy();
+    expect(structured(result).posts).toHaveLength(1);
+    expect(structured(result).notice).toBeUndefined();
+    expect(textOf(result)).toContain('text of last');
+  });
+
+  it.each([undefined, ''])(
+    'explains an exhausted continuation with cursor %s on both surfaces',
+    async (cursor) => {
+      http.route({
+        match: /app\.bsky\.feed\.getFeed/,
+        respond: Response.json({ feed: [], cursor }),
+      });
+      const result = await runToolContract(bskyGetFeed, { feed: WHATS_HOT, cursor: 'previous' });
+      expect(result.isError).toBeFalsy();
+      expect(structured(result).notice).toBe('No more posts in this feed traversal.');
+      expect(textOf(result)).toContain('No posts on this page.');
+      expect(textOf(result)).toContain('No more posts in this feed traversal.');
+      expect(textOf(result)).not.toContain('try a different feed');
+      expect(textOf(result)).not.toContain('The feed returned no posts.');
+    },
+  );
+
   it('marks a pinned item and a reposted item distinctly on both surfaces', async () => {
     http.route({
       match: /app\.bsky\.feed\.getFeed/,
@@ -284,7 +313,7 @@ describe('bsky_get_feed — feed references', () => {
     expect(textOf(result)).toContain('bsky_get_post_thread');
   });
 
-  it.each([0, 101])('rejects limit %i at the schema', async (limit) => {
+  it.each([0, -1])('rejects limit %i at the schema', async (limit) => {
     const result = await runToolContract(bskyGetFeed, { feed: WHATS_HOT, limit });
     expect(errorOf(result).code).toBe(JsonRpcErrorCode.InvalidParams);
     expect(http.calls).toHaveLength(0);

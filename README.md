@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/bluesky-mcp-server</h1>
-  <p><b>Search posts, profiles, feeds, threads, and trending topics on Bluesky via MCP. STDIO or Streamable HTTP.</b>
-  <div>9 Tools • 1 Resource</div>
+  <p><b>Search Bluesky posts and feeds; read profiles, threads, and trends. STDIO or Streamable HTTP.</b>
+  <div>10 Tools • 1 Resource</div>
   </p>
 </div>
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.5.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/bluesky-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.2.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/bluesky-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/bluesky-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.5.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/bluesky-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/bluesky-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/bluesky-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -29,7 +29,7 @@
 
 ## Overview
 
-Bluesky data over the AT Protocol AppView. Resolve profiles, track trending topics and read the feeds behind them, walk custom feeds, author feeds, threads, and the quote posts on a post — all without an account — and add full-text post search with an optional app password. Shared bsky.app links and `@handle`s work wherever the matching account, post, or feed is asked for. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+Read Bluesky without an account: profiles, feed catalog searches, trending topics and the feeds behind them, custom and author feeds, threads, and quote posts. Paste a bsky.app link or `@handle` anywhere one is asked for, and add an optional app password to unlock full-text post search.
 
 ### Tools
 
@@ -40,8 +40,9 @@ Bluesky data over the AT Protocol AppView. Resolve profiles, track trending topi
 | `bsky_get_feed` | Read a feed generator's posts — a trend's feed, Discover, or any custom feed — by AT-URI or bsky.app URL |
 | `bsky_get_author_feed` | A user's recent posts ordered newest-first, filterable by post type |
 | `bsky_get_post_thread` | Fetch the conversation for a post by AT-URI or bsky.app URL — parent chain upward and reply tree downward, with what Bluesky counted but did not return |
-| `bsky_get_post_quotes` | Read the quote posts behind a post's `quoteCount`, newest first — where much of the reaction to a post lives |
+| `bsky_get_post_quotes` | Read the quote posts behind a post's `quoteCount`, newest first or by like count — where much of the reaction to a post lives |
 | `bsky_search_actors` | Find Bluesky accounts by name or handle fragment |
+| `bsky_search_feeds` | Search public feed catalog names and descriptions, then read a returned feedUri with `bsky_get_feed` |
 | `bsky_get_follows` | Paginated social graph edges — who a user follows or who follows them |
 | `bsky_get_trending` | Real-time trending topics on Bluesky with a story summary, post count, category, status, the accounts driving each topic, and the feed that collects its posts |
 
@@ -70,6 +71,8 @@ All resource data is also reachable via tools. Use `bsky_get_profile` for progra
 
 ---
 
+Post tools preserve optional rich-text `facets` separately from the original text: UTF-8 byte ranges (inclusive `byteStart`, exclusive `byteEnd`) and complete link URIs, mention DIDs, and tags. Unrecognized feature variants and additional upstream fields remain visible as literal metadata on both channels. Quoted posts retain their own facets within the existing embed-depth bound. Both response channels include this metadata in the response budget; `bsky_get_post_quotes` omits the queried target's facets together with its restated text.
+
 ### `bsky_get_feed` <sub>tool</sub>
 
 - Takes a feed generator AT-URI (`at://<handle-or-did>/app.bsky.feed.generator/<rkey>`) or its bsky.app page (`https://bsky.app/profile/<handle-or-did>/feed/<rkey>`, with any trailing `/`, `?…`, or `#…` ignored); a trend's `feedUri` works as-is, and Discover is `at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot`
@@ -85,7 +88,7 @@ All resource data is also reachable via tools. Use `bsky_get_profile` for progra
 ### `bsky_get_profile` <sub>tool</sub>
 
 - Accepts a handle or DID, also as `@handle` or the account's bsky.app page (`https://bsky.app/profile/<handle-or-did>`); returns displayName, handle, DID, bio, pronouns, website, follower/following/post counts, avatar, moderation labels, and pinned post AT-URI
-- `website` is the one link carried in its own field rather than inside the bio; both it and `pronouns` are absent when the account set neither
+- `website` and `pronouns` are absent when the account set neither; optional `links` carries ordered profile buttons separately from `website`, with each record's URI/CID, complete destination URL, optional title/icon, and moderation labels (`val`, `src?`, `cts?`). An omitted array stays omitted and an explicit empty array stays empty; the profile resource returns the same fields
 - `verification` carries Bluesky's full verification state — `verifiedStatus` and `trustedVerifierStatus` (`valid`, `invalid`, or `none`, passed through verbatim) and every verification a trusted verifier issued, with its issuer, validity, date, and record AT-URI; absent when Bluesky sent none
 - The bio renders as a markdown blockquote in `content[]`, since it's account-authored text that can carry its own markdown structure
 - `actor_not_found` when the handle doesn't resolve — resolve the handle with `bsky_search_actors` first
@@ -125,7 +128,7 @@ All resource data is also reachable via tools. Use `bsky_get_profile` for progra
 - Takes a post AT-URI or its bsky.app page; any other collection is rejected before the upstream call
 - A DID-authority post costs one request; a handle costs one extra lookup (`resolveHandle`), since `getQuotes` answers a handle authority with an empty list
 - Every result quotes the same post, so each result's embed keeps only that post's AT-URI and CID, its `recordKind` when it's unreadable, and any media the quoting post attached — the queried post's text and attachments aren't repeated on every item
-- Up to 100 quotes per call, newest first, paginated via cursor; truncation is disclosed on the cursor, since pages often come back short of `limit` with more behind them
+- Up to 100 quotes per call; `sort: latest` (default) is newest first, and `sort: top` is descending like count as ordered by Bluesky. The applied `sort` is returned on both surfaces; pass cursors back with the same post and sort. Truncation is disclosed on the cursor, since pages often come back short of `limit` with more behind them
 - A page that would pass the 48,000-byte response budget is asked for again at the `limit` that fits, marked `budgetCapped: true`, and its cursor resumes at the first quote left out
 - `quoteCount` is an upper bound on what this returns — Bluesky's counter keeps quotes that have left the index
 - `post_not_found` when the post doesn't exist or its handle doesn't resolve (an empty first page is checked with one `getPosts`); `invalid_cursor` after one request for a cursor Bluesky can't decode
@@ -140,6 +143,16 @@ All resource data is also reachable via tools. Use `bsky_get_profile` for progra
 - Up to 100 results per call, paginated via cursor; pages often hold fewer than `limit` and still continue, and the last page carries no cursor
 - `invalid_cursor`, after one request, when Bluesky can't decode the cursor passed (it answers those with HTTP 400)
 - Use before `bsky_get_profile` or `bsky_get_author_feed` when you have a name but not a confirmed handle
+
+---
+
+### `bsky_search_feeds` <sub>tool</sub>
+
+- Searches the provider’s public feed catalog metadata, not post text; returns `feedUri`, `displayName`, optional `description`, and creator DID/handle with optional display name, in provider order
+- Always keyless, even with post-search credentials configured; pass a returned `feedUri` directly to `bsky_get_feed` to read its posts
+- `query` is required; `limit` defaults to 25 and caps at 100 through the shared clamping policy. Pass the opaque `cursor` with the same query; cursor presence alone signals continuation, even on an empty page
+- Uses unstable `app.bsky.unspecced.getPopularFeedGenerators`, which may change or disappear; `catalog_unavailable` recovers through `bsky_get_trending`. This is discovery, not comprehensive enumeration
+- Feed names, descriptions, and creator identity render as quoted third-party data; supplied blank values and omitted fields stay distinct
 
 ---
 
@@ -176,7 +189,7 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 
 Bluesky-specific:
 
-- Eight of nine tools read `api.bsky.app` without credentials; `bsky_search_posts` runs through an optional app-password session and is left out without one
+- Nine of ten tools read `api.bsky.app` without credentials; `bsky_search_posts` runs through an optional app-password session and is left out without one
 - Shared links as input — `@handle` and a bsky.app profile URL wherever an account is asked for, a bsky.app post or feed URL wherever that post or feed is, each rewritten to the handle, DID, or AT-URI it names before the request
 - Single `BlueskyService` wrapping the AT Protocol AppView, with a 15s per-request timeout, retry on transient upstream failures (up to 3 retries, 500ms base delay — never for a login, or for a failure already mapped to a tool error), and a versioned `User-Agent`
 - No HTML in any error — a block page from Bluesky's edge is dropped from the error data, leaving the status
@@ -186,7 +199,7 @@ Bluesky-specific:
 
 Agent-friendly output:
 
-- AT-URIs on every post — chain `bsky_get_trending` → `bsky_get_feed` → `bsky_get_post_thread` without extra steps
+- AT-URIs on every post — chain `bsky_search_feeds` or `bsky_get_trending` → `bsky_get_feed` → `bsky_get_post_thread` without extra steps
 - Verification on every account an agent picks or cites — post authors on all five post tools, actor search, and the follow graph carry Bluesky's `verifiedStatus` / `trustedVerifierStatus` on the author's DID line; `bsky_get_profile` adds who issued each verification
 - Discriminated embed union — `type: "images" | "external" | "record" | "video" | "unknown"` lets callers branch on data instead of parsing `$type` strings; an unmapped lexicon type arrives as `unknown` with its raw `$type` rather than vanishing
 - Third-party text rendered as markdown blockquotes — post bodies, bios, alt text, and link-card text render as `>`-prefixed blockquotes in `content[]`, so a post's own heading or code fence never merges with the server's structure; values that render inline (display names, pronouns, topic names) have line breaks folded to spaces for the same reason. Inside both, the Markdown and raw HTML a CommonMark renderer would act on — emphasis, links, images, code, lists, headings, tags, entities — is escaped, so user text displays as written; URLs stay copyable and `structuredContent` carries every string unmodified. Each quote ends before the next line the server writes, so a rendering client never folds a post's counts or labels into it
@@ -313,6 +326,7 @@ This server requires no API keys. Everything below is optional.
 |:---------|:------------|:--------|
 | `BLUESKY_IDENTIFIER` | Handle, DID, or email of the account post search runs as. Set together with `BLUESKY_APP_PASSWORD`, or neither. | — |
 | `BLUESKY_APP_PASSWORD` | App password for that account. Without the pair, `bsky_search_posts` is not offered. | — |
+| `BLUESKY_CLAMP_READ_LIMITS` | Read-limit policy: clamp oversized requests to the existing caps and disclose requested/applied values; `false` restores rejection. | `true` |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http` | `stdio` |
 | `MCP_SESSION_MODE` | HTTP session mode: `stateful`, `stateless`, or `auto`. Unset or empty, the server resolves to `stateless` from its own `createApp({ sessionMode })` declaration; an explicit value still overrides it. | `stateless` |
 | `MCP_HTTP_PORT` | Port for HTTP server | `3010` |
@@ -371,9 +385,9 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 | Directory | Purpose |
 |:----------|:--------|
 | `src/index.ts` | `createApp()` entry point — reads config, registers tools and resource, and inits the service. |
-| `src/config` | Server config — the optional app-password pair that enables post search. |
+| `src/config` | Read-limit policy and the optional app-password pair that enables post search. |
 | `src/services/bluesky` | AT Protocol HTTP client — public AppView reads, the app-password search session, retry, timeout, and `User-Agent`. |
-| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`) — nine read-only Bluesky tools. |
+| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`) — ten read-only Bluesky tools. |
 | `src/mcp-server/resources` | Resource definitions (`*.resource.ts`) — `bsky://profile/{actor}`. |
 | `tests/` | Unit and integration tests mirroring `src/`. |
 
@@ -383,7 +397,7 @@ See [`CLAUDE.md`](./CLAUDE.md) for development guidelines and architectural rule
 
 - Handlers throw, framework catches — no `try/catch` in tool logic
 - Use `ctx.log` for request-scoped logging, `ctx.state` for tenant-scoped storage
-- Register new tools and resources via the arrays in `src/index.ts`
+- Register tools in `src/mcp-server/server-surface.ts` and resources in `src/index.ts`
 - Wrap external API calls: validate raw → normalize to domain type → return output schema; never fabricate missing fields
 
 ## Contributing

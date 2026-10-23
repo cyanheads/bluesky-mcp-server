@@ -10,7 +10,8 @@
  */
 
 import { createFetchMock, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import * as utilities from '@cyanheads/mcp-ts-core/utils';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bskyGetAuthorFeed } from '@/mcp-server/tools/definitions/bsky-get-author-feed.tool.js';
 import { bskyGetFeed } from '@/mcp-server/tools/definitions/bsky-get-feed.tool.js';
 import { bskyGetPostQuotes } from '@/mcp-server/tools/definitions/bsky-get-post-quotes.tool.js';
@@ -32,6 +33,8 @@ import {
 } from './budget-fixtures.js';
 
 const BUDGET = 48_000;
+
+vi.mock('@cyanheads/mcp-ts-core/utils', { spy: true });
 
 const http = createFetchMock([], {
   onUnhandled: () => Promise.reject(new Error('unmocked fetch')),
@@ -88,6 +91,44 @@ const MORE_POSTS = 'More posts exist — pass the returned cursor to fetch the n
 
 describe('bsky_get_author_feed — cut and re-requested', () => {
   const items = stream(150, 600);
+
+  it('clamps before paging, measures the notice, and resumes a second cut page without gaps', async () => {
+    const add = vi.fn();
+    vi.mocked(utilities.createCounter).mockReturnValueOnce({ add });
+    routeAuthorFeed(http, items);
+    const firstResult = await runToolContract(bskyGetAuthorFeed, { actor: 'bsky.app', limit: 150 });
+    expect(firstResult.isError).toBeFalsy();
+    expect(add).toHaveBeenCalledExactlyOnceWith(1, {
+      tool: 'bsky_get_author_feed',
+      field: 'limit',
+    });
+    const first = sc(firstResult);
+    const secondResult = await runToolContract<Parameters<typeof runToolContract>[0]>(
+      bskyGetAuthorFeed,
+      {
+        actor: 'bsky.app',
+        limit: '150',
+        cursor: first.cursor,
+      },
+    );
+    expect(secondResult.isError).toBeFalsy();
+    expect(add).toHaveBeenCalledTimes(2);
+    const second = sc(secondResult);
+    const walked = [...rkeys(first), ...rkeys(second)];
+    expect(walked).toEqual(items.slice(0, walked.length).map((post) => post.uri.split('/').at(-1)));
+    expect(limitsSent(http, 'getAuthorFeed')).toEqual([
+      100,
+      first.posts.length,
+      100,
+      second.posts.length,
+    ]);
+    for (const result of [firstResult, secondResult]) {
+      expectFilled(result, 1500);
+      expectDisclosed(result, MORE_POSTS);
+      expect(sc(result).notice).toContain('limit 150 requested; 100 applied.');
+      expect(textOf(result)).toContain(String(sc(result).notice));
+    }
+  });
 
   it('re-requests the overflowing page at the limit that fits and returns that response whole', async () => {
     routeAuthorFeed(http, items);
@@ -239,31 +280,45 @@ describe('bsky_get_author_feed — cut and re-requested', () => {
 });
 
 describe('bsky_get_post_quotes — cut and re-requested', () => {
-  it('re-requests on the DID-form uri the first response resolved, without resolving the handle again', async () => {
-    const items = stream(150, 600);
-    http.route({
-      method: 'GET',
-      match: /com\.atproto\.identity\.resolveHandle\?/,
-      respond: Response.json({ did: AUTHOR_DID }),
-    });
-    routeQuotes(http, items);
-    const result = await runToolContract(bskyGetPostQuotes, {
-      uri: 'at://bsky.app/app.bsky.feed.post/quoted',
-      limit: 100,
-    });
+  it.each(['latest', 'top'] as const)(
+    're-requests %s on the DID-form uri the first response resolved, without resolving the handle again',
+    async (sort) => {
+      const items = stream(150, 600);
+      http.route({
+        method: 'GET',
+        match: /com\.atproto\.identity\.resolveHandle\?/,
+        respond: Response.json({ did: AUTHOR_DID }),
+      });
+      routeQuotes(http, items);
+      const result = await runToolContract(bskyGetPostQuotes, {
+        uri: 'at://bsky.app/app.bsky.feed.post/quoted',
+        sort,
+        limit: 100,
+      });
 
-    const page = sc(result);
-    const k = page.posts.length;
-    expect(limitsSent(http, 'getQuotes')).toEqual([100, k]);
-    expect(http.calls.filter((c) => c.request.url.includes('resolveHandle'))).toHaveLength(1);
-    const uris = http.calls
-      .filter((c) => c.request.url.includes('getQuotes'))
-      .map((c) => new URL(c.request.url).searchParams.get('uri'));
-    expect(uris).toEqual([postUri('quoted'), postUri('quoted')]);
-    expect(page.cursor).toBe(`c${k}`);
-    expectFilled(result, 1500);
-    expectDisclosed(result, 'More quotes exist — pass the returned cursor to fetch the next page.');
-  });
+      const page = sc(result);
+      const k = page.posts.length;
+      expect(limitsSent(http, 'getQuotes')).toEqual([100, k]);
+      expect(http.calls.filter((c) => c.request.url.includes('resolveHandle'))).toHaveLength(1);
+      const uris = http.calls
+        .filter((c) => c.request.url.includes('getQuotes'))
+        .map((c) => new URL(c.request.url).searchParams.get('uri'));
+      expect(uris).toEqual([postUri('quoted'), postUri('quoted')]);
+      expect(
+        http.calls
+          .filter((c) => c.request.url.includes('getQuotes'))
+          .map((c) => new URL(c.request.url).searchParams.get('sort')),
+      ).toEqual([sort, sort]);
+      expect(page).toMatchObject({ sort });
+      expect(textOf(result)).toContain(`Sort: ${sort}`);
+      expect(page.cursor).toBe(`c${k}`);
+      expectFilled(result, 1500);
+      expectDisclosed(
+        result,
+        'More quotes exist — pass the returned cursor with the same post and sort to fetch the next page.',
+      );
+    },
+  );
 });
 
 describe('bsky_get_post_quotes — a 500 on the re-request', () => {
@@ -293,10 +348,21 @@ describe('bsky_get_post_quotes — a 500 on the re-request', () => {
       uri: postUri('quoted'),
       limit: 100,
       cursor: 'c10',
+      sort: 'top',
     });
 
     expect(result.isError).toBeFalsy();
     expect(limitsSent(http, 'getQuotes')).toHaveLength(3);
+    expect(http.calls.map((c) => new URL(c.request.url).searchParams.get('sort'))).toEqual([
+      'top',
+      'top',
+      'top',
+    ]);
+    expect(http.calls.map((c) => new URL(c.request.url).searchParams.get('cursor'))).toEqual([
+      'c10',
+      'c10',
+      'c10',
+    ]);
     expect(sc(result).budgetCapped).toBe(true);
   });
 });

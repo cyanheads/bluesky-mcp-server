@@ -3,7 +3,9 @@
  * returned before the budget existed. Each case runs one of the five post tools through the real
  * service over a faked `fetch` and compares a SHA-256 of both surfaces against a fingerprint taken
  * from the pre-budget build — the default page of each paged tool, a last page, an empty page, a
- * pinned first page, and a small thread with a parent chain.
+ * pinned first page, and a small thread with a parent chain. The empty-feed fingerprint includes
+ * the page-neutral empty wording used alongside first-page or exhaustion enrichment. The quotes
+ * fingerprint includes applied-sort context and cursor guidance for the same post and sort.
  * @module tests/mcp-server/tools/response-budget.characterization.test
  */
 
@@ -90,7 +92,7 @@ describe('responses that fit are unchanged', () => {
     routeRankedFeed(http, () => ({ posts: [] }));
     await expectUnchanged(
       () => runToolContract(bskyGetFeed, { feed: FEED }),
-      '567c950da1d470b8cefec6d673a7b34b8288873660cdefb77b5abf0bd4e554ac',
+      'cc3fd02bd675dfbda6ce1bd2aae402ecd213991c37317787137c672f49a43a2d',
     );
   });
 
@@ -98,7 +100,7 @@ describe('responses that fit are unchanged', () => {
     routeQuotes(http, stream(40, 400));
     await expectUnchanged(
       () => runToolContract(bskyGetPostQuotes, { uri: postUri('quoted') }),
-      '6493c9c3e69e6e8e1ba5a9163501d4cfd3bdd72aaba98ee079d216e865d63d7f',
+      '9ec95ec720a55cd7cdea849f50b1383e445c46ff615571b83e00e9e4d15f59f0',
     );
   });
 

@@ -12,6 +12,7 @@ import { bskyGetAuthorFeed } from '@/mcp-server/tools/definitions/bsky-get-autho
 import { bskyGetFeed } from '@/mcp-server/tools/definitions/bsky-get-feed.tool.js';
 import { bskyGetFollows } from '@/mcp-server/tools/definitions/bsky-get-follows.tool.js';
 import { bskySearchActors } from '@/mcp-server/tools/definitions/bsky-search-actors.tool.js';
+import { bskySearchFeeds } from '@/mcp-server/tools/definitions/bsky-search-feeds.tool.js';
 import { initBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
 const DID = 'did:plc:z72i7hdynmk6r22z27h6tvur';
@@ -39,6 +40,7 @@ function routeEmpty(cursor?: string) {
       Response.json({
         feed: [],
         actors: [],
+        feeds: [],
         follows: [],
         followers: [],
         subject: { did: DID, handle: 'bsky.app' },
@@ -70,7 +72,7 @@ const TOOLS = [
       }),
     runFirst: () =>
       runToolContract(bskyGetFeed, { feed: `at://${DID}/app.bsky.feed.generator/whats-hot` }),
-    empty: 'The feed returned no posts.',
+    empty: 'No posts on this page.',
     exhausted: 'The feed returned no posts.',
   },
   {
@@ -112,5 +114,18 @@ describe.each(TOOLS)('$name — an empty page', ({ run, runFirst, empty, exhaust
     expect(text).toContain(empty);
     expect(text).toContain(exhausted);
     expect(text).not.toContain('cursor: `');
+  });
+});
+
+describe('bsky_search_feeds — an empty page', () => {
+  it('quotes the opaque cursor and continues without claiming exhaustion', async () => {
+    routeEmpty(NEXT);
+    const result = await runToolContract(bskySearchFeeds, { query: 'science', cursor: 'c1' });
+    expect(result.isError).toBeFalsy();
+    expect(structured(result)).toMatchObject({ cursor: NEXT, truncated: true });
+    expect(textOf(result)).toContain(`> ${NEXT}`);
+    expect(textOf(result)).toContain(structured(result).notice);
+    expect(textOf(result)).not.toContain('No more feeds');
+    expect(textOf(result)).not.toContain('No feeds matched');
   });
 });

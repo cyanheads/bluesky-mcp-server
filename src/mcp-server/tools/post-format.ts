@@ -20,6 +20,8 @@
  * @module mcp-server/tools/post-format
  */
 
+import { knownFacetFeature, type PostFacet } from '@/services/bluesky/post-facets.js';
+
 /** @internal Letters and digits — what makes an `_` intraword, where it can neither open nor close emphasis. */
 const WORD_CHAR = /[\p{L}\p{N}]/u;
 
@@ -229,6 +231,68 @@ export function closeQuotes(lines: readonly string[]): string[] {
   return out;
 }
 
+/** Encode a complete URI inside a CommonMark angle destination without altering its value. */
+export function destinationLink(uri: string): string {
+  const destination = uri
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('\\', '&#92;')
+    .replaceAll('\r', '&#13;')
+    .replaceAll('\n', '&#10;');
+  const label = destination
+    .replaceAll('[', '&#91;')
+    .replaceAll(']', '&#93;')
+    .replaceAll('*', '&#42;')
+    .replaceAll('_', '&#95;')
+    .replaceAll('`', '&#96;');
+  return `[${label}](<${destination}>)`;
+}
+
+/** Render every facet field as metadata; never splice byte offsets into JavaScript text. */
+function renderFacetLines(facets: readonly PostFacet[]): string[] {
+  const lines = [`**Facets:** ${facets.length}`];
+  const metadata = (label: string, value: Record<string, unknown>): void => {
+    if (Object.keys(value).length) lines.push(label, ...quoteUserText(JSON.stringify(value)));
+  };
+  for (const facet of facets) {
+    const { index, features, ...facetFields } = facet;
+    const { byteStart, byteEnd, ...indexFields } = index;
+    lines.push(`UTF-8 bytes ${byteStart}..${byteEnd} (end exclusive):`);
+    metadata('Facet metadata:', facetFields);
+    metadata('Byte-range metadata:', indexFields);
+    for (const feature of features) {
+      lines.push(`Feature: ${inlineUserText(feature.$type)}`);
+      const known = knownFacetFeature(feature);
+      if (!known) {
+        lines.push('Feature data:', ...quoteUserText(JSON.stringify(feature)));
+        continue;
+      }
+      switch (known.$type) {
+        case 'app.bsky.richtext.facet#link': {
+          const { $type, uri, ...fields } = known;
+          lines.push(`Link: ${destinationLink(uri)}`);
+          metadata('Feature metadata:', fields);
+          break;
+        }
+        case 'app.bsky.richtext.facet#mention': {
+          const { $type, did, ...fields } = known;
+          lines.push(`Mention DID: ${inlineUserText(did)}`);
+          metadata('Feature metadata:', fields);
+          break;
+        }
+        case 'app.bsky.richtext.facet#tag': {
+          const { $type, tag, ...fields } = known;
+          lines.push('Tag:', ...quoteUserText(tag));
+          metadata('Feature metadata:', fields);
+          break;
+        }
+      }
+    }
+  }
+  return closeQuotes(lines);
+}
+
 /** An account's two verification statuses, as every actor-bearing schema declares them. */
 export interface RenderableVerification {
   trustedVerifierStatus: string;
@@ -262,6 +326,7 @@ export interface RenderablePost {
   createdAt?: string | undefined;
   /** Normalized embed union — narrowed at render time, since tool schemas type it as passthrough. */
   embed?: unknown;
+  facets?: PostFacet[] | undefined;
   indexedAt?: string | undefined;
   labels?: Array<{ val: string; src?: string | undefined; cts?: string | undefined }> | undefined;
   likeCount?: number | undefined;
@@ -421,6 +486,9 @@ function embedLines(embed: unknown, nested: boolean): string[] {
       if (typeof e.text === 'string') {
         lines.push(...detail(quoteUserText(e.text)));
       }
+      if (Array.isArray(e.facets)) {
+        lines.push(...detail(renderFacetLines(e.facets as PostFacet[])));
+      }
       const quotedEmbeds = (Array.isArray(e.embeds) ? e.embeds : []).flatMap((inner) =>
         embedLines(inner, true),
       );
@@ -483,6 +551,7 @@ export function renderPostLines(post: RenderablePost, headingPrefix = ''): strin
     `**Author DID:** \`${post.author.did}\`${verificationSuffix(post.author.verification)}`,
   );
   lines.push(...quoteUserText(post.text));
+  if (post.facets !== undefined) lines.push(...renderFacetLines(post.facets));
   const meta: string[] = [];
   if (post.likeCount != null) meta.push(`${post.likeCount} likes`);
   if (post.repostCount != null) meta.push(`${post.repostCount} reposts`);

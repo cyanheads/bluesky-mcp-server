@@ -9,8 +9,9 @@
  */
 
 import { type ContentBlock, tool, z } from '@cyanheads/mcp-ts-core';
-import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { describe, expect, it } from 'vitest';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import * as utilities from '@cyanheads/mcp-ts-core/utils';
+import { describe, expect, it, vi } from 'vitest';
 import {
   applyEnrichment,
   type EnrichmentValues,
@@ -19,9 +20,12 @@ import {
   largestFitting,
   MAX_BUDGET_REFETCHES,
   measureResponse,
+  pageEnrichment,
   RESPONSE_BUDGET_BYTES,
 } from '@/mcp-server/tools/response-budget.js';
 import { surfaces } from './budget-fixtures.js';
+
+vi.mock('@cyanheads/mcp-ts-core/utils', { spy: true });
 
 const ProbeOutput = z.object({
   items: z.array(z.string().describe('An item.')).describe('Items.'),
@@ -103,6 +107,71 @@ describe('measureResponse — the bytes a client receives', () => {
     const parsed = ProbeOutput.parse({ items: ['one', 'twö'], cursor: 'c1' });
     expect(measureResponse(parsed, formatProbe, values)).toEqual(surfaces(result));
   });
+});
+
+describe('read-limit disclosure', () => {
+  it('counts and logs only clamped fields, with bounded metric attributes', async () => {
+    vi.resetModules();
+    const add = vi.fn();
+    const counter = vi.mocked(utilities.createCounter).mockReturnValueOnce({ add });
+    try {
+      const { clampReadLimit } = await import('@/mcp-server/tools/read-limits.js');
+      const ctx = createMockContext();
+      const log = vi.spyOn(ctx.log, 'info');
+      expect(clampReadLimit(ctx, 'bsky_get_feed', 'limit', 100, 100)).toEqual({ applied: 100 });
+      expect(add).not.toHaveBeenCalled();
+      expect(log).not.toHaveBeenCalled();
+      expect(clampReadLimit(ctx, 'bsky_get_feed', 'limit', 150, 100)).toEqual({
+        applied: 100,
+        notice: 'limit 150 requested; 100 applied.',
+      });
+      expect(counter).toHaveBeenCalledOnce();
+      expect(add).toHaveBeenCalledExactlyOnceWith(1, { tool: 'bsky_get_feed', field: 'limit' });
+      expect(log).toHaveBeenCalledExactlyOnceWith('Clamped Bluesky read limit', {
+        tool: 'bsky_get_feed',
+        field: 'limit',
+        requested: 150,
+        applied: 100,
+      });
+    } finally {
+      counter.mockRestore();
+    }
+  });
+
+  it.each([
+    { shown: 0, cursor: undefined, requested: undefined, guidance: 'No more posts.' },
+    { shown: 0, cursor: undefined, requested: 4, guidance: 'No more posts.' },
+    { shown: 0, cursor: 'next', requested: undefined, guidance: 'Continue with cursor.' },
+    { shown: 4, cursor: 'next', requested: 4, guidance: 'Continue with cursor.' },
+  ])(
+    'measures the single composed notice for $shown posts and cursor $cursor',
+    async ({ shown, cursor, requested, guidance }) => {
+      const values = pageEnrichment({
+        clampNotice: 'limit 150 requested; 100 applied.',
+        cursor,
+        empty: 'No more posts.',
+        limit: 100,
+        more: 'Continue with cursor.',
+        noun: 'posts',
+        requested,
+        shown,
+      });
+      expect(values.notice).toContain('limit 150 requested; 100 applied.');
+      expect(values.notice).toContain(guidance);
+      if (requested !== undefined) expect(values.notice).toContain('48,000-byte response budget');
+      const result = await runToolContract(probe(values), {});
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject(values);
+      expect(result.content[1]).toEqual({ type: 'text', text: enrichmentTrailer(values) });
+      expect(
+        measureResponse(
+          ProbeOutput.parse({ items: ['one', 'twö'], cursor: 'c1' }),
+          formatProbe,
+          values,
+        ),
+      ).toEqual(surfaces(result));
+    },
+  );
 });
 
 describe('largestFitting', () => {

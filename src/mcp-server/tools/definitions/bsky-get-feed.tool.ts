@@ -7,9 +7,11 @@
 import { type ContentBlock, tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { renderPostLines } from '@/mcp-server/tools/post-format.js';
+import { clampReadLimit, readLimitSchema } from '@/mcp-server/tools/read-limits.js';
 import { pageEnrichment, respondWithinBudget } from '@/mcp-server/tools/response-budget.js';
 import { FEED_REF_MESSAGE, FEED_REF_REGEX } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
+import { FacetSchema } from '@/services/bluesky/post-facets.js';
 
 /**
  * Embed uses passthrough so the normalized union flows through structuredContent whole; the fields
@@ -24,7 +26,7 @@ const EmbedSchema = z
       'type: "images" | "external" | "record" | "video" | "unknown". ' +
       'images: array of { url, alt } — also carries app.bsky.embed.gallery embeds. ' +
       'external: { uri, title, description }. ' +
-      'record: { uri, cid, text?, authorHandle?, embeds?, media?, omittedEmbeds?, recordKind? } — embeds is the ' +
+      'record: { uri, cid, text?, facets?, authorHandle?, embeds?, media?, omittedEmbeds?, recordKind? } — facets retain UTF-8 byte ranges and link URI, mention DID, or tag features on the original text; embeds is the ' +
       "quoted post's own attachments; media is the image/video/link attached alongside the quote by the post " +
       'doing the quoting, on a recordWithMedia embed. Both are embeds of these same shapes. omittedEmbeds counts ' +
       'attachments past the nesting this server follows — fetch the quote uri as its own post to read them. ' +
@@ -46,6 +48,12 @@ const PostSchema = z
       ),
     cid: z.string().describe('Content Identifier (CID) of the post record.'),
     text: z.string().describe('Full text content of the post.'),
+    facets: z
+      .array(FacetSchema)
+      .optional()
+      .describe(
+        'Rich-text facets on the unchanged text, with UTF-8 byte ranges and full link, mention, or tag values.',
+      ),
     author: z
       .object({
         did: z
@@ -156,9 +164,6 @@ const FeedOutput = z.object({
 
 /** Module-level so the handler can measure the rendered page against the response budget. */
 function formatFeed(result: z.infer<typeof FeedOutput>): ContentBlock[] {
-  if (result.posts.length === 0 && !result.cursor) {
-    return [{ type: 'text', text: 'The feed returned no posts.' }];
-  }
   const output = result.posts.length
     ? result.posts.map((p) => renderPostLines(p).join('\n')).join('\n\n---\n\n')
     : 'No posts on this page.';
@@ -176,7 +181,7 @@ export const bskyGetFeed = tool('bsky_get_feed', {
     'Read the posts a Bluesky feed generator serves, in the order the feed ranks them. Accepts the ' +
     "feed's AT-URI (at://<handle-or-did>/app.bsky.feed.generator/<rkey>) or its bsky.app page " +
     '(https://bsky.app/profile/<handle-or-did>/feed/<rkey>). Feeds come from the "feedUri" of each ' +
-    'bsky_get_trending topic — the way to read what a trend is about — from a quoted feed in a post ' +
+    'bsky_get_trending topic — the way to read what a trend is about — from bsky_search_feeds catalog results, from a quoted feed in a post ' +
     '(an embed with recordKind "generator"), or from a shared link; Discover is ' +
     'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot. Returns posts with full ' +
     'text, engagement counts, embeds, and AT-URIs for drilling into threads via bsky_get_post_thread. ' +
@@ -195,14 +200,10 @@ export const bskyGetFeed = tool('bsky_get_feed', {
           'or "#…" on the URL is ignored. The owner may be a handle or a DID; a handle costs one extra lookup. ' +
           'A trend\'s "feedUri" works as-is.',
       ),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(100)
+    limit: readLimitSchema(100)
       .default(25)
       .describe(
-        'Maximum number of posts to return (1–100). Default 25. A feed may return fewer than the ' +
+        'Maximum number of posts to return. Default 25; values above 100 are clamped with a notice unless read-limit clamping is disabled. A feed may return fewer than the ' +
           'limit on a page that still has more after it — follow the cursor, not the count. A page that ' +
           'would pass the 48,000-byte response budget is asked for again with fewer posts and carries ' +
           '"budgetCapped: true"; its cursor continues after the posts it holds.',
@@ -266,6 +267,13 @@ export const bskyGetFeed = tool('bsky_get_feed', {
   ],
 
   async handler(input, ctx) {
+    const { applied: limit, notice: clampNotice } = clampReadLimit(
+      ctx,
+      'bsky_get_feed',
+      'limit',
+      input.limit,
+      100,
+    );
     ctx.log.info('Fetching Bluesky feed', { feed: input.feed, limit: input.limit });
     const fetchPage = (feed: string, limit: number) =>
       getBlueskyService().getFeed(
@@ -277,10 +285,10 @@ export const bskyGetFeed = tool('bsky_get_feed', {
      * A ranked feed reranks on every request, so a re-requested page is not a prefix of the first —
      * which is why the page is re-requested rather than cut: its posts and cursor stay one answer.
      */
-    const first = await fetchPage(input.feed, input.limit);
+    const first = await fetchPage(input.feed, limit);
     return respondWithinBudget(ctx, first, {
       count: (page) => page.posts.length,
-      limit: input.limit,
+      limit,
       slice: (page, kept) => ({ ...page, posts: page.posts.slice(0, kept) }),
       /** The DID form the first page resolved, so a handle owner is looked up once per call. */
       refetch: (limit) => fetchPage(first.feedUri, limit),
@@ -293,14 +301,16 @@ export const bskyGetFeed = tool('bsky_get_feed', {
          * reaches here: the service drops it.
          */
         enrichment: pageEnrichment({
+          clampNotice,
           shown: page.posts.length,
           cursor: page.cursor,
-          limit: input.limit,
+          limit,
           requested,
           noun: 'posts',
           more: 'More posts exist — pass the returned cursor to fetch the next page.',
-          empty:
-            'The feed returned no posts. It may have nothing to serve right now — try a different feed, such as a bsky_get_trending feedUri.',
+          empty: input.cursor
+            ? 'No more posts in this feed traversal.'
+            : 'The feed returned no posts. It may have nothing to serve right now — try a different feed, such as a bsky_get_trending feedUri.',
         }),
       }),
       schema: FeedOutput,

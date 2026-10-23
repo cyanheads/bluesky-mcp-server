@@ -2,10 +2,10 @@
 
 **Server:** bluesky-mcp-server
 **Version:** 0.5.2
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.14`
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.15`
 **Engines:** Bun ≥1.4.0, Node ≥24.0.0
-**MCP SDK:** `@modelcontextprotocol/server` ^2.2.0
-**Zod:** ^4.6.5
+**MCP SDK:** `@modelcontextprotocol/server` ^2.3.1
+**Zod:** ^4.6.7
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
 
@@ -196,11 +196,12 @@ See framework CLAUDE.md and the `api-errors` skill for the full auto-classificat
 src/
   index.ts                              # createApp() entry point — reads config, registers tools, resource, service
   config/
-    server-config.ts                    # Optional BLUESKY_IDENTIFIER / BLUESKY_APP_PASSWORD pair that enables post search
+    server-config.ts                    # Read-limit policy and optional BLUESKY_IDENTIFIER / BLUESKY_APP_PASSWORD pair
   services/
     bluesky/
       at-syntax.ts                      # Identifier / AT-URI / feed-ref / ISO 8601 patterns, and the one parser for @handle and bsky.app URLs
       bluesky-service.ts                # AT Protocol read client — keyless AppView reads, retry, error mapping, normalization; post search via the session
+      post-facets.ts                    # Open rich-text feature schema and typed known variants
       search-session.ts                 # App-password session for post search — lazy login, single-flight renewal, login-rejection and login-limit latches
       xrpc.ts                           # Shared request plumbing — User-Agent, timeout, XRPC URLs, error-status and HTML-body handling
       types.ts                          # Domain types: Post, Actor, Thread, Trend, Feed, Embed
@@ -208,8 +209,10 @@ src/
     server-surface.ts                   # Tool list + server instructions, both derived from whether search is configured
     tools/
       post-format.ts                    # Shared post renderer + the quoted/inline framings every format() puts around Bluesky-authored text
+      read-limits.ts                    # Conditional input maxima, per-call clamping, and composed disclosure
       response-budget.ts                # 48,000-byte per-surface budget — measures the real output, re-requests an overflowing page at the limit that fits
       definitions/
+        bsky-search-feeds.tool.ts       # Keyless provider catalog metadata search; feedUri chains to bsky-get-feed
         bsky-search-posts.tool.ts       # Full-text post search with filters (disabledTool() without an app password)
         bsky-get-profile.tool.ts        # Actor profile lookup by handle or DID
         bsky-get-feed.tool.ts           # A feed generator's posts by AT-URI or bsky.app URL

@@ -15,6 +15,7 @@
  */
 
 import type { ContentBlock, Context } from '@cyanheads/mcp-ts-core';
+import { composeNotices } from '@/mcp-server/tools/read-limits.js';
 
 /**
  * Bytes either surface may carry, UTF-8, not configurable. Sized on measured responses: every
@@ -183,6 +184,8 @@ export async function fitPage<P>(first: P, fit: PageFit<P>): Promise<FittedPage<
 
 /** What one page of a paged tool says about itself, beyond its posts. */
 export interface PageDisclosure {
+  /** Disclosure prepared once before upstream work, included in every measured candidate. */
+  clampNotice?: string | undefined;
   /** The page's cursor — its presence is what `truncated` / `shown` / `cap` report. */
   cursor: string | undefined;
   /** The notice for an empty page that has no cursor. */
@@ -215,17 +218,16 @@ export function pageEnrichment(page: PageDisclosure): Record<string, EnrichmentV
   const enrichment: Record<string, EnrichmentValue> = { totalReturned: shown, ...page.extra };
   if (cursor) Object.assign(enrichment, { truncated: true, shown, cap: limit });
   if (requested !== undefined) enrichment.budgetCapped = true;
-  const notice = [
+  const notice = composeNotices(
+    page.clampNotice,
     cursor ? page.more : shown === 0 ? page.empty : '',
     requested === undefined
       ? ''
       : `This page holds ${shown} of the ${limit} ${noun} asked for: a page of ${limit} would have run ` +
-        `past this server's ${RESPONSE_BUDGET_BYTES.toLocaleString('en-US')}-byte response budget. ` +
-        `Bluesky was asked again with limit ${requested}, so these ${noun} and the cursor come from ` +
-        'one response and the cursor picks up where they end. A smaller limit pages in steps that fit.',
-  ]
-    .filter(Boolean)
-    .join(' ');
+          `past this server's ${RESPONSE_BUDGET_BYTES.toLocaleString('en-US')}-byte response budget. ` +
+          `Bluesky was asked again with limit ${requested}, so these ${noun} and the cursor come from ` +
+          'one response and the cursor picks up where they end. A smaller limit pages in steps that fit.',
+  );
   if (notice) enrichment.notice = notice;
   return enrichment;
 }

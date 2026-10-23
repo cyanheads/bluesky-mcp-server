@@ -1,13 +1,31 @@
 /**
- * @fileoverview Server-specific configuration: the optional Bluesky app password that enables post
- * search. Parsed lazily through the framework's env helper, so a blank value — what an MCPB or
- * plugin host forwards for an option left empty — reads as unset.
+ * @fileoverview Server-specific read-limit policy and optional Bluesky search credentials. The
+ * policy is parsed when input schemas are built; credential validation stays lazy until startup.
+ * Blank values forwarded by plugin hosts read as unset through the framework's env helper.
  * @module config/server-config
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
 import { config, parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 import type { SearchCredentials } from '@/services/bluesky/search-session.js';
+
+const ReadLimitConfigSchema = z.object({
+  clampReadLimits: z
+    .stringbool()
+    .default(true)
+    .describe('Clamp oversized read limits with disclosure.'),
+});
+
+let _readLimitConfig: z.infer<typeof ReadLimitConfigSchema> | undefined;
+
+/** Read policy used while defining input schemas; does not parse search credentials. */
+export function getClampReadLimits(): boolean {
+  void config.mcpServerName;
+  _readLimitConfig ??= parseEnvConfig(ReadLimitConfigSchema, {
+    clampReadLimits: 'BLUESKY_CLAMP_READ_LIMITS',
+  });
+  return _readLimitConfig.clampReadLimits;
+}
 
 const ServerConfigSchema = z
   .object({
@@ -33,6 +51,8 @@ const ServerConfigSchema = z
 
 /** Parsed server configuration. */
 export interface ServerConfig {
+  /** Oversized read limits are bounded and disclosed unless explicitly disabled. */
+  clampReadLimits: boolean;
   /** Present only when both variables are set — the one switch for the search tool. */
   searchCredentials?: SearchCredentials;
 }
@@ -63,5 +83,8 @@ function toServerConfig({
   identifier,
   appPassword,
 }: z.infer<typeof ServerConfigSchema>): ServerConfig {
-  return identifier && appPassword ? { searchCredentials: { identifier, appPassword } } : {};
+  return {
+    clampReadLimits: getClampReadLimits(),
+    ...(identifier && appPassword ? { searchCredentials: { identifier, appPassword } } : {}),
+  };
 }

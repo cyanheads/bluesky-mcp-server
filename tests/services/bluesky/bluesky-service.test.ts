@@ -13,7 +13,12 @@ import { BlueskyService } from '@/services/bluesky/bluesky-service.js';
 
 vi.mock('@cyanheads/mcp-ts-core/utils', () => ({
   fetchWithTimeout: vi.fn(),
-  withRetry: vi.fn((fn: () => unknown) => fn()),
+  withRetry: vi.fn(
+    (
+      fn: (attempt: { signal: AbortSignal; remainingMs: number }) => unknown,
+      options: { signal: AbortSignal },
+    ) => fn({ signal: options.signal, remainingMs: Number.POSITIVE_INFINITY }),
+  ),
 }));
 
 import { fetchWithTimeout } from '@cyanheads/mcp-ts-core/utils';

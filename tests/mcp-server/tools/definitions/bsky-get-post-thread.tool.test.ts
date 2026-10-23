@@ -207,8 +207,12 @@ describe('bskyGetPostThread', () => {
   it.each([
     ['depth', 0],
     ['depth', 10],
+    ['depth', 11],
+    ['depth', 1000],
     ['parent_height', 0],
     ['parent_height', 100],
+    ['parent_height', 101],
+    ['parent_height', 1000],
   ])('accepts %s = %i', (field, value) => {
     const input = bskyGetPostThread.input.parse({
       uri: 'at://did:plc:abc/app.bsky.feed.post/r1',
@@ -218,12 +222,8 @@ describe('bskyGetPostThread', () => {
   });
 
   it.each([
-    ['depth above the reply-tree ceiling', 'depth', 11],
-    ['depth at the old ceiling', 'depth', 1000],
     ['negative depth', 'depth', -1],
     ['fractional depth', 'depth', 2.5],
-    ['parent_height above the ceiling', 'parent_height', 101],
-    ['parent_height at the old ceiling', 'parent_height', 1000],
     ['negative parent_height', 'parent_height', -1],
   ])('rejects %s', (_label, field, value) => {
     expect(() =>

@@ -18,6 +18,7 @@ import { bskyGetPostThread } from '@/mcp-server/tools/definitions/bsky-get-post-
 import { bskyGetProfile } from '@/mcp-server/tools/definitions/bsky-get-profile.tool.js';
 import { bskyGetTrending } from '@/mcp-server/tools/definitions/bsky-get-trending.tool.js';
 import { bskySearchActors } from '@/mcp-server/tools/definitions/bsky-search-actors.tool.js';
+import { bskySearchFeeds } from '@/mcp-server/tools/definitions/bsky-search-feeds.tool.js';
 import { bskySearchPosts } from '@/mcp-server/tools/definitions/bsky-search-posts.tool.js';
 import {
   ACTOR_REF_MESSAGE,
@@ -29,6 +30,7 @@ import {
 const ALWAYS_REGISTERED = [
   bskyGetProfile,
   bskySearchActors,
+  bskySearchFeeds,
   bskyGetTrending,
   bskyGetFeed,
   bskyGetAuthorFeed,

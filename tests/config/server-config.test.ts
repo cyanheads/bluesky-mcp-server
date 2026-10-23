@@ -21,11 +21,30 @@ afterEach(() => {
 });
 
 describe('getServerConfig', () => {
+  it.each([
+    [undefined, true],
+    ['', true],
+    ['true', true],
+    ['false', false],
+    ['0', false],
+    ['no', false],
+  ] as const)('parses read clamping %s as %s', async (value, expected) => {
+    vi.stubEnv('BLUESKY_IDENTIFIER', undefined);
+    vi.stubEnv('BLUESKY_APP_PASSWORD', undefined);
+    vi.stubEnv('BLUESKY_CLAMP_READ_LIMITS', value);
+    expect(await load()).toMatchObject({ clampReadLimits: expected });
+  });
+
+  it('rejects an invalid clamp flag naming its variable', async () => {
+    vi.stubEnv('BLUESKY_CLAMP_READ_LIMITS', 'perhaps');
+    await expect(load()).rejects.toThrow('BLUESKY_CLAMP_READ_LIMITS');
+  });
   it('enables search when both variables are set', async () => {
     vi.stubEnv('BLUESKY_IDENTIFIER', 'operator.bsky.social');
     vi.stubEnv('BLUESKY_APP_PASSWORD', 'abcd-efgh-ijkl-mnop');
 
     expect(await load()).toEqual({
+      clampReadLimits: true,
       searchCredentials: { identifier: 'operator.bsky.social', appPassword: 'abcd-efgh-ijkl-mnop' },
     });
   });
@@ -33,7 +52,7 @@ describe('getServerConfig', () => {
   it('leaves search off when neither is set', async () => {
     vi.stubEnv('BLUESKY_IDENTIFIER', undefined);
     vi.stubEnv('BLUESKY_APP_PASSWORD', undefined);
-    expect(await load()).toEqual({});
+    expect(await load()).toEqual({ clampReadLimits: true });
   });
 
   it.each([
@@ -48,7 +67,7 @@ describe('getServerConfig', () => {
   ])('reads %s as unset', async (_label, identifier, password) => {
     vi.stubEnv('BLUESKY_IDENTIFIER', identifier);
     vi.stubEnv('BLUESKY_APP_PASSWORD', password);
-    expect(await load()).toEqual({});
+    expect(await load()).toEqual({ clampReadLimits: true });
   });
 
   it.each([

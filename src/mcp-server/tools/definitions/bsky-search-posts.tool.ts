@@ -10,6 +10,7 @@
 import { type ContentBlock, tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { renderPostLines } from '@/mcp-server/tools/post-format.js';
+import { clampReadLimit, readLimitSchema } from '@/mcp-server/tools/read-limits.js';
 import { pageEnrichment, respondWithinBudget } from '@/mcp-server/tools/response-budget.js';
 import {
   ACTOR_REF_MESSAGE,
@@ -29,6 +30,7 @@ import {
   searchLanguage,
 } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
+import { FacetSchema } from '@/services/bluesky/post-facets.js';
 import type { SearchPostsResult } from '@/services/bluesky/types.js';
 
 /**
@@ -77,7 +79,7 @@ const EmbedSchema = z
       'type: "images" | "external" | "record" | "video" | "unknown". ' +
       'images: array of { url, alt } — also carries app.bsky.embed.gallery embeds. ' +
       'external: { uri, title, description }. ' +
-      'record: { uri, cid, text?, authorHandle?, embeds?, media?, omittedEmbeds?, recordKind? } — embeds is the ' +
+      'record: { uri, cid, text?, facets?, authorHandle?, embeds?, media?, omittedEmbeds?, recordKind? } — facets retain UTF-8 byte ranges and link URI, mention DID, or tag features on the original text; embeds is the ' +
       "quoted post's own attachments, so a quote of an image post carries those images here; media is the " +
       'image/video/link attached alongside the quote by the post doing the quoting, on a recordWithMedia ' +
       'embed. Both are embeds of these same shapes. Bluesky fills embeds for the post being quoted and no ' +
@@ -104,6 +106,12 @@ const PostSchema = z
       ),
     cid: z.string().describe('Content Identifier (CID) of the post record.'),
     text: z.string().describe('Full text content of the post.'),
+    facets: z
+      .array(FacetSchema)
+      .optional()
+      .describe(
+        'Rich-text facets on the unchanged text, with UTF-8 byte ranges and full link, mention, or tag values.',
+      ),
     author: z
       .object({
         did: z
@@ -380,14 +388,10 @@ export const bskySearchPosts = tool('bsky_search_posts', {
         '"latest" returns posts in reverse-chronological order (default). ' +
           '"top" returns by engagement score.',
       ),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(100)
+    limit: readLimitSchema(100)
       .default(25)
       .describe(
-        'Maximum posts to return (1–100). Default 25. A page that would pass the 48,000-byte response ' +
+        'Maximum posts to return; values above 100 are clamped with notice unless strict limits are configured. Default 25. A page that would pass the 48,000-byte response ' +
           'budget is asked for again with fewer posts and carries "budgetCapped: true"; its cursor ' +
           'continues after the posts it holds.',
       ),
@@ -469,6 +473,7 @@ export const bskySearchPosts = tool('bsky_search_posts', {
   ],
 
   async handler(input, ctx) {
+    const limit = clampReadLimit(ctx, 'bsky_search_posts', 'limit', input.limit, 100);
     ctx.log.info('Searching Bluesky posts', {
       query: input.query,
       sort: input.sort,
@@ -508,9 +513,9 @@ export const bskySearchPosts = tool('bsky_search_posts', {
       }
     };
 
-    return respondWithinBudget(ctx, await fetchPage(input.limit), {
+    return respondWithinBudget(ctx, await fetchPage(limit.applied), {
       count: (page) => page.posts.length,
-      limit: input.limit,
+      limit: limit.applied,
       slice: (page, kept) => ({ ...page, posts: page.posts.slice(0, kept) }),
       refetch: fetchPage,
       respond: (page, requested) => ({
@@ -535,7 +540,8 @@ export const bskySearchPosts = tool('bsky_search_posts', {
         enrichment: pageEnrichment({
           shown: page.posts.length,
           cursor: page.cursor,
-          limit: input.limit,
+          limit: limit.applied,
+          clampNotice: limit.notice,
           requested,
           noun: 'posts',
           more: 'More posts match than were returned — pass the returned cursor for the next page, or narrow with filters (author, tag, date range).',

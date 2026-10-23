@@ -1,6 +1,6 @@
 # bluesky-mcp-server - Directory Structure
 
-Generated on: 2026-10-08 11:25:55
+Generated on: 2026-10-23 05:15:39
 
 ```text
 bluesky-mcp-server/
@@ -158,14 +158,17 @@ bluesky-mcp-server/
 │   │   │   │   ├── bsky-get-profile.tool.ts
 │   │   │   │   ├── bsky-get-trending.tool.ts
 │   │   │   │   ├── bsky-search-actors.tool.ts
+│   │   │   │   ├── bsky-search-feeds.tool.ts
 │   │   │   │   └── bsky-search-posts.tool.ts
 │   │   │   ├── post-format.ts
+│   │   │   ├── read-limits.ts
 │   │   │   └── response-budget.ts
 │   │   └── server-surface.ts
 │   ├── services/
 │   │   └── bluesky/
 │   │       ├── at-syntax.ts
 │   │       ├── bluesky-service.ts
+│   │       ├── post-facets.ts
 │   │       ├── search-session.ts
 │   │       ├── types.ts
 │   │       └── xrpc.ts
@@ -192,12 +195,15 @@ bluesky-mcp-server/
 │   │   │   │   ├── bsky-get-trending.tool.test.ts
 │   │   │   │   ├── bsky-search-actors.paging.test.ts
 │   │   │   │   ├── bsky-search-actors.tool.test.ts
+│   │   │   │   ├── bsky-search-feeds.tool.test.ts
 │   │   │   │   ├── bsky-search-posts.auth.test.ts
 │   │   │   │   ├── bsky-search-posts.params.test.ts
 │   │   │   │   └── bsky-search-posts.tool.test.ts
 │   │   │   ├── budget-fixtures.ts
+│   │   │   ├── facets.test.ts
 │   │   │   ├── markdown-escaping.test.ts
 │   │   │   ├── post-format.test.ts
+│   │   │   ├── profile-links.test.ts
 │   │   │   ├── quote-boundaries.test.ts
 │   │   │   ├── response-budget.characterization.test.ts
 │   │   │   ├── response-budget.paged.test.ts

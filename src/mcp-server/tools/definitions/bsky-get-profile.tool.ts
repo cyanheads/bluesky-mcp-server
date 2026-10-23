@@ -12,6 +12,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import {
   closeQuotes,
+  destinationLink,
   inlineUserText,
   quoteUserText,
   renderLabelList,
@@ -35,7 +36,7 @@ export const bskyGetProfile = tool('bsky_get_profile', {
   description:
     'Fetch a Bluesky actor\'s public profile by handle (e.g. "bsky.app") or DID ' +
     '(e.g. "did:plc:z72i7hdynmk6r22z27h6tvur"). Returns displayName, handle, DID, bio, pronouns, ' +
-    'website, follower/following/post counts, avatar URL, moderation labels, pinned post AT-URI, and ' +
+    'website, ordered profile links, follower/following/post counts, avatar URL, moderation labels, pinned post AT-URI, and ' +
     'Bluesky verification — whether the account is verified or a trusted verifier, and who verified it. ' +
     'Use this as the first step to resolve a handle to a DID before calling tools that require ' +
     'a DID or AT-URI. Handles and DIDs are interchangeable as input, and "@bsky.app" or the ' +
@@ -78,8 +79,33 @@ export const bskyGetProfile = tool('bsky_get_profile', {
       .optional()
       .describe(
         'URL the account set as its website, in the profile field of that name rather than in the bio. ' +
-          'Absent when it set none. The one link on a profile that points somewhere else — follow it before ' +
-          'reading the bio for one.',
+          'Absent when it set none. Independent of the ordered profile links.',
+      ),
+    links: z
+      .array(
+        z
+          .object({
+            uri: z.string().describe('AT-URI of the profile link record.'),
+            cid: z.string().describe('CID of the profile link record.'),
+            url: z.string().describe('Complete destination URL.'),
+            title: z
+              .string()
+              .optional()
+              .describe('Account-authored link title, when supplied, including an empty title.'),
+            icon: z
+              .string()
+              .optional()
+              .describe('Icon URL when supplied, including an empty value.'),
+            labels: z
+              .array(LabelSchema)
+              .optional()
+              .describe('Moderation labels on this link, when supplied.'),
+          })
+          .describe('One outbound profile link.'),
+      )
+      .optional()
+      .describe(
+        'Profile links in upstream display order. Omitted when not supplied; an explicit empty array stays empty.',
       ),
     avatar: z.string().optional().describe('URL of the profile avatar image.'),
     followersCount: z.number().optional().describe('Number of accounts following this actor.'),
@@ -199,6 +225,31 @@ export const bskyGetProfile = tool('bsky_get_profile', {
     if (result.website) urls.push(`**Website:** ${result.website}`);
     if (result.avatar) urls.push(`**Avatar:** ${result.avatar}`);
     if (urls.length) lines.push('', ...urls);
+    if (result.links !== undefined) {
+      lines.push('', `**Profile links:** ${result.links.length}`);
+      for (const [i, link] of result.links.entries()) {
+        lines.push(
+          '',
+          `**Profile link ${i + 1}:**`,
+          `**AT-URI:** ${destinationLink(link.uri)} | **CID:** ${inlineUserText(link.cid)}`,
+          `**Destination:** ${destinationLink(link.url)}`,
+        );
+        if (link.title !== undefined) {
+          lines.push(
+            `**Title:**${link.title === '' ? ' (empty)' : ''}`,
+            ...quoteUserText(link.title),
+          );
+        }
+        if (link.icon !== undefined)
+          lines.push(
+            `**Icon:** ${link.icon === '' ? '(empty)' : `!${destinationLink(link.icon)}`}`,
+          );
+        if (link.labels !== undefined)
+          lines.push(
+            `**Labels:** ${link.labels.length}${link.labels.length ? ` · ${renderLabelList(link.labels)}` : ''}`,
+          );
+      }
+    }
     if (result.pinnedPostUri) lines.push(`**Pinned post AT-URI:** \`${result.pinnedPostUri}\``);
     if (result.labels?.length) lines.push(`**Labels:** ${renderLabelList(result.labels)}`);
     if (result.createdAt) lines.push(`**Joined:** ${result.createdAt}`);

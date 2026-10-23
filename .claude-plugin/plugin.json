@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "bluesky-mcp-server",
   "version": "0.5.2",
-  "description": "Search posts, profiles, feeds, threads, and trending topics on Bluesky via MCP. STDIO or Streamable HTTP.",
+  "description": "Search Bluesky posts and feeds; read profiles, threads, and trends. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads",
     "email": "casey@caseyjhand.com",
@@ -19,11 +19,18 @@
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio",
         "BLUESKY_IDENTIFIER": "${user_config.BLUESKY_IDENTIFIER}",
-        "BLUESKY_APP_PASSWORD": "${user_config.BLUESKY_APP_PASSWORD}"
+        "BLUESKY_APP_PASSWORD": "${user_config.BLUESKY_APP_PASSWORD}",
+        "BLUESKY_CLAMP_READ_LIMITS": "${user_config.BLUESKY_CLAMP_READ_LIMITS}"
       }
     }
   },
   "userConfig": {
+    "BLUESKY_CLAMP_READ_LIMITS": {
+      "type": "boolean",
+      "title": "Clamp read limits",
+      "description": "Clamp oversized read limits with a notice; false restores rejection.",
+      "default": true
+    },
     "BLUESKY_IDENTIFIER": {
       "type": "string",
       "title": "Bluesky handle (for post search)",

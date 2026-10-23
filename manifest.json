@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "bluesky-mcp-server",
   "version": "0.5.2",
-  "description": "Search posts, profiles, feeds, threads, and trending topics on Bluesky.",
+  "description": "Search Bluesky posts and feeds; read profiles, threads, and trends. STDIO or Streamable HTTP.",
   "author": { "name": "cyanheads" },
   "repository": {
     "type": "git",
@@ -21,7 +21,8 @@
         "MCP_AUTH_MODE": "none",
         "NODE_ENV": "production",
         "BLUESKY_IDENTIFIER": "${user_config.BLUESKY_IDENTIFIER}",
-        "BLUESKY_APP_PASSWORD": "${user_config.BLUESKY_APP_PASSWORD}"
+        "BLUESKY_APP_PASSWORD": "${user_config.BLUESKY_APP_PASSWORD}",
+        "BLUESKY_CLAMP_READ_LIMITS": "${user_config.BLUESKY_CLAMP_READ_LIMITS}"
       }
     }
   },
@@ -31,6 +32,13 @@
   "tools_generated": true,
   "prompts_generated": true,
   "user_config": {
+    "BLUESKY_CLAMP_READ_LIMITS": {
+      "title": "Clamp read limits",
+      "type": "boolean",
+      "description": "Clamp oversized read limits with a notice; false restores rejection.",
+      "required": false,
+      "default": true
+    },
     "BLUESKY_IDENTIFIER": {
       "title": "Bluesky handle (for post search)",
       "type": "string",

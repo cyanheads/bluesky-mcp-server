@@ -15,6 +15,7 @@ import {
   quoteUserText,
   verificationSuffix,
 } from '@/mcp-server/tools/post-format.js';
+import { clampReadLimit, composeNotices, readLimitSchema } from '@/mcp-server/tools/read-limits.js';
 import { NON_BLANK_MESSAGE, NON_BLANK_REGEX } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
@@ -84,13 +85,11 @@ export const bskySearchActors = tool('bsky_search_actors', {
       .describe(
         'Name or handle fragment to search for, e.g. "alice" or "nytimes.com". Must not be blank.',
       ),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(100)
+    limit: readLimitSchema(100)
       .default(25)
-      .describe('Maximum number of actors to return (1–100). Default 25.'),
+      .describe(
+        'Maximum number of actors to return. Default 25; values above 100 are clamped with a notice unless read-limit clamping is disabled.',
+      ),
     cursor: z
       .string()
       .max(2048)
@@ -135,24 +134,39 @@ export const bskySearchActors = tool('bsky_search_actors', {
   },
 
   async handler(input, ctx) {
+    const { applied: limit, notice: clampNotice } = clampReadLimit(
+      ctx,
+      'bsky_search_actors',
+      'limit',
+      input.limit,
+      100,
+    );
     ctx.log.info('Searching Bluesky actors', { query: input.query, limit: input.limit });
     const result = await getBlueskyService().searchActors(
-      { q: input.query, limit: input.limit, ...(input.cursor ? { cursor: input.cursor } : {}) },
+      { q: input.query, limit, ...(input.cursor ? { cursor: input.cursor } : {}) },
       ctx,
     );
     ctx.enrich({ totalReturned: result.actors.length });
     if (result.cursor) {
       ctx.enrich.truncated({
         shown: result.actors.length,
-        cap: input.limit,
-        guidance: 'Pass the returned cursor to fetch the next page of actors.',
+        cap: limit,
+        guidance: composeNotices(
+          clampNotice,
+          'Pass the returned cursor to fetch the next page of actors.',
+        ),
       });
     } else if (result.actors.length === 0) {
       ctx.enrich.notice(
-        input.cursor
-          ? `No more actors match "${input.query}" — the previous page was the last.`
-          : `No actors matched "${input.query}". Try a different name or handle fragment.`,
+        composeNotices(
+          clampNotice,
+          input.cursor
+            ? `No more actors match "${input.query}" — the previous page was the last.`
+            : `No actors matched "${input.query}". Try a different name or handle fragment.`,
+        ),
       );
+    } else if (clampNotice) {
+      ctx.enrich.notice(clampNotice);
     }
     return { actors: result.actors, ...(result.cursor ? { cursor: result.cursor } : {}) };
   },
