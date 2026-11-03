@@ -4,9 +4,9 @@
   "version": "0.6.0",
   "description": "Search Bluesky posts and feeds; read profiles, threads, and trends. STDIO or Streamable HTTP.",
   "author": {
-    "name": "cyanheads",
+    "name": "Casey Hand",
     "email": "casey@caseyjhand.com",
-    "url": "https://github.com/cyanheads/bluesky-mcp-server#readme"
+    "url": "https://caseyjhand.com"
   },
   "homepage": "https://github.com/cyanheads/bluesky-mcp-server#readme",
   "repository": "git+https://github.com/cyanheads/bluesky-mcp-server.git",

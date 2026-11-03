@@ -1,0 +1,30 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "bluesky-mcp-server",
+  "version": "0.6.0",
+  "description": "Search Bluesky posts and feeds; read profiles, threads, and trends. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "Casey Hand",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
+  "homepage": "https://github.com/cyanheads/bluesky-mcp-server#readme",
+  "repository": "git+https://github.com/cyanheads/bluesky-mcp-server.git",
+  "license": "Apache-2.0",
+  "keywords": [
+    "bluesky",
+    "atproto",
+    "at-protocol",
+    "social-media",
+    "social-listening",
+    "trending",
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "typescript",
+    "bun",
+    "stdio",
+    "streamable-http",
+    "ai-agent"
+  ]
+}
