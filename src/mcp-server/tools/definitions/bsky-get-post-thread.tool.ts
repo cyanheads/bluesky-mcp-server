@@ -25,7 +25,9 @@ import {
   AT_URI_REF_MESSAGE,
   AT_URI_REF_REGEX,
   atUriFromRef,
-  parseFeedRef,
+  FEED_GENERATOR_COLLECTION,
+  POST_COLLECTION,
+  parseBlueskyRef,
 } from '@/services/bluesky/at-syntax.js';
 import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 import type {
@@ -432,7 +434,7 @@ const ThreadNodeSchema: z.ZodType<unknown> = z
     'The conversation thread rooted at the requested post — a recursive node tree. Each node has: ' +
       'post: { uri, cid, text, facets?, author: { did, handle, displayName?, avatar?, verification? }, replyCount?, repostCount?, likeCount?, quoteCount?, indexedAt?, createdAt?, labels?: [{ val, src?, cts? }], embed?, replyToUri?, replyRootUri? }. facets: [{ index: { byteStart, byteEnd }, features: [{ $type, uri? (link), did? (mention), tag? }] }] — UTF-8 byte ranges with exclusive ends on the unchanged text, including quoted record facets under embed. ' +
       'author.verification: { verifiedStatus, trustedVerifierStatus } — whether a trusted verifier verified the author and whether the author is one, each "valid", "invalid" (verified once, no longer holds), or "none", passed through as Bluesky sends it; absent when Bluesky sent none. ' +
-      'quoteCount counts quote posts, which are not part of the thread — read them with bsky_get_post_quotes. ' +
+      'quoteCount counts quote posts, which are not part of the thread — read them with bsky_get_post_quotes. likeCount and repostCount are upper bounds on retrievable accounts; list those accounts with bsky_get_post_interactions and kind likes or reposts. Video embeds retain nonempty alt text, including quoted attachments. ' +
       'parent?: parent thread node. replies?: array of child thread nodes. ' +
       "truncated?: true when the node's own post.replyCount exceeds the replies returned for it, with " +
       'unreturnedReplies: the size of that difference, and truncationReason: "depth" (the reply tree ends ' +
@@ -690,6 +692,13 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
       when: 'The AT-URI names a feed generator (app.bsky.feed.generator), not a post.',
       recovery: "Read the feed's posts with bsky_get_feed, passing this AT-URI as its feed.",
     },
+    {
+      reason: 'uri_not_post',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The AT-URI names a collection other than app.bsky.feed.post or a feed generator.',
+      recovery:
+        'Use a post URI in app.bsky.feed.post from bsky_get_author_feed or bsky_get_feed, or paste that post’s bsky.app URL.',
+    },
   ],
 
   async handler(input, ctx) {
@@ -712,14 +721,18 @@ export const bskyGetPostThread = tool('bsky_get_post_thread', {
     const uri = atUriFromRef(input.uri);
     ctx.log.info('Fetching Bluesky post thread', { uri, depth: input.depth });
 
-    /**
-     * A feed AT-URI passes the AT-URI pattern, and the AppView answers it as a missing post, which
-     * would send the caller looking for a post that was never there.
-     */
-    if (parseFeedRef(uri)) {
+    // The input pattern accepts record URIs so wrong collections receive typed recovery.
+    const ref = parseBlueskyRef(uri);
+    if (ref?.kind === 'record' && ref.collection === FEED_GENERATOR_COLLECTION) {
       throw ctx.fail(
         'uri_is_feed',
         `"${uri}" is a feed generator, not a post — read its posts with bsky_get_feed.`,
+      );
+    }
+    if (ref?.kind === 'record' && ref.collection !== POST_COLLECTION) {
+      throw ctx.fail(
+        'uri_not_post',
+        `The AT-URI names collection "${ref.collection}"; a thread requires "${POST_COLLECTION}".`,
       );
     }
 

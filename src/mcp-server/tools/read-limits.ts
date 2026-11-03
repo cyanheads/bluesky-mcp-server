@@ -18,6 +18,7 @@ type ReadTool =
   | 'bsky_get_feed'
   | 'bsky_get_follows'
   | 'bsky_get_post_quotes'
+  | 'bsky_get_post_interactions'
   | 'bsky_search_actors'
   | 'bsky_search_feeds'
   | 'bsky_search_posts'

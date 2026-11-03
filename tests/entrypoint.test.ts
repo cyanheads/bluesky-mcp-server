@@ -1,7 +1,8 @@
 /**
  * @fileoverview The real entry point, `src/index.ts`, started as a stdio subprocess under each
  * credential configuration: what `tools/list` offers with and without the app-password pair, and
- * how a half-configured pair fails startup. The framework exposes no in-process way to build the
+ * how a half-configured pair fails startup, and whether the published guide can be discovered and read.
+ * The framework exposes no in-process way to build the
  * registered server short of `createApp()`, which owns the transport and the process signal
  * handlers, so the entry point runs as its own process — which is also what a client starts.
  * No request leaves the machine: startup and `tools/list` make none, since search logs in lazily.
@@ -106,10 +107,11 @@ describe('the entry point — tools/list follows the credential pair', () => {
         'bsky_get_feed',
         'bsky_get_trending',
         'bsky_get_post_quotes',
+        'bsky_get_post_interactions',
         'bsky_search_feeds',
       ]),
     );
-    expect(names).toHaveLength(9);
+    expect(names).toHaveLength(10);
     const call = run.replies.find((r) => r.id === 3);
     expect(JSON.stringify(call)).toMatch(/bsky_search_posts not found/);
     expect(run.code).toBe(0);
@@ -122,10 +124,40 @@ describe('the entry point — tools/list follows the credential pair', () => {
     ]);
 
     const names = toolNames(run);
-    expect(names).toEqual(expect.arrayContaining(['bsky_search_posts', 'bsky_get_feed']));
-    expect(names).toHaveLength(10);
+    expect(names).toEqual(
+      expect.arrayContaining(['bsky_search_posts', 'bsky_get_feed', 'bsky_get_post_interactions']),
+    );
+    expect(names).toHaveLength(11);
     expect(run.stderr).not.toContain('abcd-efgh');
     expect(run.code).toBe(0);
+  }, 30_000);
+});
+
+describe('the entry point — published guide discovery', () => {
+  it('advertises skills and serves the published guide without credentials', async () => {
+    const run = await runEntry({}, [
+      ...HANDSHAKE,
+      { id: 2, method: 'resources/list' },
+      {
+        id: 3,
+        method: 'resources/read',
+        params: { uri: 'skill://bluesky-guide/SKILL.md' },
+      },
+    ]);
+
+    expect(run.code).toBe(0);
+    const initialized = run.replies.find((r) => r.id === 1)?.result;
+    expect(initialized).toMatchObject({
+      capabilities: { extensions: { 'io.modelcontextprotocol/skills': {} } },
+    });
+    expect(run.replies.find((r) => r.id === 2)?.result).toMatchObject({
+      resources: expect.arrayContaining([
+        expect.objectContaining({ uri: 'skill://bluesky-guide/SKILL.md' }),
+      ]),
+    });
+    expect(run.replies.find((r) => r.id === 3)?.result).toMatchObject({
+      contents: [expect.objectContaining({ text: expect.stringContaining('## Gates') })],
+    });
   }, 30_000);
 });
 

@@ -83,6 +83,7 @@ export type Embed =
     }
   | {
       type: 'video';
+      alt?: string;
       playlist?: string;
       thumbnail?: string;
       presentation?: string;
@@ -137,6 +138,8 @@ export interface ProfileLink {
 
 /** Public actor profile returned by getProfile. */
 export interface ActorProfile {
+  /** Selected collection counts and labeler status, only on detailed profile lookups. */
+  associated?: { lists?: number; feedgens?: number; starterPacks?: number; labeler?: boolean };
   avatar?: string;
   createdAt?: string;
   description?: string;
@@ -172,7 +175,7 @@ export interface ActorProfile {
  * An account as the actor lists carry it (`searchActors`, and the follow graph's entries and
  * subject): the profile fields a `profileView` has, with verification narrowed to the two statuses.
  */
-export interface ActorSummary extends Omit<ActorProfile, 'verification' | 'links'> {
+export interface ActorSummary extends Omit<ActorProfile, 'verification' | 'links' | 'associated'> {
   verification?: VerificationStatus;
 }
 
@@ -412,4 +415,13 @@ export interface TrendingTopic {
 /** Result of getTrends. */
 export interface TrendsResult {
   trends: TrendingTopic[];
+}
+
+/** One page of accounts that liked or reposted a post, in provider order. */
+export interface PostInteractionsResult {
+  actors: Array<ActorSummary & { likedAt?: string }>;
+  cursor?: string;
+  kind: 'likes' | 'reposts';
+  /** DID-form post address used for the request. */
+  uri: string;
 }

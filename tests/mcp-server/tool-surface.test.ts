@@ -13,6 +13,7 @@ import { serverInstructions } from '@/mcp-server/server-surface.js';
 import { bskyGetAuthorFeed } from '@/mcp-server/tools/definitions/bsky-get-author-feed.tool.js';
 import { bskyGetFeed } from '@/mcp-server/tools/definitions/bsky-get-feed.tool.js';
 import { bskyGetFollows } from '@/mcp-server/tools/definitions/bsky-get-follows.tool.js';
+import { bskyGetPostInteractions } from '@/mcp-server/tools/definitions/bsky-get-post-interactions.tool.js';
 import { bskyGetPostQuotes } from '@/mcp-server/tools/definitions/bsky-get-post-quotes.tool.js';
 import { bskyGetPostThread } from '@/mcp-server/tools/definitions/bsky-get-post-thread.tool.js';
 import { bskyGetProfile } from '@/mcp-server/tools/definitions/bsky-get-profile.tool.js';
@@ -36,6 +37,7 @@ const ALWAYS_REGISTERED = [
   bskyGetAuthorFeed,
   bskyGetPostThread,
   bskyGetPostQuotes,
+  bskyGetPostInteractions,
   bskyGetFollows,
 ];
 
@@ -87,6 +89,7 @@ describe('the server instructions', () => {
   it('route quote reading to bsky_get_post_quotes and accept shared links, in either configuration', () => {
     for (const text of [serverInstructions(false), serverInstructions(true)]) {
       expect(text).toMatch(/\d\. bsky_get_post_quotes/);
+      expect(text).toMatch(/\d\. bsky_get_post_interactions/);
       expect(text).toContain('bsky.app post or feed URL');
     }
   });

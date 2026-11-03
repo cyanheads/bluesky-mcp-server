@@ -71,6 +71,14 @@ export const bskySearchFeeds = tool('bsky_search_feeds', {
   }),
   errors: [
     {
+      reason: 'invalid_cursor',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The feed catalog returned its invalid-cursor response for a request carrying a cursor.',
+      recovery:
+        'Drop the cursor to restart, or pass the previous response’s cursor unchanged with the same query.',
+      thrownBy: 'service',
+    },
+    {
       reason: 'catalog_unavailable',
       code: JsonRpcErrorCode.ServiceUnavailable,
       when: 'The unstable upstream catalog endpoint is no longer available (HTTP 404 or 410).',

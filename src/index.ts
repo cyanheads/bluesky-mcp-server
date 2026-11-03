@@ -40,6 +40,7 @@ await createApp({
   tools: serverTools(searchEnabled),
   resources: [bskyProfileResource],
   prompts: [],
+  skills: 'skills',
   instructions: serverInstructions(searchEnabled),
   setup(_core) {
     initBlueskyService(getServerConfig().searchCredentials);

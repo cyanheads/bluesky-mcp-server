@@ -11,10 +11,13 @@ import {
   createMockContext,
   runToolContract,
 } from '@cyanheads/mcp-ts-core/testing';
+import { Parser } from 'commonmark';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { bskyProfileResource } from '@/mcp-server/resources/definitions/bsky-profile.resource.js';
 import { bskyGetAuthorFeed } from '@/mcp-server/tools/definitions/bsky-get-author-feed.tool.js';
 import { bskyGetFollows } from '@/mcp-server/tools/definitions/bsky-get-follows.tool.js';
 import { bskyGetPostThread } from '@/mcp-server/tools/definitions/bsky-get-post-thread.tool.js';
+import { bskyGetProfile } from '@/mcp-server/tools/definitions/bsky-get-profile.tool.js';
 import { bskySearchActors } from '@/mcp-server/tools/definitions/bsky-search-actors.tool.js';
 import { getBlueskyService, initBlueskyService } from '@/services/bluesky/bluesky-service.js';
 
@@ -47,6 +50,247 @@ beforeEach(() => {
 
 afterEach(() => {
   http.restore();
+});
+
+describe('metadata projection', () => {
+  const actor = { did: 'did:plc:test', handle: 'test.bsky.social' };
+  const route = (method: string, body: unknown) =>
+    http.route({
+      match: (request) => {
+        const url = new URL(request.url);
+        return url.origin === 'https://api.bsky.app' && url.pathname === `/xrpc/${method}`;
+      },
+      respond: () => Response.json(body),
+    });
+
+  it('characterizes sparse profile and actor summaries without inventing optional facts', async () => {
+    route('app.bsky.actor.getProfile', actor);
+    route('app.bsky.actor.searchActors', { actors: [actor] });
+    const profile = await runToolContract(bskyGetProfile, { actor: actor.handle });
+    const search = await runToolContract(bskySearchActors, { query: 'test' });
+    expect(profile.structuredContent).toEqual(actor);
+    expect(search.structuredContent).toMatchObject({ actors: [actor] });
+    expect(textOf(profile)).not.toContain('**Associated:**');
+    expect(textOf(search)).not.toContain('**Joined:**');
+    expect(http.calls).toHaveLength(2);
+  });
+
+  it.each([
+    [
+      { lists: 2, feedgens: 0, starterPacks: 1, labeler: false, chat: { allowIncoming: 'all' } },
+      { lists: 2, feedgens: 0, starterPacks: 1, labeler: false },
+      ['lists: 2', 'feedgens: 0', 'starterPacks: 1', 'labeler: false'],
+    ],
+    [{ labeler: true }, { labeler: true }, ['labeler: true']],
+    [{ lists: 0 }, { lists: 0 }, ['lists: 0']],
+    [{}, {}, ['(empty)']],
+  ])(
+    'retains selected associated metadata on the profile tool and resource (%j)',
+    async (associated, expected, lines) => {
+      route('app.bsky.actor.getProfile', { ...actor, associated });
+      const result = await runToolContract(bskyGetProfile, { actor: actor.handle });
+      const resource = await bskyProfileResource.handler(
+        { actor: actor.handle },
+        createMockContext({ errors: bskyProfileResource.errors }),
+      );
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toHaveProperty('associated', expected);
+      expect(resource).toHaveProperty('associated', expected);
+      for (const line of lines) expect(textOf(result)).toContain(line);
+      expect(textOf(result)).not.toContain('chat');
+      expect(http.calls).toHaveLength(2);
+    },
+  );
+
+  it.each(['search', 'followers', 'following'] as const)(
+    'retains account age and every sparse label field on %s',
+    async (kind) => {
+      const createdAt = '2023-01-01T00:00:00Z';
+      const labels = [
+        { val: 'only' },
+        { val: 'source', src: 'did:plc:labeler' },
+        { val: 'time', cts: '2026-01-01T00:00:00Z' },
+        { val: 'both', src: 'did:plc:other', cts: '2026-02-01T00:00:00Z' },
+      ];
+      const full = {
+        ...actor,
+        createdAt,
+        labels,
+        pronouns: 'they/he',
+        associated: { labeler: true },
+      };
+      const method =
+        kind === 'search'
+          ? 'app.bsky.actor.searchActors'
+          : kind === 'followers'
+            ? 'app.bsky.graph.getFollowers'
+            : 'app.bsky.graph.getFollows';
+      route(
+        method,
+        kind === 'search'
+          ? { actors: [full, { did: 'did:plc:sparse', handle: 'sparse.bsky.social' }] }
+          : {
+              subject: full,
+              [kind === 'followers' ? 'followers' : 'follows']: [
+                full,
+                { did: 'did:plc:sparse', handle: 'sparse.bsky.social' },
+              ],
+            },
+      );
+      const result =
+        kind === 'search'
+          ? await runToolContract(bskySearchActors, { query: 'test' })
+          : await runToolContract(bskyGetFollows, { actor: actor.handle, direction: kind });
+      expect(result.structuredContent).toMatchObject({
+        actors: [
+          { ...actor, createdAt, labels, pronouns: 'they/he' },
+          { did: 'did:plc:sparse', handle: 'sparse.bsky.social' },
+        ],
+      });
+      const data = result.structuredContent as { actors: Array<Record<string, unknown>> };
+      expect(data.actors[0]).not.toHaveProperty('associated');
+      expect(data.actors[1]).not.toHaveProperty('createdAt');
+      if (kind !== 'search')
+        expect(result.structuredContent).toHaveProperty('subject.createdAt', createdAt);
+      const text = textOf(result);
+      expect(text).toContain('**Joined:** 2023-01-01T00:00:00Z');
+      expect(text).toContain(
+        '**Labels:** only, source src:did:plc:labeler, time cts:2026-01-01T00:00:00Z, both src:did:plc:other cts:2026-02-01T00:00:00Z',
+      );
+      expect(text).toContain('**Pronouns:** they/he');
+      expect(http.calls).toHaveLength(1);
+    },
+  );
+
+  it.each(['direct', 'media', 'quoted', 'nested'] as const)(
+    'retains multiline video alt on %s embeds through both channels',
+    async (placement) => {
+      const alt = 'Video description\n\n## Heading\n[link](https://example.com)';
+      const video = {
+        $type: 'app.bsky.embed.video#view',
+        playlist: 'https://video.example/playlist.m3u8',
+        thumbnail: 'https://video.example/thumb.jpg',
+        presentation: 'gif',
+        alt,
+      };
+      const quote = (embeds: unknown[]) => ({
+        $type: 'app.bsky.embed.record#view',
+        record: {
+          $type: 'app.bsky.embed.record#viewRecord',
+          uri: 'at://did:plc:test/app.bsky.feed.post/quote',
+          cid: 'quote-cid',
+          value: { text: 'quoted' },
+          embeds,
+        },
+      });
+      const embed =
+        placement === 'direct'
+          ? video
+          : placement === 'media'
+            ? { $type: 'app.bsky.embed.recordWithMedia#view', record: quote([]), media: video }
+            : placement === 'quoted'
+              ? quote([video])
+              : quote([quote([video])]);
+      route('app.bsky.feed.getAuthorFeed', {
+        feed: [
+          {
+            post: {
+              uri: 'at://did:plc:test/app.bsky.feed.post/post',
+              cid: 'cid',
+              author: actor,
+              record: { text: 'post' },
+              embed,
+            },
+          },
+        ],
+      });
+      const result = await runToolContract(bskyGetAuthorFeed, { actor: actor.handle });
+      expect(result.isError).toBeFalsy();
+      const json = JSON.stringify(result.structuredContent);
+      expect(json).toContain(JSON.stringify(alt));
+      const text = textOf(result);
+      expect(text).toContain(
+        '> Video description\n   >\n   > \\## Heading\n   > \\[link\\](https://example.com)',
+      );
+      const walker = new Parser().parse(text).walker();
+      let depth = 0;
+      const quoted: string[] = [];
+      for (let event = walker.next(); event; event = walker.next()) {
+        if (event.node.type === 'block_quote') depth += event.entering ? 1 : -1;
+        if (event.entering && depth && event.node.type === 'text')
+          quoted.push(event.node.literal ?? '');
+        if (event.entering && event.node.type === 'link')
+          expect(event.node.destination).not.toBe('https://example.com');
+      }
+      expect(quoted.join('')).toContain('Video description## Heading[link](https://example.com)');
+      expect(text).toContain('https://video.example/playlist.m3u8');
+      expect(text).toContain('🎞 GIF: https://video.example/thumb.jpg');
+      expect(http.calls).toHaveLength(1);
+    },
+  );
+
+  it.each([undefined, ''])(
+    'omits absent or empty video alt without changing its media (%j)',
+    async (alt) => {
+      route('app.bsky.feed.getAuthorFeed', {
+        feed: [
+          {
+            post: {
+              uri: 'at://did:plc:test/app.bsky.feed.post/post',
+              cid: 'cid',
+              author: actor,
+              record: { text: '' },
+              embed: {
+                $type: 'app.bsky.embed.video#view',
+                playlist: 'https://video.example/playlist',
+                ...(alt === undefined ? {} : { alt }),
+              },
+            },
+          },
+        ],
+      });
+      const result = await runToolContract(bskyGetAuthorFeed, { actor: actor.handle });
+      expect(result.structuredContent).toHaveProperty('posts.0.embed', {
+        type: 'video',
+        playlist: 'https://video.example/playlist',
+      });
+      expect(textOf(result)).toContain('🎬 Video');
+      expect(textOf(result)).toContain('Playlist: https://video.example/playlist');
+      expect(textOf(result)).not.toContain('>');
+    },
+  );
+
+  it('preserves embed-depth omission instead of exposing a video beyond the quote bound', async () => {
+    const quote = (embed: unknown): unknown => ({
+      $type: 'app.bsky.embed.record#view',
+      record: {
+        $type: 'app.bsky.embed.record#viewRecord',
+        uri: 'at://did:plc:test/app.bsky.feed.post/quote',
+        cid: 'cid',
+        embeds: [embed],
+      },
+    });
+    const embed = quote(
+      quote(quote(quote({ $type: 'app.bsky.embed.video#view', alt: 'beyond bound' }))),
+    );
+    route('app.bsky.feed.getAuthorFeed', {
+      feed: [
+        {
+          post: {
+            uri: 'at://did:plc:test/app.bsky.feed.post/post',
+            cid: 'cid',
+            author: actor,
+            record: { text: '' },
+            embed,
+          },
+        },
+      ],
+    });
+    const result = await runToolContract(bskyGetAuthorFeed, { actor: actor.handle });
+    expect(JSON.stringify(result.structuredContent)).toContain('"omittedEmbeds":1');
+    expect(JSON.stringify(result.structuredContent)).not.toContain('beyond bound');
+    expect(textOf(result)).toContain('1 attachment on this quote was not returned');
+  });
 });
 
 describe('BlueskyService.get — request shape', () => {
@@ -261,6 +505,32 @@ describe('a 400 on searchActors', () => {
 
 describe('bsky_get_post_thread — error contract through the real service', () => {
   const uri = 'at://did:plc:abc/app.bsky.feed.post/3lc4gpsxr3c2q';
+
+  it.each([
+    ['app.bsky.feed.threadgate', 'did:plc:abc'],
+    ['app.bsky.graph.list', 'alice.bsky.social'],
+    ['app.bsky.actor.profile', 'did:plc:abc'],
+    ['app.bsky.graph.starterpack', 'did:plc:abc'],
+  ])('rejects the %s collection locally with useful recovery', async (collection, authority) => {
+    http.route({
+      match: (request) => new URL(request.url).origin === 'https://api.bsky.app',
+      respond: xrpcError(400, 'NotFound', 'Post not found'),
+    });
+    const result = await runToolContract(bskyGetPostThread, {
+      uri: `at://${authority}/${collection}/nonexistent-record`,
+    });
+    const error = errorOf(result);
+    expect(result.isError).toBe(true);
+    expect(error.code).toBe(JsonRpcErrorCode.ValidationError);
+    expect(error.data?.reason).toBe('uri_not_post');
+    expect(error.message).toContain(collection);
+    const recovery =
+      'Use a post URI in app.bsky.feed.post from bsky_get_author_feed or bsky_get_feed, or paste that post’s bsky.app URL.';
+    expect(error.data?.recovery?.hint).toBe(recovery);
+    expect(textOf(result)).toContain(collection);
+    expect(textOf(result)).toContain(recovery);
+    expect(http.calls).toHaveLength(0);
+  });
 
   it('reports post_not_found with its recovery hint on both surfaces', async () => {
     http.route({

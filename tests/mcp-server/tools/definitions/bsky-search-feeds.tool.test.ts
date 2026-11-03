@@ -306,14 +306,76 @@ describe('bsky_search_feeds through public HTTP', () => {
     },
   );
 
-  it('keeps a provider parameter rejection an error and never retries it', async () => {
-    catalog({ error: 'InvalidRequest', message: 'Invalid request' }, 400);
+  it.each([
+    [400, 'InvalidRequest', 'Invalid request', 'garbage!!'],
+    [500, 'InternalServerError', 'Internal Server Error', 'eyJzIjpbOTUzXX0'],
+  ] as const)(
+    'maps the catalog cursor response %s once with recovery on both surfaces',
+    async (status, error, message, cursor) => {
+      vi.useFakeTimers();
+      catalog({ error, message }, status);
+      const pending = runToolContract(bskySearchFeeds, { query: 'science', limit: 3, cursor });
+      await vi.runAllTimersAsync();
+      const result = await pending;
+      expect(result.isError).toBe(true);
+      expect(errorOf(result)).toMatchObject({
+        code: JsonRpcErrorCode.ValidationError,
+        data: { reason: 'invalid_cursor' },
+      });
+      const recovery =
+        'Drop the cursor to restart, or pass the previous response’s cursor unchanged with the same query.';
+      expect(errorOf(result).data?.recovery?.hint).toBe(recovery);
+      expect(textOf(result)).toContain(recovery);
+      expect(textOf(result)).toContain('invalid_cursor');
+      expect(http.calls).toHaveLength(1);
+    },
+  );
+
+  it('keeps a named provider parameter rejection an error and never retries it', async () => {
+    catalog({ error: 'InvalidRequest', message: 'Param "query" is invalid' }, 400);
     const result = await runToolContract(bskySearchFeeds, { query: 'science', cursor: 'rejected' });
     expect(result.isError).toBe(true);
     expect(errorOf(result).code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(errorOf(result).data?.reason).not.toBe('invalid_cursor');
     expect(textOf(result)).toContain('400');
     expect(http.calls).toHaveLength(1);
   });
+
+  it.each([undefined, ''])(
+    'keeps a generic 400 without a meaningful cursor (%j) unmapped',
+    async (cursor) => {
+      catalog({ error: 'InvalidRequest', message: 'Invalid request' }, 400);
+      const result = await runToolContract(bskySearchFeeds, { query: 'science', cursor });
+      expect(errorOf(result).code).toBe(JsonRpcErrorCode.InvalidParams);
+      expect(errorOf(result).data?.reason).not.toBe('invalid_cursor');
+      expect(http.calls).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    [undefined, 500, 'InternalServerError', 'Internal Server Error'],
+    ['p2', 500, 'OtherFailure', 'Internal Server Error'],
+    ['p2', 500, 'InternalServerError', 'Database unavailable'],
+    ['p2', 502, 'InternalServerError', 'Internal Server Error'],
+  ] as const)(
+    'retains retry behavior for cursor %j / HTTP %s / %s / %s',
+    async (cursor, status, error, message) => {
+      vi.useFakeTimers();
+      http.route({
+        match: (request) => new URL(request.url).pathname === CATALOG,
+        respond: () =>
+          http.calls.length === 1
+            ? Response.json({ error, message }, { status })
+            : Response.json({ feeds: [SCIENCE] }),
+      });
+      const pending = runToolContract(bskySearchFeeds, { query: 'science', cursor });
+      await vi.runAllTimersAsync();
+      const result = await pending;
+      expect(result.isError).toBeFalsy();
+      expect(structured(result).feeds[0]?.feedUri).toBe(FEED);
+      expect(http.calls).toHaveLength(2);
+    },
+  );
 
   it('retries a transient failure and returns the subsequent catalog page', async () => {
     vi.useFakeTimers();

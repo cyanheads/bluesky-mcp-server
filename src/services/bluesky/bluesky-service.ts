@@ -37,6 +37,7 @@ import type {
   GraphResult,
   Label,
   PostAuthor,
+  PostInteractionsResult,
   PostThreadResult,
   PostView,
   ProfileLink,
@@ -170,6 +171,8 @@ interface RawViewRecord {
 /** @internal Raw embed from AppView — $type discriminated. */
 interface RawEmbed {
   $type?: string;
+  /** Video embed fields (app.bsky.embed.video#view). */
+  alt?: string;
   cid?: string;
   external?: { uri?: string; title?: string; description?: string };
   images?: RawImageView[];
@@ -177,7 +180,6 @@ interface RawEmbed {
   items?: RawImageView[];
   /** Media attached alongside the quote (app.bsky.embed.recordWithMedia#view) — itself a $type-tagged view. */
   media?: RawEmbed;
-  /** Video embed fields (app.bsky.embed.video#view). */
   playlist?: string;
   presentation?: string;
   /**
@@ -458,6 +460,7 @@ function normalizeEmbed(r: RawEmbed | undefined, depth = 0): Embed | undefined {
     case 'video':
       return {
         type: 'video',
+        ...(r.alt ? { alt: r.alt } : {}),
         ...(r.playlist ? { playlist: r.playlist } : {}),
         ...(r.thumbnail ? { thumbnail: r.thumbnail } : {}),
         ...(r.presentation ? { presentation: r.presentation } : {}),
@@ -665,18 +668,26 @@ type ErrorMapper = (err: McpError) => McpError | undefined;
  * attempt. `searchActors` answers `400 InvalidRequest: Invalid request`, the same body it gives any
  * other rejected parameter — but every other parameter it takes is validated before the request.
  * `searchPosts` answers `400 InvalidRequest: Invalid cursor format`, and names the parameter it
- * rejected in every other 400 too, so there the message has to name the cursor. `getFeed`,
+ * rejected in every other 400 too, so there the message has to name the cursor. The feed catalog
+ * uses either 400 or 500 with the generic envelopes below; a different envelope keeps its ordinary
+ * handling. Its generic 500 does not distinguish an invalid cursor from an internal outage. `getFeed`,
  * `getFollowers`, and `getFollows` ignore a bad cursor and answer 200, so they are absent.
  */
 const BAD_CURSOR = {
-  'app.bsky.feed.getAuthorFeed': { status: 500 },
-  'app.bsky.feed.getQuotes': { status: 500 },
-  'app.bsky.actor.searchActors': { status: 400 },
-  'app.bsky.feed.searchPosts': { status: 400, message: /cursor/i },
-} satisfies Record<string, BadCursorAnswer>;
+  'app.bsky.feed.getAuthorFeed': [{ status: 500 }],
+  'app.bsky.feed.getQuotes': [{ status: 500 }],
+  'app.bsky.feed.getLikes': [{ status: 500 }],
+  'app.bsky.actor.searchActors': [{ status: 400 }],
+  'app.bsky.feed.searchPosts': [{ status: 400, message: /cursor/i }],
+  'app.bsky.unspecced.getPopularFeedGenerators': [
+    { status: 400, error: 'InvalidRequest', message: /^Invalid request$/ },
+    { status: 500, error: 'InternalServerError', message: /^Internal Server Error$/ },
+  ],
+} satisfies Record<string, readonly BadCursorAnswer[]>;
 
 /** @internal The status a bad cursor is answered with, and the message it must carry when set. */
 interface BadCursorAnswer {
+  error?: string;
   message?: RegExp;
   status: number;
 }
@@ -699,11 +710,18 @@ function cursorError(
   cursor: string | undefined,
   lexicon: keyof typeof BAD_CURSOR,
 ): McpError | undefined {
-  const { status, message }: BadCursorAnswer = BAD_CURSOR[lexicon];
-  if (!cursor || httpStatus(err) !== status) return;
+  if (!cursor) return;
+  const status = httpStatus(err);
   const envelope = xrpcError(err);
-  if (status < 500 && envelope.error !== 'InvalidRequest') return;
-  if (message && !message.test(envelope.message ?? '')) return;
+  const answers: readonly BadCursorAnswer[] = BAD_CURSOR[lexicon];
+  const matches = answers.some(
+    (answer) =>
+      answer.status === status &&
+      (answer.status >= 500 || envelope.error === 'InvalidRequest') &&
+      (!answer.error || envelope.error === answer.error) &&
+      (!answer.message || answer.message.test(envelope.message ?? '')),
+  );
+  if (!matches) return;
   return validationError(
     `Bluesky could not continue from the cursor this request carried: ${lexicon} answered HTTP ${status}, which is how it reports a cursor it cannot decode.`,
     { reason: 'invalid_cursor', status },
@@ -882,9 +900,10 @@ export class BlueskyService {
     params: { query: string; limit: number; cursor?: string },
     ctx: Context,
   ): Promise<SearchFeedsResult> {
+    const lexicon = 'app.bsky.unspecced.getPopularFeedGenerators';
     const raw = CatalogPageSchema.parse(
       await this.get<unknown>(
-        'app.bsky.unspecced.getPopularFeedGenerators',
+        lexicon,
         params,
         ctx,
         (err) =>
@@ -892,7 +911,7 @@ export class BlueskyService {
             ? serviceUnavailable('The public Bluesky feed catalog is unavailable.', {
                 reason: 'catalog_unavailable',
               })
-            : undefined,
+            : cursorError(err, params.cursor, lexicon),
         45_000,
       ),
     );
@@ -915,13 +934,25 @@ export class BlueskyService {
 
   /** Fetch an actor's public profile. */
   async getProfile(actor: string, ctx: Context): Promise<ActorProfile> {
-    const raw = await this.get<RawActorView & { links?: ProfileLink[] }>(
-      'app.bsky.actor.getProfile',
-      { actor },
-      ctx,
-    );
+    const raw = await this.get<
+      RawActorView & { links?: ProfileLink[]; associated?: ActorProfile['associated'] }
+    >('app.bsky.actor.getProfile', { actor }, ctx);
     return {
       ...normalizeActor(raw),
+      ...(raw.associated !== undefined
+        ? {
+            associated: {
+              ...(raw.associated.lists !== undefined ? { lists: raw.associated.lists } : {}),
+              ...(raw.associated.feedgens !== undefined
+                ? { feedgens: raw.associated.feedgens }
+                : {}),
+              ...(raw.associated.starterPacks !== undefined
+                ? { starterPacks: raw.associated.starterPacks }
+                : {}),
+              ...(raw.associated.labeler !== undefined ? { labeler: raw.associated.labeler } : {}),
+            },
+          }
+        : {}),
       ...(raw.links !== undefined
         ? {
             links: raw.links.map((link) => ({
@@ -1092,6 +1123,78 @@ export class BlueskyService {
     return typeof target.quoteCount === 'number'
       ? { ...result, quoteCount: target.quoteCount }
       : result;
+  }
+
+  /**
+   * Read likers or reposters without credentials. Empty first pages and ambiguous first-page
+   * repost failures check existence; populated pages never spend an extra request on counts.
+   * Authority resolution, retries, and existence reads share one total request deadline.
+   */
+  async getPostInteractions(
+    params: { uri: string; kind: 'likes' | 'reposts'; limit?: number; cursor?: string },
+    ctx: Context,
+  ): Promise<PostInteractionsResult> {
+    const ref = parsePostRef(params.uri);
+    if (!ref) throw validationError(POST_URI_REF_MESSAGE);
+    return await withRetry(
+      async ({ signal }) => {
+        const requestCtx: Context = { ...ctx, signal };
+        const postNotFound = () =>
+          notFound(`Post not found: "${params.uri}".`, { reason: 'post_not_found' });
+        const did = await this.resolveAuthority(ref.authority, requestCtx, postNotFound);
+        const uri = `at://${did}/${POST_COLLECTION}/${ref.rkey}`;
+        const checkExists = async () => {
+          const { posts } = await this.get<{ posts: RawPostView[] }>(
+            'app.bsky.feed.getPosts',
+            { uris: uri },
+            requestCtx,
+          );
+          if (posts.length === 0) throw postNotFound();
+        };
+        const query = {
+          uri,
+          limit: params.limit ?? 25,
+          ...(params.cursor ? { cursor: params.cursor } : {}),
+        };
+        let actors: PostInteractionsResult['actors'];
+        let cursor: string | undefined;
+        if (params.kind === 'likes') {
+          const lexicon = 'app.bsky.feed.getLikes';
+          const raw = await this.get<{
+            likes: Array<{ actor: RawActorView; createdAt: string }>;
+            cursor?: string;
+          }>(lexicon, query, requestCtx, (err) => cursorError(err, params.cursor, lexicon));
+          actors = raw.likes.map((like) => ({
+            ...normalizeActorSummary(like.actor),
+            likedAt: like.createdAt,
+          }));
+          cursor = raw.cursor;
+        } else {
+          let raw: { repostedBy: RawActorView[]; cursor?: string };
+          try {
+            raw = await this.get('app.bsky.feed.getRepostedBy', query, requestCtx);
+          } catch (err) {
+            requestCtx.signal.throwIfAborted();
+            if (!params.cursor && httpStatus(err) === 500) await checkExists();
+            throw err;
+          }
+          actors = raw.repostedBy.map(normalizeActorSummary);
+          cursor = raw.cursor;
+        }
+        if (actors.length === 0 && !params.cursor) await checkExists();
+        return { uri, kind: params.kind, actors, ...(cursor ? { cursor } : {}) };
+      },
+      {
+        operation: 'BlueskyService.getPostInteractions',
+        context: ctx,
+        signal: ctx.signal,
+        deadlineMs: TIMEOUT_MS,
+        maxRetries: 0,
+      },
+    ).catch((err: unknown) => {
+      ctx.signal.throwIfAborted();
+      throw err;
+    });
   }
 
   /** Fetch the conversation thread for a post by AT-URI, with the author's reply gate when set. */

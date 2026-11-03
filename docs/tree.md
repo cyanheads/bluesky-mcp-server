@@ -1,6 +1,6 @@
 # bluesky-mcp-server - Directory Structure
 
-Generated on: 2026-10-23 05:38:11
+Generated on: 2026-11-03 07:32:13
 
 ```text
 bluesky-mcp-server/
@@ -42,6 +42,8 @@ bluesky-mcp-server/
 │   ├── add-resource/
 │   │   └── SKILL.md
 │   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-skill/
 │   │   └── SKILL.md
 │   ├── add-test/
 │   │   └── SKILL.md
@@ -140,6 +142,9 @@ bluesky-mcp-server/
 │   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
+├── skills/
+│   └── bluesky-guide/
+│       └── SKILL.md
 ├── src/
 │   ├── config/
 │   │   └── server-config.ts
@@ -154,6 +159,7 @@ bluesky-mcp-server/
 │   │   │   │   ├── bsky-get-author-feed.tool.ts
 │   │   │   │   ├── bsky-get-feed.tool.ts
 │   │   │   │   ├── bsky-get-follows.tool.ts
+│   │   │   │   ├── bsky-get-post-interactions.tool.ts
 │   │   │   │   ├── bsky-get-post-quotes.tool.ts
 │   │   │   │   ├── bsky-get-post-thread.tool.ts
 │   │   │   │   ├── bsky-get-profile.tool.ts
@@ -188,6 +194,7 @@ bluesky-mcp-server/
 │   │   │   │   ├── bsky-get-feed.tool.test.ts
 │   │   │   │   ├── bsky-get-follows.paging.test.ts
 │   │   │   │   ├── bsky-get-follows.tool.test.ts
+│   │   │   │   ├── bsky-get-post-interactions.tool.test.ts
 │   │   │   │   ├── bsky-get-post-quotes.tool.test.ts
 │   │   │   │   ├── bsky-get-post-thread.budget.test.ts
 │   │   │   │   ├── bsky-get-post-thread.tool.test.ts
@@ -214,6 +221,8 @@ bluesky-mcp-server/
 │   │   └── tool-surface.test.ts
 │   ├── prompts/
 │   ├── resources/
+│   ├── scripts/
+│   │   └── bundle-agent-docs.test.ts
 │   ├── services/
 │   │   └── bluesky/
 │   │       ├── at-syntax.test.ts
@@ -237,7 +246,9 @@ bluesky-mcp-server/
 ├── Dockerfile
 ├── LICENSE
 ├── manifest.json
+├── mcp.json
 ├── package.json
+├── plugin.json
 ├── README.md
 ├── server.json
 ├── tsconfig.build.json

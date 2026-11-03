@@ -2,9 +2,9 @@
 
 **Server:** bluesky-mcp-server
 **Version:** 0.6.0
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.15`
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.18`
 **Engines:** Bun ≥1.4.0, Node ≥24.0.0
-**MCP SDK:** `@modelcontextprotocol/server` ^2.3.1
+**MCP SDK:** `@modelcontextprotocol/server` ^2.4.0
 **Zod:** ^4.6.7
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -38,6 +38,7 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 - **Need input the caller didn't supply?** `return ctx.requestInput(...)` and read `ctx.inputs` when the handler is re-entered. Never `await` for user input mid-handler.
 - **Secrets in env vars only** — never hardcoded.
 - **Cut noise.** Add only what earns its place: no speculative generality, no guards for states the framework already prevents (Zod-validated params, classified errors), no abstraction until a third caller proves it, no option nothing sets.
+- **Metadata projection.** Actor lists retain optional account `createdAt` and labels with `val`, `src?`, and `cts?`; the graph subject retains `createdAt` too. Detailed profiles alone retain selected `associated` counts and labeler status, preserving zero, false, empty, and absent shapes. Video alt uses the shared literal-text quotation at every supported embed depth.
 - **Close the loop on issues.** When implementing work tracked by a GitHub issue, comment on the issue with what landed and close it. Do both — a comment without a close leaves stale issues open; a close without a comment leaves no record of what shipped. The comment is for future readers — state the concrete changes, not the conversation that produced them.
 
 ---
@@ -219,6 +220,7 @@ src/
         bsky-get-author-feed.tool.ts    # User's own posts + their reposts (filtered by type)
         bsky-get-post-thread.tool.ts    # Conversation thread by AT-URI, with truncation and threadgate disclosure
         bsky-get-post-quotes.tool.ts    # Quote posts behind a post's quoteCount, the restated quoted post cut from each embed
+        bsky-get-post-interactions.tool.ts # Accounts behind likes/reposts; account creation and like timestamps kept distinct
         bsky-search-actors.tool.ts      # Actor discovery by name/handle fragment
         bsky-get-follows.tool.ts        # Social graph edges (followers/following)
         bsky-get-trending.tool.ts       # Real-time trending topics, each with the feedUri of its feed
@@ -241,7 +243,7 @@ src/
 
 ## Skills
 
-Skills are modular instructions in `framework-skills/` at the project root. Read them directly when a task matches — e.g., `framework-skills/add-tool/SKILL.md` when adding a tool. `bun run list-skills` prints the full registry. The directory is deliberately not `skills/`: Claude Code and Codex auto-load a plugin's root `skills/`, so a server that ships `.claude-plugin/` or `.codex-plugin/` would hand these development skills to every agent that installs it. Keep `skills/` free for skills meant for those agents.
+Development skills live in `framework-skills/`; root `skills/` is an optional, author-managed tree for agents using the server. Maintenance never creates or modifies that published tree. Read development skills directly when a task matches — e.g., `framework-skills/add-tool/SKILL.md` when adding a tool. `bun run list-skills` prints the full registry. Published skills ship through npm, Docker, and plugin installs and are served over MCP only when `createApp({ skills: 'skills' })` opts in. `lint:packaging` validates the published tree.
 
 **Agent skill directory:** Copy skills into the directory your agent discovers (Claude Code: `.claude/skills/`, others: equivalent). Skills then load as context without referencing `framework-skills/` paths. After framework updates, run the `maintenance` skill — Phase B re-syncs the agent directory.
 
@@ -255,6 +257,7 @@ Available skills:
 | `add-app-tool` | Scaffold an MCP App tool + paired UI resource |
 | `add-resource` | Scaffold a new resource definition |
 | `add-prompt` | Scaffold a new prompt definition |
+| `add-skill` | Author a published skill in root `skills/` for agents that use the server |
 | `add-service` | Scaffold a new service integration |
 | `add-test` | Scaffold test file for a tool, resource, or service |
 | `field-test` | Exercise tools/resources/prompts with real inputs, verify behavior, report issues |

@@ -18,6 +18,7 @@ import { bskyProfileResource } from '@/mcp-server/resources/definitions/bsky-pro
 import { bskyGetAuthorFeed } from '@/mcp-server/tools/definitions/bsky-get-author-feed.tool.js';
 import { bskyGetFeed } from '@/mcp-server/tools/definitions/bsky-get-feed.tool.js';
 import { bskyGetFollows } from '@/mcp-server/tools/definitions/bsky-get-follows.tool.js';
+import { bskyGetPostInteractions } from '@/mcp-server/tools/definitions/bsky-get-post-interactions.tool.js';
 import { bskyGetPostQuotes } from '@/mcp-server/tools/definitions/bsky-get-post-quotes.tool.js';
 import { bskyGetPostThread } from '@/mcp-server/tools/definitions/bsky-get-post-thread.tool.js';
 import { bskyGetProfile } from '@/mcp-server/tools/definitions/bsky-get-profile.tool.js';
@@ -241,6 +242,45 @@ describe('bsky_get_post_quotes uri', () => {
     expect(sentParam('app.bsky.feed.getQuotes', 'uri')).toBe(
       `at://${DID}/app.bsky.feed.post/${RKEY}`,
     );
+  });
+});
+
+describe('bsky_get_post_interactions uri', () => {
+  it.each(['likes', 'reposts'] as const)('resolves shared post URLs for %s', async (kind) => {
+    http.route(
+      {
+        match: `https://api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=bsky.app`,
+        respond: () => Response.json({ did: DID }),
+      },
+      {
+        match: (request) => {
+          const url = new URL(request.url);
+          return (
+            url.origin === 'https://api.bsky.app' &&
+            url.pathname ===
+              `/xrpc/app.bsky.feed.${kind === 'likes' ? 'getLikes' : 'getRepostedBy'}`
+          );
+        },
+        respond: () =>
+          Response.json(
+            kind === 'likes'
+              ? {
+                  likes: [
+                    { actor: { did: DID, handle: 'bsky.app' }, createdAt: '2026-01-01T00:00:00Z' },
+                  ],
+                }
+              : { repostedBy: [{ did: DID, handle: 'bsky.app' }] },
+          ),
+      },
+    );
+    const result = await runToolContract(bskyGetPostInteractions, {
+      uri: `https://bsky.app/profile/bsky.app/post/${RKEY}/?ref=x#part`,
+      kind,
+    });
+    expect(result.isError).toBeFalsy();
+    expect(
+      sentParam(`app.bsky.feed.${kind === 'likes' ? 'getLikes' : 'getRepostedBy'}`, 'uri'),
+    ).toBe(`at://${DID}/app.bsky.feed.post/${RKEY}`);
   });
 });
 

@@ -14,6 +14,7 @@ import {
   closeQuotes,
   inlineUserText,
   quoteUserText,
+  renderLabelList,
   verificationSuffix,
 } from '@/mcp-server/tools/post-format.js';
 import { clampReadLimit, composeNotices, readLimitSchema } from '@/mcp-server/tools/read-limits.js';
@@ -56,6 +57,10 @@ const ActorSchema = z
           'text bounded only by length, not a fixed vocabulary — read it as written rather than parsing it.',
       ),
     avatar: z.string().optional().describe('Avatar image URL.'),
+    createdAt: z
+      .string()
+      .optional()
+      .describe('ISO 8601 timestamp of account creation, when supplied.'),
     labels: z
       .array(
         z
@@ -63,6 +68,8 @@ const ActorSchema = z
             val: z
               .string()
               .describe('Label value (content warning or moderation tag, e.g. "porn", "spam").'),
+            src: z.string().optional().describe('DID of the labeling service.'),
+            cts: z.string().optional().describe('ISO 8601 timestamp when the label was applied.'),
           })
           .describe('A moderation label.'),
       )
@@ -76,7 +83,7 @@ export const bskyGetFollows = tool('bsky_get_follows', {
   title: 'Get Bluesky Social Graph',
   description:
     'Fetch the social graph edges for a Bluesky account — who follows them, or who they follow. ' +
-    'Returns paginated actor profiles (handle, DID, displayName, bio, pronouns when set, and Bluesky ' +
+    'Returns paginated actor profiles (handle, DID, displayName, bio, account creation timestamp, moderation labels with provenance, pronouns when set, and Bluesky ' +
     'verification status) plus a summary of the subject account. Follower, following, and post ' +
     'counts and the website are not on this view, for the listed accounts or the subject — ' +
     'bsky_get_profile returns them for one ' +
@@ -126,6 +133,10 @@ export const bskyGetFollows = tool('bsky_get_follows', {
         did: z.string().describe('Permanent DID of the queried account.'),
         handle: z.string().describe('Human-readable handle of the queried account.'),
         displayName: z.string().optional().describe('Subject display name.'),
+        createdAt: z
+          .string()
+          .optional()
+          .describe('ISO 8601 timestamp of subject account creation, when supplied.'),
         pronouns: z
           .string()
           .optional()
@@ -228,13 +239,14 @@ export const bskyGetFollows = tool('bsky_get_follows', {
       ctx.enrich.notice(clampNotice);
     }
 
-    const { did, handle, displayName, pronouns, verification } = result.subject;
+    const { did, handle, displayName, createdAt, pronouns, verification } = result.subject;
     return {
       actors: result.actors,
       subject: {
         did,
         handle,
         ...(displayName ? { displayName } : {}),
+        ...(createdAt ? { createdAt } : {}),
         ...(pronouns ? { pronouns } : {}),
         ...(verification ? { verification } : {}),
       },
@@ -249,6 +261,7 @@ export const bskyGetFollows = tool('bsky_get_follows', {
     );
     if (result.subject.pronouns)
       header.push(`**Pronouns:** ${inlineUserText(result.subject.pronouns)}`);
+    if (result.subject.createdAt) header.push(`**Joined:** ${result.subject.createdAt}`);
 
     const footer = result.cursor ? `\n\n---\n*cursor: \`${result.cursor}\`*` : '';
     if (result.actors.length === 0) {
@@ -262,9 +275,9 @@ export const bskyGetFollows = tool('bsky_get_follows', {
       parts.push(`**DID:** \`${a.did}\`${verificationSuffix(a.verification)}`);
       if (a.displayName) parts.push(`**Name:** ${inlineUserText(a.displayName)}`);
       if (a.pronouns) parts.push(`**Pronouns:** ${inlineUserText(a.pronouns)}`);
+      if (a.createdAt) parts.push(`**Joined:** ${a.createdAt}`);
       if (a.description) parts.push(...quoteUserText(a.description));
-      if (a.labels?.length)
-        parts.push(`**Labels:** ${a.labels.map((l) => inlineUserText(l.val)).join(', ')}`);
+      if (a.labels?.length) parts.push(`**Labels:** ${renderLabelList(a.labels)}`);
       if (a.avatar) parts.push(`**Avatar:** ${a.avatar}`);
       return closeQuotes(parts).join('\n');
     });

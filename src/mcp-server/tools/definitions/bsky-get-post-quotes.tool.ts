@@ -34,7 +34,7 @@ const EmbedSchema = z
       "quoting post attached alongside the quote. The queried post's own text, author, and attachments " +
       'are not restated on each result. Other shapes, should an embed point elsewhere: images: ' +
       '{ images: [{ url, alt }] }; external: { uri, title, description }; record: { uri, cid, text?, ' +
-      'facets?, authorHandle?, embeds?, media?, omittedEmbeds?, recordKind? } — facets retain UTF-8 byte ranges and full link, mention, or tag features; video: { playlist?, thumbnail?, ' +
+      'facets?, authorHandle?, embeds?, media?, omittedEmbeds?, recordKind? } — facets retain UTF-8 byte ranges and full link, mention, or tag features; video: { alt? (nonempty), playlist?, thumbnail?, ' +
       'presentation? }; unknown: { raw }.',
   );
 
@@ -86,8 +86,18 @@ const PostSchema = z
       })
       .describe('Author of this quote post.'),
     replyCount: z.number().optional().describe('Number of replies to this quote post.'),
-    repostCount: z.number().optional().describe('Number of reposts.'),
-    likeCount: z.number().optional().describe('Number of likes.'),
+    repostCount: z
+      .number()
+      .optional()
+      .describe(
+        'Repost counter, an upper bound on retrievable accounts; use bsky_get_post_interactions with kind reposts.',
+      ),
+    likeCount: z
+      .number()
+      .optional()
+      .describe(
+        'Like counter, an upper bound on retrievable accounts; use bsky_get_post_interactions with kind likes.',
+      ),
     quoteCount: z
       .number()
       .optional()

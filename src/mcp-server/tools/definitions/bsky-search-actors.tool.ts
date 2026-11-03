@@ -13,6 +13,7 @@ import {
   closeQuotes,
   inlineUserText,
   quoteUserText,
+  renderLabelList,
   verificationSuffix,
 } from '@/mcp-server/tools/post-format.js';
 import { clampReadLimit, composeNotices, readLimitSchema } from '@/mcp-server/tools/read-limits.js';
@@ -33,12 +34,17 @@ const ActorResultSchema = z
           'text bounded only by length, not a fixed vocabulary — read it as written rather than parsing it.',
       ),
     avatar: z.string().optional().describe('URL of the profile avatar image.'),
+    createdAt: z
+      .string()
+      .optional()
+      .describe('ISO 8601 timestamp of account creation, when supplied.'),
     labels: z
       .array(
         z
           .object({
             val: z.string().describe('Label value (content warning or moderation tag).'),
             src: z.string().optional().describe('DID of the labeling service.'),
+            cts: z.string().optional().describe('ISO 8601 timestamp when the label was applied.'),
           })
           .describe('A moderation label applied to this actor.'),
       )
@@ -70,7 +76,7 @@ export const bskySearchActors = tool('bsky_search_actors', {
   title: 'Search Bluesky Actors',
   description:
     'Find Bluesky accounts by name or handle fragment. Returns ranked profiles with handle, ' +
-    'DID, displayName, bio, pronouns when the account set them, and Bluesky verification status — ' +
+    'DID, displayName, bio, account creation timestamp, moderation labels with provenance, pronouns when the account set them, and Bluesky verification status — ' +
     'which tells a verified account from a look-alike handle. Follower, following, and post ' +
     'counts and the website are not on this view — bsky_get_profile returns them for one account. ' +
     'Use before bsky_get_profile or bsky_get_author_feed when you have a name but not a confirmed ' +
@@ -181,13 +187,10 @@ export const bskySearchActors = tool('bsky_search_actors', {
       parts.push(`**DID:** \`${a.did}\`${verificationSuffix(a.verification)}`);
       if (a.displayName) parts.push(`**Name:** ${inlineUserText(a.displayName)}`);
       if (a.pronouns) parts.push(`**Pronouns:** ${inlineUserText(a.pronouns)}`);
+      if (a.createdAt) parts.push(`**Joined:** ${a.createdAt}`);
       if (a.description) parts.push(...quoteUserText(a.description));
       if (a.labels?.length) {
-        const labelParts = a.labels.map((l) => {
-          const val = inlineUserText(l.val);
-          return l.src ? `${val} (src:${l.src})` : val;
-        });
-        parts.push(`**Labels:** ${labelParts.join(', ')}`);
+        parts.push(`**Labels:** ${renderLabelList(a.labels)}`);
       }
       if (a.avatar) parts.push(`**Avatar:** ${a.avatar}`);
       return closeQuotes(parts).join('\n');

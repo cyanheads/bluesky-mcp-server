@@ -518,6 +518,7 @@ function embedLines(embed: unknown, nested: boolean): string[] {
       const label = e.presentation === 'gif' ? '🎞 GIF' : '🎬 Video';
       const lines = [e.thumbnail ? `${label}: ${e.thumbnail}` : label];
       if (e.playlist) lines.push(...detail([`Playlist: ${e.playlist}`]));
+      if (typeof e.alt === 'string' && e.alt) lines.push(...detail(quoteUserText(e.alt)));
       return lines;
     }
     case 'unknown':

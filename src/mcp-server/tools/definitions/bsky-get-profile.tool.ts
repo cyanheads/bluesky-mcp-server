@@ -36,7 +36,7 @@ export const bskyGetProfile = tool('bsky_get_profile', {
   description:
     'Fetch a Bluesky actor\'s public profile by handle (e.g. "bsky.app") or DID ' +
     '(e.g. "did:plc:z72i7hdynmk6r22z27h6tvur"). Returns displayName, handle, DID, bio, pronouns, ' +
-    'website, ordered profile links, follower/following/post counts, avatar URL, moderation labels, pinned post AT-URI, and ' +
+    'website, ordered profile links, follower/following/post counts, associated list/feed/starter-pack counts and labeler status when supplied, avatar URL, moderation labels, pinned post AT-URI, and ' +
     'Bluesky verification — whether the account is verified or a trusted verifier, and who verified it. ' +
     'Use this as the first step to resolve a handle to a DID before calling tools that require ' +
     'a DID or AT-URI. Handles and DIDs are interchangeable as input, and "@bsky.app" or the ' +
@@ -111,6 +111,31 @@ export const bskyGetProfile = tool('bsky_get_profile', {
     followersCount: z.number().optional().describe('Number of accounts following this actor.'),
     followsCount: z.number().optional().describe('Number of accounts this actor follows.'),
     postsCount: z.number().optional().describe('Total posts authored by this actor.'),
+    associated: z
+      .object({
+        lists: z
+          .number()
+          .optional()
+          .describe('Number of lists curated by this account, when supplied.'),
+        feedgens: z
+          .number()
+          .optional()
+          .describe('Number of feed generators curated by this account, when supplied.'),
+        starterPacks: z
+          .number()
+          .optional()
+          .describe('Number of starter packs curated by this account, when supplied.'),
+        labeler: z
+          .boolean()
+          .optional()
+          .describe(
+            'Whether this account is a labeler, when supplied; false is distinct from absent.',
+          ),
+      })
+      .optional()
+      .describe(
+        'Selected associated profile metadata. Only supplied fields appear; an empty object is distinct from absent.',
+      ),
     labels: z.array(LabelSchema).optional().describe('Moderation labels applied to this profile.'),
     indexedAt: z
       .string()
@@ -216,6 +241,10 @@ export const bskyGetProfile = tool('bsky_get_profile', {
       counts.push(`following ${result.followsCount.toLocaleString()}`);
     if (result.postsCount != null) counts.push(`${result.postsCount.toLocaleString()} posts`);
     if (counts.length) lines.push(`\n${counts.join(' · ')}`);
+    if (result.associated !== undefined) {
+      const fields = Object.entries(result.associated).map(([key, value]) => `${key}: ${value}`);
+      lines.push(`**Associated:** ${fields.length ? fields.join(' · ') : '(empty)'}`);
+    }
     /**
      * The website URL renders bare, on the same terms as the avatar: the lexicon gives the field
      * `format: "uri"`, so it is a URL by construction and carries no line break to escape with.

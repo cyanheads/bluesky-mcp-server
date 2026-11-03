@@ -42,7 +42,7 @@ const EmbedSchema = z
       'A "generator" quote is a feed: pass its uri to bsky_get_feed to read it. ' +
       'When recordKind is set, text and authorHandle are absent because that variant does not carry them — ' +
       'do not read the quote as an empty post. ' +
-      'video: { playlist?, thumbnail?, presentation? }. ' +
+      'video: { alt? (nonempty), playlist?, thumbnail?, presentation? }. ' +
       'unknown: { raw } — raw is the upstream $type this server has no mapping for.',
   );
 
@@ -93,8 +93,18 @@ const PostSchema = z
       })
       .describe('Author of this post.'),
     replyCount: z.number().optional().describe('Number of replies to this post.'),
-    repostCount: z.number().optional().describe('Number of reposts.'),
-    likeCount: z.number().optional().describe('Number of likes.'),
+    repostCount: z
+      .number()
+      .optional()
+      .describe(
+        'Repost counter, an upper bound on retrievable accounts; use bsky_get_post_interactions with kind reposts.',
+      ),
+    likeCount: z
+      .number()
+      .optional()
+      .describe(
+        'Like counter, an upper bound on retrievable accounts; use bsky_get_post_interactions with kind likes.',
+      ),
     quoteCount: z
       .number()
       .optional()
