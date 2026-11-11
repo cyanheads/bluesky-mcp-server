@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.8.0](changelog/0.8.x/0.8.0.md) — 2026-11-11 · ⚠️ Breaking
+
+Discover Bluesky lists and starter packs, page through their members, and read list feeds.
+
 ## [0.7.0](changelog/0.7.x/0.7.0.md) — 2026-11-02
 
 Post interactions and richer account metadata

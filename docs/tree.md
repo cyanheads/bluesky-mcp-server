@@ -1,6 +1,6 @@
 # bluesky-mcp-server - Directory Structure
 
-Generated on: 2026-11-03 07:42:03
+Generated on: 2026-11-11 14:16:04
 
 ```text
 bluesky-mcp-server/
@@ -31,6 +31,7 @@ bluesky-mcp-server/
 │   ├── 0.5.x/
 │   ├── 0.6.x/
 │   ├── 0.7.x/
+│   ├── 0.8.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -160,6 +161,7 @@ bluesky-mcp-server/
 │   │   │   │   ├── bsky-get-author-feed.tool.ts
 │   │   │   │   ├── bsky-get-feed.tool.ts
 │   │   │   │   ├── bsky-get-follows.tool.ts
+│   │   │   │   ├── bsky-get-list.tool.ts
 │   │   │   │   ├── bsky-get-post-interactions.tool.ts
 │   │   │   │   ├── bsky-get-post-quotes.tool.ts
 │   │   │   │   ├── bsky-get-post-thread.tool.ts
@@ -176,6 +178,7 @@ bluesky-mcp-server/
 │   │   └── bluesky/
 │   │       ├── at-syntax.ts
 │   │       ├── bluesky-service.ts
+│   │       ├── collection-records.ts
 │   │       ├── post-facets.ts
 │   │       ├── search-session.ts
 │   │       ├── types.ts
@@ -195,6 +198,7 @@ bluesky-mcp-server/
 │   │   │   │   ├── bsky-get-feed.tool.test.ts
 │   │   │   │   ├── bsky-get-follows.paging.test.ts
 │   │   │   │   ├── bsky-get-follows.tool.test.ts
+│   │   │   │   ├── bsky-get-list.tool.test.ts
 │   │   │   │   ├── bsky-get-post-interactions.tool.test.ts
 │   │   │   │   ├── bsky-get-post-quotes.tool.test.ts
 │   │   │   │   ├── bsky-get-post-thread.budget.test.ts
