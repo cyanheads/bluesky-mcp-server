@@ -35,6 +35,29 @@ interface Parsed {
 
 const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
 
+it.each([' ', '\n'])('keeps URL-delimiter escaping linear with separator %j', (separator) => {
+  const part = 'https://a.test/_';
+  const time = (count: number) => {
+    const value = Array.from({ length: count }, () => part).join(separator) + '\n';
+    const started = process.threadCpuUsage();
+    const rendered = quoteUserText(value);
+    const elapsed = process.threadCpuUsage(started);
+    expect(rendered[0]).toBe(separator === ' ' ? `> ${value.slice(0, -1)}` : `> ${part}`);
+    expect(rendered.length).toBe(separator === ' ' ? 2 : count + 1);
+    expect(rendered.at(-1)).toBe('>');
+    return elapsed.user + elapsed.system;
+  };
+  const timings = [0, 1, 2].map(() => {
+    const small = time(312);
+    const large = time(312 * 64);
+    expect(large).toBeLessThan(250_000);
+    return { small, large };
+  });
+  const small = Math.min(...timings.map((sample) => sample.small));
+  const large = Math.min(...timings.map((sample) => sample.large));
+  expect(large / Math.max(1, small)).toBeLessThan(256);
+});
+
 function parse(markdown: string): Parsed {
   const walker = parser.parse(markdown).walker();
   const types: string[] = [];

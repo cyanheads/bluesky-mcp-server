@@ -84,26 +84,36 @@ function flanking(char: string, prev: string | undefined, next: string | undefin
  */
 function escapeInlineMarkdown(text: string, inline: boolean): string {
   const urls = [...text.matchAll(URL_RUN)].map((m) => [m.index, m.index + m[0].length] as const);
-  const inUrl = (at: number) => urls.some(([start, end]) => at >= start && at < end);
+  // Both passes visit offsets in order, so each URL range is visited at most once per pass.
+  let urlIndex = 0;
+  const inUrl = (at: number) => {
+    let range = urls[urlIndex];
+    while (range && at >= range[1]) {
+      urlIndex += 1;
+      range = urls[urlIndex];
+    }
+    return range !== undefined && at >= range[0];
+  };
   const intraword = (at: number, length: number) =>
     WORD_CHAR.test(text[at - 1] ?? '') && WORD_CHAR.test(text[at + length] ?? '');
 
   /** Delimiter characters whose URL runs could pair with one another, and so are escaped too. */
   const pairable = new Set<string>();
-  const seen: UrlDelimiter[] = [];
+  const openers = new Set<string>();
   for (const m of text.matchAll(/\*+|_+|~+/g)) {
     const [run] = m;
     if (!inUrl(m.index) || (run[0] === '_' && intraword(m.index, run.length))) continue;
     const delimiter = flanking(run[0] ?? '', text[m.index - 1], text[m.index + run.length]);
-    if (delimiter.canClose && seen.some((d) => d.char === delimiter.char && d.canOpen)) {
+    if (delimiter.canClose && openers.has(delimiter.char)) {
       pairable.add(delimiter.char);
     }
     if (inline && delimiter.char === '*' && (delimiter.canOpen || delimiter.canClose)) {
       pairable.add('*');
     }
-    seen.push(delimiter);
+    if (delimiter.canOpen) openers.add(delimiter.char);
   }
 
+  urlIndex = 0;
   return text.replace(INLINE_SYNTAX, (match: string, at: number) => {
     const next = text[at + match.length];
     switch (match[0]) {
