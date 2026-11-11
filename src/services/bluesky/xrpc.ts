@@ -33,10 +33,9 @@ export function xrpcUrl(base: string, lexicon: string, params: XrpcParams): stri
 export const HTML_DOCUMENT = /^\s*<(!DOCTYPE\s+html|html[\s>])/i;
 
 /**
- * Drop an HTML page from a failed request's error data. The edge in front of Bluesky refuses some
- * requests with an HTML block page rather than an XRPC envelope, and the framework captures that
- * body into `data.body` / `data.responseBody`, which reach the client. The status and the redacted
- * URL in the message already say everything the page does.
+ * Drop an HTML block page from a failed request's error data. The framework keeps captured bodies
+ * off client envelopes, but error logs can still include them. The HTTP status and redacted URL
+ * in the message are sufficient for diagnosing a refusal at the Bluesky edge.
  */
 export function withoutHtmlBody(err: McpError): McpError {
   const data = err.data as Record<string, unknown> | undefined;
