@@ -1,7 +1,7 @@
 <div align="center">
   <h1>@cyanheads/bluesky-mcp-server</h1>
   <p><b>Search Bluesky posts and feeds; read profiles, threads, and trends. STDIO or Streamable HTTP.</b>
-  <div>11 Tools • 1 Profile Resource • 1 Guide</div>
+  <div>12 Tools • 1 Profile Resource • 1 Guide</div>
   </p>
 </div>
 
@@ -29,7 +29,7 @@
 
 ## Overview
 
-Read Bluesky without an account: profiles, feed catalog searches, trending topics and the feeds behind them, custom and author feeds, threads, and quote posts. Paste a bsky.app link or `@handle` anywhere one is asked for, and add an optional app password to unlock full-text post search.
+Read Bluesky without an account: profiles, lists and starter packs, feed catalog searches, trending topics and the feeds behind them, custom and author feeds, threads, and quote posts. Paste a bsky.app link or `@handle` anywhere one is asked for, and add an optional app password to unlock full-text post search.
 
 ### Tools
 
@@ -37,7 +37,8 @@ Read Bluesky without an account: profiles, feed catalog searches, trending topic
 |:-----|:------------|
 | `bsky_search_posts` | Full-text search across public Bluesky posts, with author, mention, language, tag, domain, URL, date, and sort filters — offered only when an app password is configured |
 | `bsky_get_profile` | Fetch a Bluesky actor's public profile by handle or DID — the handle↔DID resolver |
-| `bsky_get_feed` | Read a feed generator's posts — a trend's feed, Discover, or any custom feed — by AT-URI or bsky.app URL |
+| `bsky_get_feed` | Read a feed generator's posts or a list's posts and reposts by AT-URI or bsky.app URL |
+| `bsky_get_list` | Read list or starter-pack membership, or discover an account's lists and starter packs |
 | `bsky_get_author_feed` | A user's recent posts ordered newest-first, filterable by post type |
 | `bsky_get_post_thread` | Fetch the conversation for a post by AT-URI or bsky.app URL — parent chain upward and reply tree downward, with what Bluesky counted but did not return |
 | `bsky_get_post_quotes` | Read the quote posts behind a post's `quoteCount`, newest first or by like count — where much of the reaction to a post lives |
@@ -57,7 +58,7 @@ Use `bsky_get_profile` for programmatic access or `bsky://profile/{actor}` to in
 
 ### Agent guide
 
-[`bluesky-guide`](./skills/bluesky-guide/SKILL.md) covers topic research, account attribution, and reactions to a post, including identifier chains and coverage checks. It ships with plugin installs and is readable over MCP at `skill://bluesky-guide/SKILL.md` without credentials.
+[`bluesky-guide`](./skills/bluesky-guide/SKILL.md) covers topic research, curated groups, account attribution, and reactions to a post, including identifier chains and coverage checks. It ships with plugin installs and is readable over MCP at `skill://bluesky-guide/SKILL.md` without credentials.
 
 ## Capability reference
 
@@ -82,12 +83,26 @@ Post tools preserve optional rich-text `facets` separately from the original tex
 ### `bsky_get_feed` <sub>tool</sub>
 
 - Takes a feed generator AT-URI (`at://<handle-or-did>/app.bsky.feed.generator/<rkey>`) or its bsky.app page (`https://bsky.app/profile/<handle-or-did>/feed/<rkey>`, with any trailing `/`, `?…`, or `#…` ignored); a trend's `feedUri` works as-is, and Discover is `at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot`
-- A handle owner costs one extra lookup (`resolveHandle`), a DID owner none; any other collection, such as a post AT-URI, is rejected before the upstream call
+- Also accepts a list AT-URI (`at://<handle-or-did>/app.bsky.graph.list/<rkey>`) or `https://bsky.app/profile/<handle-or-did>/lists/<rkey>`, returning posts and reposts by its members
+- A handle owner costs one extra lookup (`resolveHandle`), a DID owner none; unrelated collections, such as a post AT-URI, are rejected before the upstream call
 - A post the feed pinned to its top carries `pinned: true`; a repost carries `repostedBy`/`repostedAt`
 - Up to 100 posts per call, paginated via cursor; truncation is disclosed on the cursor, since a feed can return fewer than `limit` with more behind it
 - A page that would pass the 48,000-byte response budget is asked for again at the `limit` that fits and returned whole, marked `budgetCapped: true`; a ranked feed reranks on every request, so its posts and cursor still come from one response
 - `feed_not_found` (no such feed or handle), `feed_unavailable` (the feed's generator did not answer — not retried, so a down feed fails fast), `feed_requires_login` (a personalized feed)
+- A missing list fails as `list_not_found`. The server checks list existence when the first page is empty and Bluesky supplies no nonempty cursor
 - Always unauthenticated, even when search credentials are set
+
+---
+
+### `bsky_get_list` <sub>tool</sub>
+
+- Pass `list` with a list or starter-pack AT-URI, a `https://bsky.app/profile/<actor>/lists/<rkey>` URL, or a `https://bsky.app/starter-pack/<actor>/<rkey>` URL. Handle authorities resolve to DIDs before reading the record
+- Returns list identity, creator, purpose, optional description and `listItemCount`, and a page of membership records with account DIDs and handles. Purpose is the upstream string, including `app.bsky.graph.defs#curatelist`, `#modlist`, or `#referencelist`
+- Starter-pack metadata remains separate from its backing list: name, creator, optional description and join counts, and supplied feed references. Read the backing list or a recommended generator with `bsky_get_feed`
+- If a pack's backing list is confirmed missing, the pack metadata and list URI remain available with a membership-unavailable notice. Missing membership is not an empty member page
+- To discover an account's collections, pass `actor` instead of `list` and choose `kind: lists` or `kind: starterPacks`. Each collection has its own cursor; discovery returns the AppView-visible records
+- Default 25 results per page, capped at 100 through the shared clamping policy. Continue with the same record or actor/collection and a nonempty returned cursor, including after an empty page. An empty or absent cursor ends pagination. Reported member counts are separate from the current page length
+- `list_not_found`, `starter_pack_not_found`, and `actor_not_found` identify confirmed missing targets; malformed or mixed input modes fail before any request. Reads are always keyless
 
 ---
 
@@ -185,7 +200,7 @@ Post tools preserve optional rich-text `facets` separately from the original tex
 - Returns paginated profiles (handle, DID, displayName, bio, pronouns when set, verification statuses) plus the subject's own profile summary, which carries its statuses too
 - Optional account `createdAt` is retained on listed actors and the subject, rendered as **Joined**; listed actors' labels retain `val`, optional `src`, and optional `cts`
 - No follower, following, or post counts and no `website` on this view, for the list or the subject — resolve with `bsky_get_profile` when they matter
-- Up to 100 per page, paginated via cursor. A cursor can lead to an empty page when the remaining accounts no longer resolve, which the response reports as the end of the list
+- Up to 100 per page, paginated via cursor. An empty page with a cursor remains resumable; an empty continuation page without one reports exhaustion
 - `actor_not_found` when the handle or DID doesn't resolve
 
 ---
@@ -211,8 +226,8 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 
 Bluesky-specific:
 
-- Ten of eleven tools read `api.bsky.app` without credentials; `bsky_search_posts` runs through an optional app-password session and is left out without one
-- Shared links as input — `@handle` and a bsky.app profile URL wherever an account is asked for, a bsky.app post or feed URL wherever that post or feed is, each rewritten to the handle, DID, or AT-URI it names before the request
+- Eleven of twelve tools read `api.bsky.app` without credentials; `bsky_search_posts` runs through an optional app-password session and is left out without one
+- Shared links as input — `@handle` and a bsky.app profile URL wherever an account is asked for, and bsky.app post, feed, list, or starter-pack URLs in the matching reader, each rewritten to the handle, DID, or AT-URI it names before the request
 - Single `BlueskyService` wrapping the AT Protocol AppView, with a 15s per-request timeout, retry on transient upstream failures (up to 3 retries, 500ms base delay — never for a login, or for a failure already mapped to a tool error), and a versioned `User-Agent`
 - No HTML in any error — a block page from Bluesky's edge is dropped from the error data, leaving the status
 - Embed normalization — raw nested AT Protocol embed objects flattened into a clean `type`-discriminated union
@@ -310,7 +325,7 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
 
 ### Prerequisites
 
-- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+- [Bun v1.4.4](https://bun.sh/) or higher (or Node.js v24+).
 - No API key or account required for anything but post search. See [Post search](#post-search) to enable it.
 
 ### Installation
@@ -352,9 +367,11 @@ This server requires no API keys. Everything below is optional.
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http` | `stdio` |
 | `MCP_SESSION_MODE` | HTTP session mode: `stateful`, `stateless`, or `auto`. Unset or empty, the server resolves to `stateless` from its own `createApp({ sessionMode })` declaration; an explicit value still overrides it. | `stateless` |
 | `MCP_HTTP_PORT` | Port for HTTP server | `3010` |
+| `MCP_HTTP_ENDPOINT_PATH` | HTTP endpoint path. The server adds a leading slash if omitted and rejects query strings, fragments, and router patterns. | `/mcp` |
+| `MCP_PUBLIC_URL` | Public HTTP or HTTPS base URL. Use a URL without credentials, a query string, or a fragment. | — |
 | `MCP_AUTH_MODE` | Auth mode: `none`, `jwt`, or `oauth` | `none` |
 | `MCP_LOG_LEVEL` | Log level (RFC 5424) | `info` |
-| `LOGS_DIR` | Directory for log files (Node.js only) | `<project-root>/logs` |
+| `LOGS_DIR` | Directory for log files (Node.js only). Relative paths resolve against the server package. | `<server-package>/logs` |
 | `STORAGE_PROVIDER_TYPE` | Storage backend | `in-memory` |
 | `OTEL_ENABLED` | Enable [OpenTelemetry instrumentation](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry) | `false` |
 
@@ -409,7 +426,7 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 | `src/index.ts` | `createApp()` entry point — reads config, registers tools and resource, and inits the service. |
 | `src/config` | Read-limit policy and the optional app-password pair that enables post search. |
 | `src/services/bluesky` | AT Protocol HTTP client — public AppView reads, the app-password search session, retry, timeout, and `User-Agent`. |
-| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`) — eleven read-only Bluesky tools. |
+| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`) — twelve read-only Bluesky tools. |
 | `src/mcp-server/resources` | Resource definitions (`*.resource.ts`) — `bsky://profile/{actor}`. |
 | `tests/` | Unit and integration tests mirroring `src/`. |
 

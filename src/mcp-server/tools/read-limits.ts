@@ -16,6 +16,7 @@ export function readLimitSchema(maximum: number, minimum = 1): z.ZodNumber {
 type ReadTool =
   | 'bsky_get_author_feed'
   | 'bsky_get_feed'
+  | 'bsky_get_list'
   | 'bsky_get_follows'
   | 'bsky_get_post_quotes'
   | 'bsky_get_post_interactions'

@@ -13,6 +13,8 @@ import {
   actorFromRef,
   atUriFromRef,
   FEED_REF_REGEX,
+  LIST_REF_REGEX,
+  POST_FEED_REF_REGEX,
   POST_URI_REF_REGEX,
   parseBlueskyRef,
   parseFeedRef,
@@ -244,12 +246,25 @@ describe('parseBlueskyRef', () => {
       'at://bsky.app/app.bsky.graph.list/3lc4',
       { kind: 'record', authority: 'bsky.app', collection: 'app.bsky.graph.list', rkey: '3lc4' },
     ],
+    [
+      'https://bsky.app/profile/bsky.app/lists/3lc4',
+      { kind: 'record', authority: 'bsky.app', collection: 'app.bsky.graph.list', rkey: '3lc4' },
+    ],
+    [
+      'https://bsky.app/starter-pack/bsky.app/3lc4/?x#y',
+      {
+        kind: 'record',
+        authority: 'bsky.app',
+        collection: 'app.bsky.graph.starterpack',
+        rkey: '3lc4',
+      },
+    ],
   ])('%s', (value, expected) => {
     expect(parseBlueskyRef(value)).toEqual(expected);
   });
 
   it.each([
-    ['a list page', 'https://bsky.app/profile/bsky.app/lists/3lc4'],
+    ['a short starter pack invite', 'https://bsky.app/starter-pack-short/3lc4'],
     ['a post quotes page', 'https://bsky.app/profile/bsky.app/post/3l6oveex3ii2l/quotes'],
     ['a post liked-by page', 'https://bsky.app/profile/bsky.app/post/3l6oveex3ii2l/liked-by'],
     ['a followers page', 'https://bsky.app/profile/bsky.app/followers'],
@@ -294,6 +309,58 @@ describe('the rewrite helpers', () => {
 });
 
 describe('the input patterns', () => {
+  it.each([
+    ['https://bsky.app/profile/bsky.app/lists/news', true],
+    ['at://bsky.app/app.bsky.graph.list/news', true],
+    ['https://bsky.app/starter-pack/bsky.app/pack', false],
+    ['at://bsky.app/app.bsky.graph.starterpack/pack', false],
+  ] as const)('limits post feeds to lists and generators (%s)', (value, servesPosts) => {
+    expect(LIST_REF_REGEX.test(value)).toBe(true);
+    expect(POST_FEED_REF_REGEX.test(value)).toBe(servesPosts);
+    expect(POST_URI_REF_REGEX.test(value)).toBe(false);
+    expect(ACTOR_REF_REGEX.test(value)).toBe(false);
+  });
+
+  it.each([
+    ['nested openers', '[https://bsky.app/starter-pack/bsky.app/pack?', ']', true],
+    ['long line ending in a break', '[', '\n', false],
+    ['line breaks throughout', '[\n', '', false],
+  ] as const)(
+    'checks collection URL tails in linear CPU time for %s',
+    (_label, unit, suffix, valid) => {
+      const prefix = 'https://bsky.app/profile/bsky.app/lists/news?';
+      const time = (size: number) => {
+        const value = prefix + unit.repeat(Math.ceil(size / unit.length)) + suffix;
+        const start = process.threadCpuUsage();
+        const matches = [
+          LIST_REF_REGEX.test(value),
+          POST_FEED_REF_REGEX.test(value),
+          parseBlueskyRef(value),
+        ];
+        const elapsed = process.threadCpuUsage(start);
+        expect(matches).toEqual([
+          valid,
+          valid,
+          valid
+            ? {
+                kind: 'record',
+                authority: 'bsky.app',
+                collection: 'app.bsky.graph.list',
+                rkey: 'news',
+              }
+            : undefined,
+        ]);
+        return elapsed.user + elapsed.system;
+      };
+      const timings = [0, 1, 2].map(() => ({ small: time(5_000), large: time(320_000) }));
+      const small = Math.min(...timings.map((sample) => sample.small));
+      const large = Math.min(...timings.map((sample) => sample.large));
+      expect(large).toBeLessThan(250_000);
+      // Include enough repeated scans for microsecond counter granularity on the short input.
+      expect(large / Math.max(5, small)).toBeLessThan(256);
+    },
+  );
+
   it('an actor pattern takes a profile URL around a 253-character handle', () => {
     const long = `${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(61)}`;
     expect(long).toHaveLength(253);

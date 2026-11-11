@@ -1,6 +1,5 @@
 /**
- * @fileoverview Read the posts a Bluesky feed generator serves — a trend's feed, a custom feed such
- * as Discover, or a feed quoted in a post — by AT-URI or bsky.app URL, without credentials.
+ * @fileoverview Read the posts of a Bluesky generator or list by AT-URI or bsky.app URL.
  * @module mcp-server/tools/definitions/bsky-get-feed
  */
 
@@ -9,8 +8,12 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { renderPostLines } from '@/mcp-server/tools/post-format.js';
 import { clampReadLimit, readLimitSchema } from '@/mcp-server/tools/read-limits.js';
 import { pageEnrichment, respondWithinBudget } from '@/mcp-server/tools/response-budget.js';
-import { FEED_REF_MESSAGE, FEED_REF_REGEX } from '@/services/bluesky/at-syntax.js';
-import { getBlueskyService } from '@/services/bluesky/bluesky-service.js';
+import {
+  FEED_REF_MESSAGE,
+  FEED_REF_REGEX,
+  POST_FEED_REF_REGEX,
+} from '@/services/bluesky/at-syntax.js';
+import { collectionDeadlineAtMs, getBlueskyService } from '@/services/bluesky/bluesky-service.js';
 import { FacetSchema } from '@/services/bluesky/post-facets.js';
 
 /**
@@ -33,7 +36,7 @@ const EmbedSchema = z
       'recordKind is absent for an ordinary quoted post and otherwise names what stood in for one: ' +
       '"notFound" | "blocked" | "detached" (the quote exists but cannot be read) or ' +
       '"generator" | "list" | "starterPack" | "labeler" | "unknown" (the quoted record is not a post). ' +
-      'A "generator" quote is a feed: pass its uri to bsky_get_feed to read it. ' +
+      'Pass the uri of a "generator" or "list" quote to bsky_get_feed for posts, or the uri of a "list" or "starterPack" quote to bsky_get_list for members. ' +
       'When recordKind is set, text and authorHandle are absent because that variant does not carry them. ' +
       'video: { alt? (nonempty), playlist?, thumbnail?, presentation? }. ' +
       'unknown: { raw } — raw is the upstream $type this server has no mapping for.',
@@ -188,9 +191,7 @@ function formatFeed(result: z.infer<typeof FeedOutput>): ContentBlock[] {
 export const bskyGetFeed = tool('bsky_get_feed', {
   title: 'Get Bluesky Feed',
   description:
-    'Read the posts a Bluesky feed generator serves, in the order the feed ranks them. Accepts the ' +
-    "feed's AT-URI (at://<handle-or-did>/app.bsky.feed.generator/<rkey>) or its bsky.app page " +
-    '(https://bsky.app/profile/<handle-or-did>/feed/<rkey>). Feeds come from the "feedUri" of each ' +
+    'Read posts and reposts from a Bluesky feed generator or list in the order Bluesky serves them. Accepts generator and list AT-URIs and bsky.app feed and list URLs. To read list membership, use bsky_get_list. Generator feeds come from the "feedUri" of each ' +
     'bsky_get_trending topic — the way to read what a trend is about — from bsky_search_feeds catalog results, from a quoted feed in a post ' +
     '(an embed with recordKind "generator"), or from a shared link; Discover is ' +
     'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot. Returns posts with full ' +
@@ -203,12 +204,9 @@ export const bskyGetFeed = tool('bsky_get_feed', {
     feed: z
       .string()
       .max(2048)
-      .regex(FEED_REF_REGEX, FEED_REF_MESSAGE)
+      .regex(POST_FEED_REF_REGEX, FEED_REF_MESSAGE)
       .describe(
-        'The feed to read — its AT-URI, e.g. "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot", ' +
-          'or its bsky.app URL, e.g. "https://bsky.app/profile/bsky.app/feed/whats-hot"; a trailing "/", "?…", ' +
-          'or "#…" on the URL is ignored. The owner may be a handle or a DID; a handle costs one extra lookup. ' +
-          'A trend\'s "feedUri" works as-is.',
+        'Generator or list AT-URI (app.bsky.feed.generator or app.bsky.graph.list), or https://bsky.app/profile/<handle-or-did>/feed/<rkey> or /lists/<rkey>. A trend’s or starter pack’s feedUri works as-is.',
       ),
     limit: readLimitSchema(100)
       .default(25)
@@ -250,6 +248,13 @@ export const bskyGetFeed = tool('bsky_get_feed', {
 
   errors: [
     {
+      reason: 'list_not_found',
+      code: JsonRpcErrorCode.NotFound,
+      when: 'The list does not exist or its owner handle does not resolve.',
+      recovery: 'Verify the list address or find an existing list with bsky_get_list.',
+      thrownBy: 'service',
+    },
+    {
       reason: 'feed_not_found',
       code: JsonRpcErrorCode.NotFound,
       when: 'No feed generator exists at that address, or the handle in it does not resolve to an account.',
@@ -285,9 +290,11 @@ export const bskyGetFeed = tool('bsky_get_feed', {
       100,
     );
     ctx.log.info('Fetching Bluesky feed', { feed: input.feed, limit: input.limit });
+    const isList = !FEED_REF_REGEX.test(input.feed);
+    const deadline = isList ? { deadlineAtMs: collectionDeadlineAtMs() } : {};
     const fetchPage = (feed: string, limit: number) =>
       getBlueskyService().getFeed(
-        { feed, limit, ...(input.cursor ? { cursor: input.cursor } : {}) },
+        { feed, limit, ...(input.cursor ? { cursor: input.cursor } : {}), ...deadline },
         ctx,
       );
 
@@ -320,7 +327,9 @@ export const bskyGetFeed = tool('bsky_get_feed', {
           more: 'More posts exist — pass the returned cursor to fetch the next page.',
           empty: input.cursor
             ? 'No more posts in this feed traversal.'
-            : 'The feed returned no posts. It may have nothing to serve right now — try a different feed, such as a bsky_get_trending feedUri.',
+            : isList
+              ? 'The list returned no posts. Use bsky_get_list to inspect its membership.'
+              : 'The feed returned no posts. It may have nothing to serve right now — try a different feed, such as a bsky_get_trending feedUri.',
         }),
       }),
       schema: FeedOutput,

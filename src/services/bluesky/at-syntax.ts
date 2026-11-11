@@ -39,6 +39,17 @@ export const POST_COLLECTION = 'app.bsky.feed.post';
 /** Collection NSID of a feed generator record — the only collection `app.bsky.feed.getFeed` reads. */
 export const FEED_GENERATOR_COLLECTION = 'app.bsky.feed.generator';
 
+/** Collection NSID of a graph list record. */
+export const LIST_COLLECTION = 'app.bsky.graph.list';
+
+/** Collection NSID of a starter pack record. */
+export const STARTER_PACK_COLLECTION = 'app.bsky.graph.starterpack';
+
+const COLLECTION_RKEY = `(?!\\.{1,2}(?:$|[/?#]))${RKEY}`;
+const LIST_AT_URI = `at://(?:${HANDLE}|${DID})/app\\.bsky\\.graph\\.list/${COLLECTION_RKEY}`;
+const LIST_URL = `${PROFILE_URL}/lists/${COLLECTION_RKEY}${URL_TAIL}`;
+const STARTER_PACK_URL = `https://bsky\\.app/starter-pack/(?:${HANDLE}|${DID})/${COLLECTION_RKEY}${URL_TAIL}`;
+
 /**
  * An actor as a caller may have it: a handle or DID, a handle with the leading `@` Bluesky shows it
  * with, or the bsky.app page of the account. The last two are rewritten by {@link actorFromRef}.
@@ -82,9 +93,23 @@ export const FEED_REF_REGEX = new RegExp(
   `^(?:at://(?:${HANDLE}|${DID})/app\\.bsky\\.feed\\.generator/${RKEY}|${PROFILE_URL}/feed/${RKEY}${URL_TAIL})$`,
 );
 
-/** Validation message paired with {@link FEED_REF_REGEX}. */
+/** A generator or list reference that can serve posts. */
+export const POST_FEED_REF_REGEX = new RegExp(
+  `(?:${FEED_REF_REGEX.source})|^(?:${LIST_AT_URI}|${LIST_URL})$`,
+);
+
+/** A graph list or starter pack reference. */
+export const LIST_REF_REGEX = new RegExp(
+  `^(?:${LIST_AT_URI}|at://(?:${HANDLE}|${DID})/app\\.bsky\\.graph\\.starterpack/${COLLECTION_RKEY}|${LIST_URL}|${STARTER_PACK_URL})$`,
+);
+
+/** Validation message paired with {@link LIST_REF_REGEX}. */
+export const LIST_REF_MESSAGE =
+  'Use a list or starter pack AT-URI (app.bsky.graph.list or app.bsky.graph.starterpack), https://bsky.app/profile/<handle-or-did>/lists/<rkey>, or https://bsky.app/starter-pack/<handle-or-did>/<rkey>.';
+
+/** Validation message paired with {@link POST_FEED_REF_REGEX}. */
 export const FEED_REF_MESSAGE =
-  'Must be a feed generator AT-URI, at://<handle-or-did>/app.bsky.feed.generator/<rkey> (e.g. "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot"), or the bsky.app page that shows the feed, https://bsky.app/profile/<handle-or-did>/feed/<rkey>. A post AT-URI (app.bsky.feed.post) is not a feed — read a post with bsky_get_post_thread.';
+  'Use a feed generator or list AT-URI (app.bsky.feed.generator or app.bsky.graph.list), or its bsky.app page at https://bsky.app/profile/<handle-or-did>/feed/<rkey> or https://bsky.app/profile/<handle-or-did>/lists/<rkey>. Read a post with bsky_get_post_thread.';
 
 /** What a reference names once parsed: an account, or one record by its AT-URI parts. */
 export type BlueskyRef =
@@ -97,17 +122,24 @@ const ACTOR_FORM = new RegExp(`^(?:(${HANDLE}|${DID})|@(${HANDLE}))$`);
 /** @internal Full AT-URI, captured into authority, collection, and record key. */
 const AT_URI_FORM = new RegExp(`^at://(${HANDLE}|${DID})/(${NSID})/(${RKEY})$`);
 
-/** @internal A bsky.app profile page, or a post or feed page below it. */
+/** @internal A bsky.app profile page, or a post, feed or list page below it. */
 const BSKY_APP_FORM = new RegExp(
-  `^https://bsky\\.app/profile/(${HANDLE}|${DID})(?:/(post|feed)/(${RKEY}))?${URL_TAIL}$`,
+  `^https://bsky\\.app/profile/(${HANDLE}|${DID})(?:/(post|feed|lists)/(${RKEY}))?${URL_TAIL}$`,
+);
+const STARTER_PACK_FORM = new RegExp(
+  `^https://bsky\\.app/starter-pack/(${HANDLE}|${DID})/(${COLLECTION_RKEY})${URL_TAIL}$`,
 );
 
 /** @internal The record collection each bsky.app page kind shows. */
-const PAGE_COLLECTION = { post: POST_COLLECTION, feed: FEED_GENERATOR_COLLECTION } as const;
+const PAGE_COLLECTION = {
+  post: POST_COLLECTION,
+  feed: FEED_GENERATOR_COLLECTION,
+  lists: LIST_COLLECTION,
+} as const;
 
 /**
- * Parse any actor, post, or feed reference — a handle or DID (bare or behind `@`), an AT-URI, or a
- * bsky.app profile, post, or feed page — into what it names. Undefined for anything else, including
+ * Parse an actor or record reference — a handle, DID, AT-URI, or supported bsky.app page.
+ * Undefined for anything else, including
  * every other bsky.app path. Every value the 0.4.0 patterns accepted parses to the same meaning it
  * had: a bare handle or DID to itself, an AT-URI to its own three parts.
  */
@@ -120,7 +152,18 @@ export function parseBlueskyRef(value: string): BlueskyRef | undefined {
     return { kind: 'record', authority: uri[1], collection: uri[2], rkey: uri[3] };
   }
   const page = BSKY_APP_FORM.exec(value);
-  if (!page?.[1]) return;
+  if (!page?.[1]) {
+    const pack = STARTER_PACK_FORM.exec(value);
+    if (pack?.[1] && pack[2]) {
+      return {
+        kind: 'record',
+        authority: pack[1],
+        collection: STARTER_PACK_COLLECTION,
+        rkey: pack[2],
+      };
+    }
+    return;
+  }
   const kind = page[2] as keyof typeof PAGE_COLLECTION | undefined;
   return kind && page[3]
     ? { kind: 'record', authority: page[1], collection: PAGE_COLLECTION[kind], rkey: page[3] }

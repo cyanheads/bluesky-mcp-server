@@ -14,6 +14,7 @@ import { initBlueskyService } from '@/services/bluesky/bluesky-service.js';
 const APPVIEW = 'https://api.bsky.app/xrpc';
 const BSKY_DID = 'did:plc:z72i7hdynmk6r22z27h6tvur';
 const WHATS_HOT = `at://${BSKY_DID}/app.bsky.feed.generator/whats-hot`;
+const LIST = `at://${BSKY_DID}/app.bsky.graph.list/news`;
 
 const http = createFetchMock([], {
   onUnhandled: () => Promise.reject(new Error('unmocked fetch')),
@@ -63,6 +64,130 @@ beforeEach(() => {
 
 afterEach(() => {
   http.restore();
+});
+
+describe('bsky_get_feed — list feeds', () => {
+  const listFeed = /app\.bsky\.feed\.getListFeed/;
+  const getList = /app\.bsky\.graph\.getList\?/;
+
+  it('uses the same DID list and traversal cursor for the page and its budget refetch', async () => {
+    http.route(
+      {
+        match: /com\.atproto\.identity\.resolveHandle/,
+        respond: () => Response.json({ did: BSKY_DID }),
+      },
+      {
+        match: listFeed,
+        respond: (request) => {
+          const limit = Number(new URL(request.url).searchParams.get('limit'));
+          const feed = Array.from({ length: limit }, (_, i) => ({
+            post: post(`item${i}`, { record: { text: 'n'.repeat(30_000) } }),
+            reason: {
+              $type: 'app.bsky.feed.defs#reasonRepost',
+              by: { did: 'did:plc:reposter', handle: 'reposter.bsky.social' },
+              indexedAt: '2026-09-25T08:00:00Z',
+            },
+          }));
+          return Response.json({ feed, cursor: `cursor-for-${limit}` });
+        },
+      },
+    );
+    const result = await runToolContract(bskyGetFeed, {
+      feed: 'https://bsky.app/profile/bsky.app/lists/news/?share=1',
+      limit: 2,
+      cursor: 'list-start',
+    });
+    expect(result.isError).toBeFalsy();
+    expect(structured(result)).toMatchObject({
+      posts: [
+        {
+          uri: 'at://did:plc:author/app.bsky.feed.post/item0',
+          repostedBy: { did: 'did:plc:reposter', handle: 'reposter.bsky.social' },
+        },
+      ],
+      cursor: 'cursor-for-1',
+      budgetCapped: true,
+    });
+    expect(textOf(result)).toContain('Reposted by @reposter.bsky.social');
+    expect(textOf(result)).toContain('cursor-for-1');
+    expect(
+      http.calls.map(({ request }) => {
+        const url = new URL(request.url);
+        return [url.pathname, Object.fromEntries(url.searchParams)];
+      }),
+    ).toEqual([
+      ['/xrpc/com.atproto.identity.resolveHandle', { handle: 'bsky.app' }],
+      ['/xrpc/app.bsky.feed.getListFeed', { list: LIST, limit: '2', cursor: 'list-start' }],
+      ['/xrpc/app.bsky.feed.getListFeed', { list: LIST, limit: '1', cursor: 'list-start' }],
+    ]);
+  });
+
+  it('probes list existence once on an empty first page without a cursor', async () => {
+    http.route(
+      { match: listFeed, respond: () => Response.json({ feed: [] }) },
+      {
+        match: getList,
+        respond: () =>
+          Response.json({
+            list: {
+              uri: LIST,
+              name: 'News',
+              purpose: 'app.bsky.graph.defs#curatelist',
+              creator: { did: BSKY_DID, handle: 'bsky.app' },
+            },
+            items: [],
+          }),
+      },
+    );
+    const result = await runToolContract(bskyGetFeed, { feed: LIST });
+    expect(result.isError).toBeFalsy();
+    expect(structured(result)).toMatchObject({ posts: [], totalReturned: 0 });
+    expect(textOf(result)).toContain(
+      'The list returned no posts. Use bsky_get_list to inspect its membership.',
+    );
+    expect(http.calls.map(({ request }) => new URL(request.url).pathname)).toEqual([
+      '/xrpc/app.bsky.feed.getListFeed',
+      '/xrpc/app.bsky.graph.getList',
+    ]);
+    expect(new URL(http.calls[1]?.request.url ?? '').searchParams.get('limit')).toBe('1');
+  });
+
+  it('maps an empty first page with a confirmed missing list to a declared not-found', async () => {
+    http.route(
+      { match: listFeed, respond: () => Response.json({ feed: [] }) },
+      { match: getList, respond: () => xrpcError(400, 'InvalidRequest', 'List not found') },
+    );
+    const result = await runToolContract(bskyGetFeed, { feed: LIST });
+    expect(result.isError).toBe(true);
+    const recovery = 'Verify the list address or find an existing list with bsky_get_list.';
+    expect(errorOf(result)).toMatchObject({
+      code: JsonRpcErrorCode.NotFound,
+      data: { reason: 'list_not_found', recovery: { hint: recovery } },
+    });
+    expect(textOf(result)).toContain(recovery);
+    expect(http.calls).toHaveLength(2);
+  });
+
+  it('accepts an exhausted continuation without probing for the list', async () => {
+    http.route({ match: listFeed, respond: () => Response.json({ feed: [] }) });
+    const result = await runToolContract(bskyGetFeed, { feed: LIST, cursor: 'last-page' });
+    expect(result.isError).toBeFalsy();
+    expect(structured(result)).toMatchObject({ posts: [], totalReturned: 0 });
+    expect(textOf(result)).toContain('No more posts in this feed traversal.');
+    expect(http.calls).toHaveLength(1);
+  });
+
+  it('preserves a generic cursor 400 and never probes for list existence', async () => {
+    http.route({
+      match: listFeed,
+      respond: () => xrpcError(400, 'InvalidRequest', 'Invalid request'),
+    });
+    const result = await runToolContract(bskyGetFeed, { feed: LIST, cursor: 'bad-cursor' });
+    expect(result.isError).toBe(true);
+    expect(errorOf(result).code).toBe(JsonRpcErrorCode.InvalidParams);
+    expect(errorOf(result).data?.reason).not.toBe('list_not_found');
+    expect(http.calls).toHaveLength(1);
+  });
 });
 
 describe('bsky_get_feed — reading a feed', () => {
@@ -291,7 +416,7 @@ describe('bsky_get_feed — feed references', () => {
 
   it.each([
     ['a post AT-URI', `at://${BSKY_DID}/app.bsky.feed.post/3lc4gpsxr3c2q`],
-    ['a list AT-URI', `at://${BSKY_DID}/app.bsky.graph.list/3lc4gpsxr3c2q`],
+    ['a starter pack AT-URI', `at://${BSKY_DID}/app.bsky.graph.starterpack/3lc4gpsxr3c2q`],
     ['an AT-URI with no record key', `at://${BSKY_DID}/app.bsky.feed.generator`],
     ['a bsky.app post URL', 'https://bsky.app/profile/bsky.app/post/3lc4gpsxr3c2q'],
     ['a bare record key', 'whats-hot'],

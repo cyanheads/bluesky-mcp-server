@@ -4,13 +4,14 @@
 
 ### Tools
 
-Eleven read-only tools; ten are keyless. Only post search requires the optional app-password pair. Numeric caps below are the applied upstream limits: oversized requests clamp by default, while `BLUESKY_CLAMP_READ_LIMITS=false` restores rejection.
+Twelve read-only tools; eleven are keyless. Only post search requires the optional app-password pair. Numeric caps below are the applied upstream limits: oversized requests clamp by default, while `BLUESKY_CLAMP_READ_LIMITS=false` restores rejection.
 
 | Name | Description | Key Inputs | Annotations |
 |:-----|:------------|:-----------|:------------|
 | `bsky_search_posts` | Full-text search across public Bluesky posts. Filters by author, mentioned account, two-letter language, hashtag, linked domain or exact URL, date range, and sort order (decision 29). Returns posts with text, author, engagement counts (likes/reposts/replies), embeds, AT-URIs, timestamps, and `hitsTotal` when available (Bluesky's estimate of matching posts across all pages — an upper bound on what paging returns, and a floor at its 10,000 cap; use for communicating result scale). Registered only when an app password is configured, and runs as that account (decision 21). | `query` (required), `author_handle`, `mentions`, `language`, `tag`, `domain`, `url`, `since`, `until`, `sort` (enum: `top`\|`latest`, default `latest`), `limit` (≤100), `cursor` | `readOnlyHint: true` |
 | `bsky_get_profile` | Fetch a Bluesky actor's public profile by handle or DID. Returns displayName, handle, DID, description, pronouns, website, follower/following/post counts, avatar URL, labels (moderation), pinned post AT-URI, and verification state with each issuance (decision 31). Resolves handle↔DID — use before tools that require a DID or AT-URI when you only have a handle. | `actor` (handle or DID, also `@handle` or a bsky.app profile URL, required) | `readOnlyHint: true` |
-| `bsky_get_feed` | Read the posts a feed generator serves — a trend's feed, Discover, a feed quoted in a post, or any custom feed — in the order it ranks them. Pinned items carry `pinned: true`, reposts `repostedBy`/`repostedAt`. Always unauthenticated (decision 22). | `feed` (generator AT-URI or bsky.app feed URL, handle or DID owner, required), `limit` (≤100, default 25), `cursor` | `readOnlyHint: true`, `openWorldHint: true` |
+| `bsky_get_feed` | Read a feed generator's posts or a list's posts and reposts in provider order. Pinned items carry `pinned: true`, reposts `repostedBy`/`repostedAt`. Always unauthenticated (decisions 22, 36). | `feed` (generator/list AT-URI or bsky.app feed/list URL, handle or DID owner, required), `limit` (≤100, default 25), `cursor` | `readOnlyHint: true`, `openWorldHint: true` |
+| `bsky_get_list` | Discover an account's lists or starter packs, or open a record and page its members. Pack identity, backing list, and recommended feeds remain distinct (decision 36). | `list` (list/pack AT-URI or bsky.app URL) OR `actor` plus `kind` (`lists`\|`starterPacks`), `limit` (≤100, default 25), `cursor` | `readOnlyHint: true`, `openWorldHint: true` |
 | `bsky_get_author_feed` | A user's recent feed ordered newest-first — their own posts and their reposts. Filter by post type to exclude replies, restrict to the actor's own media or video posts, or take everything; the three non-media filters include reposts, which carry `repostedBy`/`repostedAt`, and the two media filters return none. `include_pins` adds the profile's pinned post, marked `pinned: true`, on the first page. Enrichment reports the `originalPosts` / `reposts` split of the page, since `limit` counts both. Returns posts with full text, engagement, embeds, and AT-URIs for thread drilling. | `actor` (handle or DID, also `@handle` or a bsky.app profile URL, required), `filter` (posts\_with\_replies\|posts\_no\_replies\|posts\_with\_media\|posts\_and\_author\_threads\|posts\_with\_video), `include_pins` (default false), `limit`, `cursor` | `readOnlyHint: true` |
 | `bsky_get_post_thread` | Fetch the conversation for a post by AT-URI — the parent chain upward and the reply tree downward. Useful for reading a discussion from any entry point. Returns root post, parent chain, and nested replies with per-post author and engagement data, the author's reply gate when one is set, and both ways the response falls short: per-node `truncated` / `unreturnedReplies` / `truncationReason` for the reply tree, `parentChainTruncated` on the topmost parent when the chain was cut, and a thread-wide total in enrichment. Over the 48,000-byte response budget it is cut between whole posts, with the frontier marked by `budgetOmittedReplyUris` / `budgetOmittedReplies` / `budgetOmittedParents` (decision 32). Replies only — quotes are `bsky_get_post_quotes`. | `uri` (AT-URI matching `at://<handle-or-did>/<collection>/<rkey>`, or a bsky.app post URL, required — obtain from the `uri` field of any returned post), `depth` (reply tree depth, default 6, max 10), `parent_height` (parent chain height, default 80, max 100) | `readOnlyHint: true` |
 | `bsky_get_post_quotes` | The quote posts behind a post's `quoteCount`, in provider order: latest newest-first or top by descending like count. Each result's embed is cut back to the queried post's address and the quoting post's own media (decision 27). | `uri` (post AT-URI or bsky.app post URL, required), `sort` (latest, default, or top), `limit` (applied cap 100, default 25), `cursor` (same post and sort) | `readOnlyHint: true`, `openWorldHint: true` |
@@ -28,7 +29,7 @@ Eleven read-only tools; ten are keyless. Only post search requires the optional 
 
 ### Agent guide
 
-Root `skills/bluesky-guide/SKILL.md` supplies identifier chains and coverage gates for topic research, account attribution, and reactions. It ships through plugin, npm, MCPB, and Docker delivery and is served without credentials at `skill://bluesky-guide/SKILL.md`. The SDK adds its discovery resource and `skill://{+path}` template alongside the profile resource.
+Root `skills/bluesky-guide/SKILL.md` supplies identifier chains and coverage gates for topic research, account attribution, curated groups, and reactions. It ships through plugin, npm, MCPB, and Docker delivery and is served without credentials at `skill://bluesky-guide/SKILL.md`. The SDK adds its discovery resource and `skill://{+path}` template alongside the profile resource.
 
 ### Prompts
 
@@ -38,16 +39,17 @@ None for this launch. The tool surface is self-contained and goal-driven; no rec
 
 ## Overview
 
-bluesky-mcp-server exposes the AT Protocol AppView as a read-only MCP surface — actor profiles, feed catalog search, trending topics and the feeds behind them, custom feeds, author feeds, conversation threads, and social graph edges without authentication, plus full-text post search when an app password is configured. The primary API is `https://api.bsky.app/xrpc/` (the keyless public AppView); post search goes through the configured account's PDS. Post data is identified by AT-URIs; accounts by handle or DID. The server supports social listening, trend analysis, and journalist/researcher workflows.
+bluesky-mcp-server exposes the AT Protocol AppView as a read-only MCP surface — actor profiles, feed catalog search, trending topics and the feeds behind them, custom feeds, author feeds, lists and starter packs, conversation threads, and social graph edges without authentication, plus full-text post search when an app password is configured. The primary API is `https://api.bsky.app/xrpc/` (the keyless public AppView); post search goes through the configured account's PDS. Post data is identified by AT-URIs; accounts by handle or DID. The server supports social listening, trend analysis, and journalist/researcher workflows.
 
 ---
 
 ## Requirements
 
-- **Public reads by default** — ten of the eleven tools operate against `api.bsky.app` with no credentials
+- **Public reads by default** — eleven of the twelve tools operate against `api.bsky.app` with no credentials
 - **No authentication required** at runtime for the core surface; no env vars required for launch
 - Full-text post search with author, mention, language, tag, domain, URL, date, and sort filters, behind an optional app password (Bluesky refuses search without a signed-in account)
-- Custom and trending feeds readable by AT-URI or bsky.app URL
+- Custom, trending, and list feeds readable by AT-URI or bsky.app URL
+- List and starter-pack discovery, metadata, and paged membership
 - Profile resolution (handle ↔ DID, bio, counts, avatar, labels, and ordered profile links)
 - Author feeds filtered by post type
 - Thread traversal by AT-URI (parent chain + reply tree)
@@ -125,6 +127,8 @@ Each step is independently testable.
 | Handle | resolve to DID (feed owner) | `com.atproto.identity.resolveHandle` |
 | Feed | get author feed (filtered) | `app.bsky.feed.getAuthorFeed` |
 | Feed generator | get its posts | `app.bsky.feed.getFeed` |
+| List | get metadata and members; discover an actor's lists; read its posts | `app.bsky.graph.getList`, `app.bsky.graph.getLists`, `app.bsky.feed.getListFeed` |
+| Starter pack | get metadata and backing list; discover an actor's packs | `app.bsky.graph.getStarterPack`, `app.bsky.graph.getActorStarterPacks` |
 | Feed catalog | search names and descriptions | `app.bsky.unspecced.getPopularFeedGenerators` |
 | Thread | get by AT-URI (depth + parent) | `app.bsky.feed.getPostThread` |
 | Quote posts | get the posts quoting a post; check a post exists | `app.bsky.feed.getQuotes`, `app.bsky.feed.getPosts` |
@@ -358,7 +362,17 @@ Video embeds retain nonempty `alt` through the shared normalizer, including `rec
 
 An empty first page checks `getPosts` to distinguish no readable interactions from a missing post. A first-page repost HTTP 500 retains ordinary retries, then performs the same existence check: absence is `post_not_found`, but a confirmed existing post preserves the underlying failure. Empty continuation pages skip the check. Like cursor failures map once to `invalid_cursor`; repost cursors retain provider behavior, including silently repeated pages. Resolution, page retries, and fallback reads share one 15-second deadline and preserve caller cancellation.
 
+**36. List discovery, membership, and posts have separate paging contracts.**
+
+`bsky_get_list` accepts either a record reference or an actor with a collection selector. Actor mode pages only `lists` or only `starterPacks`: the upstream collections have independent cursors, so merging them would lose continuation state. The response preserves an empty cursor supplied by Bluesky. Only a nonempty cursor continues pagination, even on an empty page. List and pack URLs normalize to their respective AT collections, and handle authorities resolve to DIDs before record reads.
+
+A starter pack retains its own identity, optional join counts, backing-list URI, and recommended feed-generator references. Membership comes from `getList`, never the pack's sample of members. When the hydrated list view is absent, the pack record supplies the backing URI. A confirmed missing list returns pack metadata with an unavailable-membership notice; transport failures still fail the operation. Optional counts remain absent when the provider omits them and are never replaced with page length. Names, descriptions, and actor metadata use literal text. Empty strings and values whose whitespace or control characters cannot survive Markdown framing use a labeled JSON-string representation. Membership pages add no response byte budget.
+
+List posts use `bsky_get_feed` and its existing post projection and budget. An empty terminal first page checks `getList` before claiming the list exists, because `getListFeed` returns an empty success for nonexistent lists. An empty page with a nonempty cursor can be continued. A terminal continuation page reports exhaustion. Short invite URLs, writes, and viewer state are outside this surface.
+
 ## Known Limitations
+
+- **Starter-pack membership may be unavailable**: a pack's backing list may no longer exist. Pack metadata remains readable, but an unavailable membership page does not establish an empty group.
 
 - **Feed catalog discovery uses an unstable endpoint**: `app.bsky.unspecced.getPopularFeedGenerators` searches provider catalog metadata, not post text or every feed. It may change or disappear; `catalog_unavailable` routes discovery to trending feeds.
 - **`searchPosts` result freshness**: The AppView indexes with some lag (seconds to minutes). Real-time posts may not appear immediately.
@@ -451,14 +465,20 @@ Domain failure modes per tool — these map directly to `errors: [{ reason, code
 
 **`bsky_get_feed`** (all thrown by the service)
 - `feed_not_found` — `NotFound` — no generator at that address (`could not find feed`), or the handle in it does not resolve (`Unable to resolve handle`). Recovery: check the address, or take a working `feedUri` from `bsky_get_trending`.
+- `list_not_found` — `NotFound` — the list or its owner does not exist, including a missing list behind an empty terminal first feed page. Recovery: check the list address or discover the owner's lists with `bsky_get_list`.
 - `feed_unavailable` — `ServiceUnavailable`, retryable — the generator did not answer (`could not resolve identity: did:web:…`, 502 `feed unavailable`, `Upstream server responded with a … error`). Not retried in-process (decision 22). Recovery: try later, or read a different feed.
 - `feed_requires_login` — `Unauthorized` — a personalized feed (401 `AuthRequiredError`). Recovery: read a public feed instead.
+
+**`bsky_get_list`**
+- `invalid_mode` — `ValidationError` — the arguments do not select exactly one mode. Recovery: pass `list`, or pass `actor` with `kind`.
+- `list_not_found` / `starter_pack_not_found` — `NotFound` — the requested record does not exist or its owner handle does not resolve. Recovery: check the record address or discover the owner's collections. A confirmed missing backing list retains the pack metadata with a membership-unavailable notice.
+- `actor_not_found` — `NotFound` — the discovery actor does not exist. Recovery: verify the handle or DID with `bsky_get_profile` or use `bsky_search_actors`.
 
 **`bsky_get_follows`**
 - `actor_not_found` — `NotFound` — Actor handle or DID does not exist. Recovery: verify the actor or use `bsky_search_actors` to confirm the handle.
 
 **`bsky_search_posts`**
-- `upstream_rejected_filter` — `ValidationError` — the AppView answered `InvalidRequest` naming a parameter it could not parse. The framework captures the upstream body on every non-2xx response but surfaces it only as opaque error data, so without this the caller sees `Status: 400` with nothing to act on. The handler pulls Bluesky's own `message` out of that body and carries it as the failure message and the `recovery.hint`. Recovery: read Bluesky's quoted message for the parameter it named, correct that value, and call again.
+- `upstream_rejected_filter` — `ValidationError` — the AppView answered `InvalidRequest` naming a parameter it could not parse. The framework retains the upstream body for service-side classification and omits it from client error data. The handler pulls Bluesky's own `message` out of that body and carries it as the failure message and the `recovery.hint`. Recovery: read Bluesky's quoted message for the parameter it named, correct that value, and call again.
 - `invalid_cursor` — `ValidationError` — the request carried a cursor and the AppView answered 400 `InvalidRequest` with a message naming it (`Invalid cursor format`). Thrown by the service after one request (decision 28); a 400 without a cursor, or one naming another parameter, stays `upstream_rejected_filter`. Recovery: drop the cursor, or pass the previous response's cursor unchanged.
 - `search_auth_failed` — `Unauthorized` — Bluesky rejected the configured login, or a session it issued could not be renewed. Thrown by the service. Recovery: the operator must fix the app password; meanwhile `bsky_get_trending` → `bsky_get_feed`.
 - `search_login_limited` — `RateLimited` — a login or refresh was answered 429: the account's daily login limit is used up. Thrown by the service, without a request, until the `ratelimit-reset` time (15 minutes when absent); message and `retryAt` name that time. Recovery: search again after it; meanwhile `bsky_get_trending` → `bsky_get_feed`.

@@ -105,13 +105,14 @@ describe('the entry point — tools/list follows the credential pair', () => {
     expect(names).toEqual(
       expect.arrayContaining([
         'bsky_get_feed',
+        'bsky_get_list',
         'bsky_get_trending',
         'bsky_get_post_quotes',
         'bsky_get_post_interactions',
         'bsky_search_feeds',
       ]),
     );
-    expect(names).toHaveLength(10);
+    expect(names).toHaveLength(11);
     const call = run.replies.find((r) => r.id === 3);
     expect(JSON.stringify(call)).toMatch(/bsky_search_posts not found/);
     expect(run.code).toBe(0);
@@ -125,9 +126,14 @@ describe('the entry point — tools/list follows the credential pair', () => {
 
     const names = toolNames(run);
     expect(names).toEqual(
-      expect.arrayContaining(['bsky_search_posts', 'bsky_get_feed', 'bsky_get_post_interactions']),
+      expect.arrayContaining([
+        'bsky_search_posts',
+        'bsky_get_feed',
+        'bsky_get_list',
+        'bsky_get_post_interactions',
+      ]),
     );
-    expect(names).toHaveLength(11);
+    expect(names).toHaveLength(12);
     expect(run.stderr).not.toContain('abcd-efgh');
     expect(run.code).toBe(0);
   }, 30_000);

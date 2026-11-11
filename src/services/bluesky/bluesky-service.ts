@@ -14,18 +14,35 @@ import {
   McpError,
   notFound,
   serviceUnavailable,
+  timeout,
   unauthorized,
   validationError,
 } from '@cyanheads/mcp-ts-core/errors';
 import { defaultIsTransient, fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import {
+  ACTOR_REF_MESSAGE,
+  ACTOR_REF_REGEX,
+  FEED_GENERATOR_COLLECTION,
   FEED_REF_MESSAGE,
   feedGeneratorUri,
+  LIST_COLLECTION,
+  LIST_REF_MESSAGE,
+  LIST_REF_REGEX,
   POST_COLLECTION,
   POST_URI_REF_MESSAGE,
+  parseBlueskyRef,
   parseFeedRef,
   parsePostRef,
+  STARTER_PACK_COLLECTION,
 } from './at-syntax.js';
+import {
+  type CollectionKind,
+  type CollectionResult,
+  ListDiscoveryPage,
+  ListPage,
+  StarterPackDiscoveryPage,
+  StarterPackView,
+} from './collection-records.js';
 import type { PostFacet } from './post-facets.js';
 import { type SearchCredentials, SearchSession } from './search-session.js';
 import type {
@@ -662,6 +679,45 @@ function isTransient(err: unknown): boolean {
 /** @internal Maps a failed request onto a tool's declared reason, or leaves it as classified. */
 type ErrorMapper = (err: McpError) => McpError | undefined;
 
+/** One deadline for a collection operation, including handle resolution and feed budget refetches. */
+export function collectionDeadlineAtMs(): number {
+  return Date.now() + 45_000;
+}
+
+function collectionTimeLeftMs(ctx: Context, deadlineAtMs: number): number {
+  ctx.signal.throwIfAborted();
+  const remaining = deadlineAtMs - Date.now();
+  if (remaining <= 0) throw timeout('The Bluesky collection read exceeded its request deadline.');
+  return remaining;
+}
+
+const COLLECTION_MISSING = {
+  list: { reason: 'list_not_found', message: 'List not found' },
+  starterPack: { reason: 'starter_pack_not_found', message: 'Starter pack not found' },
+  actor: { reason: 'actor_not_found', message: 'Profile not found' },
+} as const;
+
+function collectionNotFound(kind: keyof typeof COLLECTION_MISSING, ref: string): McpError {
+  const { reason, message } = COLLECTION_MISSING[kind];
+  return notFound(`${message}: ${ref}.`, { reason });
+}
+
+function collectionError(kind: keyof typeof COLLECTION_MISSING, ref: string): ErrorMapper {
+  return (err) => {
+    const { error, message } = xrpcError(err);
+    const status = httpStatus(err);
+    if (
+      ((status === 400 || status === 404) &&
+        error === 'InvalidRequest' &&
+        message === COLLECTION_MISSING[kind].message) ||
+      (kind === 'list' && (status === 400 || status === 404) && error === 'UnknownList')
+    ) {
+      return collectionNotFound(kind, ref);
+    }
+    return;
+  };
+}
+
 /**
  * @internal How each cursored endpoint answers a cursor it cannot decode, measured live.
  * `getAuthorFeed` and `getQuotes` answer a bare `500 InternalServerError`, identically on every
@@ -1013,17 +1069,38 @@ export class BlueskyService {
   }
 
   /**
-   * Read a feed generator's posts. Accepts the generator's AT-URI or its bsky.app page. The AppView
-   * only finds a feed by its owner's DID, so a handle authority costs one `resolveHandle` first and
-   * a DID authority costs nothing extra. Always unauthenticated: through the search session a
-   * personalized feed would personalize to that one account for every caller.
+   * Read a generator or list feed without credentials. Handle authorities require one DID lookup.
+   * An empty first list page without a continuation is ambiguous until getList checks existence.
    */
   async getFeed(
-    params: { feed: string; limit?: number; cursor?: string },
+    params: { feed: string; limit?: number; cursor?: string; deadlineAtMs?: number },
     ctx: Context,
   ): Promise<FeedResult> {
-    const ref = parseFeedRef(params.feed);
-    if (!ref) throw validationError(FEED_REF_MESSAGE);
+    const record = parseBlueskyRef(params.feed);
+    if (record?.kind === 'record' && record.collection === LIST_COLLECTION) {
+      if (!LIST_REF_REGEX.test(params.feed)) throw validationError(FEED_REF_MESSAGE);
+      const deadlineAtMs = params.deadlineAtMs ?? collectionDeadlineAtMs();
+      const uri = await this.collectionUri(record, 'list', ctx, deadlineAtMs);
+      const raw = await this.get<{ feed: RawFeedItem[]; cursor?: string }>(
+        'app.bsky.feed.getListFeed',
+        { list: uri, limit: params.limit ?? 25, cursor: params.cursor },
+        ctx,
+        collectionError('list', uri),
+        collectionTimeLeftMs(ctx, deadlineAtMs),
+      );
+      if (raw.feed.length === 0 && !raw.cursor && !params.cursor) {
+        await this.readListPage(uri, { limit: 1 }, ctx, deadlineAtMs);
+      }
+      return {
+        feedUri: uri,
+        posts: raw.feed.map(normalizeFeedItem),
+        ...(raw.cursor ? { cursor: raw.cursor } : {}),
+      };
+    }
+    if (record?.kind !== 'record' || record.collection !== FEED_GENERATOR_COLLECTION) {
+      throw validationError(FEED_REF_MESSAGE);
+    }
+    const ref = record;
     const authority = await this.resolveAuthority(ref.authority, ctx, () =>
       notFound(
         `No Bluesky account answers to the handle "${ref.authority}" in ${feedGeneratorUri(ref)}.`,
@@ -1046,6 +1123,130 @@ export class BlueskyService {
       posts: (raw.feed ?? []).map(normalizeFeedItem),
       ...(raw.cursor ? { cursor: raw.cursor } : {}),
     };
+  }
+
+  /** Canonical collection record URI. Only the resolver's explicit miss is a not-found. */
+  private async collectionUri(
+    ref: { authority: string; collection: string; rkey: string },
+    kind: 'list' | 'starterPack',
+    ctx: Context,
+    deadlineAtMs: number,
+  ): Promise<string> {
+    const uri = `at://${ref.authority}/${ref.collection}/${ref.rkey}`;
+    if (ref.authority.startsWith('did:')) return uri;
+    const { did } = z.object({ did: z.string().startsWith('did:').regex(ACTOR_REF_REGEX) }).parse(
+      await this.get<unknown>(
+        'com.atproto.identity.resolveHandle',
+        { handle: ref.authority.toLowerCase() },
+        ctx,
+        (err) => {
+          const { error, message } = xrpcError(err);
+          if (
+            httpStatus(err) === 400 &&
+            error === 'InvalidRequest' &&
+            message === 'Unable to resolve handle'
+          ) {
+            return collectionNotFound(kind, uri);
+          }
+          return;
+        },
+        collectionTimeLeftMs(ctx, deadlineAtMs),
+      ),
+    );
+    return `at://${did}/${ref.collection}/${ref.rkey}`;
+  }
+
+  private async readListPage(
+    uri: string,
+    page: { limit: number; cursor?: string | undefined },
+    ctx: Context,
+    deadlineAtMs: number,
+  ) {
+    const { list, items, cursor } = ListPage.parse(
+      await this.get<unknown>(
+        'app.bsky.graph.getList',
+        { list: uri, ...page },
+        ctx,
+        collectionError('list', uri),
+        collectionTimeLeftMs(ctx, deadlineAtMs),
+      ),
+    );
+    return { list, members: items, ...(cursor !== undefined ? { cursor } : {}) };
+  }
+
+  /** Read a list or starter pack and one page of its members. */
+  async getList(
+    params: { list: string; limit: number; cursor?: string | undefined },
+    ctx: Context,
+  ): Promise<CollectionResult> {
+    const ref = parseBlueskyRef(params.list);
+    if (
+      ref?.kind !== 'record' ||
+      (ref.collection !== LIST_COLLECTION && ref.collection !== STARTER_PACK_COLLECTION) ||
+      !LIST_REF_REGEX.test(params.list)
+    ) {
+      throw validationError(LIST_REF_MESSAGE);
+    }
+    const deadlineAtMs = collectionDeadlineAtMs();
+    const page = { limit: params.limit, cursor: params.cursor };
+    if (ref.collection === LIST_COLLECTION) {
+      const uri = await this.collectionUri(ref, 'list', ctx, deadlineAtMs);
+      return { kind: 'list', ...(await this.readListPage(uri, page, ctx, deadlineAtMs)) };
+    }
+    const uri = await this.collectionUri(ref, 'starterPack', ctx, deadlineAtMs);
+    const { starterPack } = StarterPackView.parse(
+      await this.get<unknown>(
+        'app.bsky.graph.getStarterPack',
+        { starterPack: uri },
+        ctx,
+        collectionError('starterPack', uri),
+        collectionTimeLeftMs(ctx, deadlineAtMs),
+      ),
+    );
+    const backing = parseBlueskyRef(starterPack.listUri);
+    if (backing?.kind !== 'record')
+      throw new Error('Bluesky supplied an invalid backing list URI.');
+    try {
+      const listUri = await this.collectionUri(backing, 'list', ctx, deadlineAtMs);
+      return {
+        kind: 'starterPack',
+        starterPack,
+        ...(await this.readListPage(listUri, page, ctx, deadlineAtMs)),
+      };
+    } catch (err) {
+      ctx.signal.throwIfAborted();
+      if (
+        err instanceof McpError &&
+        err.code === JsonRpcErrorCode.NotFound &&
+        (err.data as { reason?: string } | undefined)?.reason === 'list_not_found'
+      ) {
+        return { kind: 'missingBackingList', starterPack };
+      }
+      throw err;
+    }
+  }
+
+  /** Discover one collection stream for an actor with its own opaque cursor. */
+  async discoverCollections(
+    params: { actor: string; kind: CollectionKind; limit: number; cursor?: string | undefined },
+    ctx: Context,
+  ): Promise<CollectionResult> {
+    const ref = parseBlueskyRef(params.actor);
+    if (ref?.kind !== 'actor') throw validationError(ACTOR_REF_MESSAGE);
+    const actor = ref.actor.startsWith('did:') ? ref.actor : ref.actor.toLowerCase();
+    const query = { actor, limit: params.limit, cursor: params.cursor };
+    const lexicon =
+      params.kind === 'lists' ? 'app.bsky.graph.getLists' : 'app.bsky.graph.getActorStarterPacks';
+    const raw = await this.get<unknown>(
+      lexicon,
+      query,
+      ctx,
+      collectionError('actor', ref.actor),
+      collectionTimeLeftMs(ctx, collectionDeadlineAtMs()),
+    );
+    return params.kind === 'lists'
+      ? { kind: 'lists', ...ListDiscoveryPage.parse(raw) }
+      : { kind: 'starterPacks', ...StarterPackDiscoveryPage.parse(raw) };
   }
 
   /**

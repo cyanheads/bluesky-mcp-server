@@ -52,6 +52,62 @@ afterEach(() => {
   http.restore();
 });
 
+describe('feed references', () => {
+  const did = 'did:plc:z72i7hdynmk6r22z27h6tvur';
+  it('passes an empty intermediate list-feed cursor through without an existence request', async () => {
+    http.route({
+      match: (request) => new URL(request.url).pathname.endsWith('.resolveHandle'),
+      respond: () => Response.json({ did }),
+    });
+    http.route({
+      match: (request) => new URL(request.url).pathname.endsWith('.getListFeed'),
+      respond: () => Response.json({ feed: [], cursor: 'list-next' }),
+    });
+    const result = await getBlueskyService().getFeed(
+      { feed: 'https://bsky.app/profile/bsky.app/lists/news', limit: 1 },
+      createMockContext(),
+    );
+    expect(result).toEqual({
+      feedUri: `at://${did}/app.bsky.graph.list/news`,
+      posts: [],
+      cursor: 'list-next',
+    });
+    expect(http.calls).toHaveLength(2);
+    const url = new URL(http.calls[1]?.request.url ?? '');
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      list: `at://${did}/app.bsky.graph.list/news`,
+      limit: '1',
+    });
+  });
+
+  it('keeps generator requests keyless with one handle resolution and the original cursor', async () => {
+    http.route({
+      match: (request) => new URL(request.url).pathname.endsWith('.resolveHandle'),
+      respond: () => Response.json({ did }),
+    });
+    http.route({
+      match: (request) => new URL(request.url).pathname.endsWith('.getFeed'),
+      respond: () => Response.json({ feed: [], cursor: 'generator-next' }),
+    });
+    const result = await getBlueskyService().getFeed(
+      { feed: 'https://bsky.app/profile/bsky.app/feed/whats-hot', limit: 1, cursor: 'original' },
+      createMockContext(),
+    );
+    expect(result).toEqual({
+      feedUri: `at://${did}/app.bsky.feed.generator/whats-hot`,
+      posts: [],
+      cursor: 'generator-next',
+    });
+    expect(http.calls).toHaveLength(2);
+    const url = new URL(http.calls[1]?.request.url ?? '');
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      feed: `at://${did}/app.bsky.feed.generator/whats-hot`,
+      limit: '1',
+      cursor: 'original',
+    });
+  });
+});
+
 describe('metadata projection', () => {
   const actor = { did: 'did:plc:test', handle: 'test.bsky.social' };
   const route = (method: string, body: unknown) =>
