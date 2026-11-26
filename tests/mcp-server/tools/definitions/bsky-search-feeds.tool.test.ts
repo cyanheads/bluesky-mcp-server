@@ -1,8 +1,9 @@
 /**
- * @fileoverview Catalog discovery through the real public service and assembled tool contracts.
+ * @fileoverview Feed discovery in both modes, catalog query and account actor, through the real public service and assembled tool contracts.
  * @module tests/mcp-server/tools/definitions/bsky-search-feeds.tool.test
  */
 
+import { z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createFetchMock, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -487,6 +488,384 @@ describe('bsky_search_feeds through public HTTP', () => {
     expect(result.isError).toBe(true);
     expect(textOf(result)).not.toContain('No feeds matched');
     expect(http.calls).toHaveLength(1);
+  });
+});
+
+const ACTOR_FEEDS = '/xrpc/app.bsky.feed.getActorFeeds';
+const BOSSETT = 'did:plc:jfhpnnst6flqway4eaeqzj2a';
+/** A `generatorView` as `getActorFeeds` sends it, with an optional like count. */
+const generator = (rkey: string, likeCount?: unknown) => ({
+  uri: `at://${BOSSETT}/app.bsky.feed.generator/${rkey}`,
+  cid: `bafy${rkey}`,
+  did: 'did:web:feeds.bossett.social',
+  displayName: `Feed ${rkey}`,
+  creator: { did: BOSSETT, handle: 'bossett.social', displayName: 'Bossett' },
+  indexedAt: '2026-01-01T00:00:00.000Z',
+  ...(likeCount !== undefined ? { likeCount } : {}),
+});
+const row = (rkey: string, likeCount?: number) => ({
+  feedUri: `at://${BOSSETT}/app.bsky.feed.generator/${rkey}`,
+  displayName: `Feed ${rkey}`,
+  creator: { did: BOSSETT, handle: 'bossett.social', displayName: 'Bossett' },
+  ...(likeCount !== undefined ? { likeCount } : {}),
+});
+
+function actorFeeds(respond: (url: URL) => Response) {
+  http.route({
+    match: (request) => new URL(request.url).pathname === ACTOR_FEEDS,
+    respond: (request) => respond(new URL(request.url)),
+  });
+}
+
+describe('bsky_search_feeds likeCount', () => {
+  it('copies a numeric like count onto both surfaces, keeps 0, and omits anything else', async () => {
+    catalog({
+      feeds: [
+        { ...SCIENCE, likeCount: 29_514 },
+        { ...HISTORY, likeCount: 0 },
+        { ...SCIENCE, uri: `${FEED}-c` },
+        { ...SCIENCE, uri: `${FEED}-d`, likeCount: null },
+        { ...SCIENCE, uri: `${FEED}-e`, likeCount: '12' },
+      ],
+    });
+    const result = await runToolContract(bskySearchFeeds, { query: 'science' });
+    expect(result.isError).toBeFalsy();
+    const feeds = structured(result).feeds as Array<Record<string, unknown>>;
+    expect(feeds.map((feed) => feed.likeCount)).toEqual([
+      29_514,
+      0,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    for (const feed of feeds.slice(2)) expect(feed).not.toHaveProperty('likeCount');
+    const text = textOf(result);
+    expect(text).toContain('**Likes:** 29514');
+    expect(text).toContain('**Likes:** 0');
+    expect(text.split('**Likes:**')).toHaveLength(3);
+    expect(text).not.toMatch(/undefined|null|NaN/);
+  });
+});
+
+describe('bsky_search_feeds actor mode', () => {
+  it('lists an account’s feed generators in provider order with like counts on both surfaces', async () => {
+    actorFeeds(() =>
+      Response.json({
+        feeds: [generator('paxaus', 6), generator('overheard'), generator('for-science', 29_514)],
+      }),
+    );
+    const result = await runToolContract(bskySearchFeeds, { actor: 'bossett.social', limit: 100 });
+    expect(result.isError).toBeFalsy();
+    expect(structured(result)).toEqual({
+      feeds: [row('paxaus', 6), row('overheard'), row('for-science', 29_514)],
+      totalReturned: 3,
+    });
+    const text = textOf(result);
+    for (const rkey of ['paxaus', 'overheard', 'for-science']) {
+      expect(text).toContain(`at://${BOSSETT}/app.bsky.feed.generator/${rkey}`);
+      expect(text).toContain(`Feed ${rkey}`);
+    }
+    expect(text).toContain('**Likes:** 6');
+    expect(text).toContain('**Likes:** 29514');
+    expect(text.split('**Likes:**')).toHaveLength(3);
+    expect(http.calls).toHaveLength(1);
+    const request = http.calls[0]!.request;
+    const url = new URL(request.url);
+    expect(url.origin).toBe('https://api.bsky.app');
+    expect(url.pathname).toBe(ACTOR_FEEDS);
+    expect(Object.fromEntries(url.searchParams)).toEqual({ actor: 'bossett.social', limit: '100' });
+    expect(request.method).toBe('GET');
+    expect(request.headers.has('authorization')).toBe(false);
+  });
+
+  it('walks a two-page traversal on the cursor with the same actor', async () => {
+    actorFeeds((url) =>
+      url.searchParams.get('cursor') === 'elusive'
+        ? Response.json({ feeds: [generator('discourse', 301), generator('cats', 1173)] })
+        : Response.json({
+            feeds: [generator('paxaus', 6), generator('elusive', 8)],
+            cursor: 'elusive',
+          }),
+    );
+    const first = await runToolContract(bskySearchFeeds, { actor: '@bossett.social', limit: 2 });
+    expect(first.isError).toBeFalsy();
+    const notice =
+      'Pass the returned cursor with the same actor to fetch the next page of feeds by "bossett.social".';
+    expect(structured(first)).toEqual({
+      feeds: [row('paxaus', 6), row('elusive', 8)],
+      cursor: 'elusive',
+      totalReturned: 2,
+      truncated: true,
+      shown: 2,
+      cap: 2,
+      notice,
+    });
+    expect(textOf(first)).toContain(notice);
+    expect(textOf(first)).toContain('> elusive');
+    const second = await runToolContract(bskySearchFeeds, {
+      actor: '@bossett.social',
+      limit: 2,
+      cursor: structured(first).cursor,
+    });
+    expect(second.isError).toBeFalsy();
+    expect(structured(second)).toEqual({
+      feeds: [row('discourse', 301), row('cats', 1173)],
+      totalReturned: 2,
+    });
+    expect(textOf(second)).not.toContain('**Cursor:**');
+    expect(http.calls).toHaveLength(2);
+    expect(Object.fromEntries(new URL(http.calls[1]!.request.url).searchParams)).toEqual({
+      actor: 'bossett.social',
+      limit: '2',
+      cursor: 'elusive',
+    });
+  });
+
+  it.each([
+    [undefined, 'No feed generators found for actor "cyanheads.bsky.social".'],
+    ['nd', 'No more feeds by "cyanheads.bsky.social" — the previous page was the last.'],
+  ])('names the actor on an empty page with input cursor %j', async (cursor, notice) => {
+    actorFeeds(() => Response.json({ feeds: [] }));
+    const result = await runToolContract(bskySearchFeeds, {
+      actor: 'cyanheads.bsky.social',
+      ...(cursor ? { cursor } : {}),
+    });
+    expect(result.isError).toBeFalsy();
+    expect(structured(result)).toEqual({ feeds: [], totalReturned: 0, notice });
+    expect(textOf(result)).toContain('No feeds on this page.');
+    expect(textOf(result)).toContain(notice);
+    expect(http.calls).toHaveLength(1);
+  });
+
+  it('fails an unknown handle as actor_not_found after one request, with recovery on both surfaces', async () => {
+    actorFeeds(() =>
+      Response.json({ error: 'InvalidRequest', message: 'Profile not found' }, { status: 400 }),
+    );
+    const result = await runToolContract(bskySearchFeeds, {
+      actor: 'no-such-account-qz7x4k.bsky.social',
+    });
+    expect(result.isError).toBe(true);
+    expect(errorOf(result)).toMatchObject({
+      code: JsonRpcErrorCode.NotFound,
+      data: { reason: 'actor_not_found' },
+    });
+    const recovery =
+      'Verify the handle or DID with bsky_get_profile, or find the account with bsky_search_actors.';
+    expect(errorOf(result).data?.recovery?.hint).toBe(recovery);
+    expect(textOf(result)).toContain(recovery);
+    expect(textOf(result)).toContain('no-such-account-qz7x4k.bsky.social');
+    expect(http.calls).toHaveLength(1);
+  });
+
+  it('fails an actor the AppView rejects as an invalid identifier as actor_not_found, after one request', async () => {
+    /** 255 characters: it passes the input pattern, and the AppView rejects it as malformed. */
+    const long = `${`${'a'.repeat(60)}.`.repeat(4)}example.com`;
+    actorFeeds(() =>
+      Response.json(
+        {
+          error: 'InvalidRequest',
+          message: `Invalid app.bsky.feed.getActorFeeds params: Invalid AT identifier (got "${long}")`,
+        },
+        { status: 400 },
+      ),
+    );
+    http.route({
+      match: (request) => new URL(request.url).origin === 'https://api.bsky.app',
+      respond: () => Response.json({ error: 'Unrouted', message: 'No route' }, { status: 418 }),
+    });
+    const result = await runToolContract(bskySearchFeeds, { actor: long });
+    expect(result.isError).toBe(true);
+    expect(errorOf(result)).toMatchObject({
+      code: JsonRpcErrorCode.NotFound,
+      data: { reason: 'actor_not_found' },
+    });
+    const recovery =
+      'Verify the handle or DID with bsky_get_profile, or find the account with bsky_search_actors.';
+    expect(errorOf(result).data?.recovery?.hint).toBe(recovery);
+    expect(textOf(result)).toContain(recovery);
+    expect(http.calls.map((call) => new URL(call.request.url).pathname)).toEqual([ACTOR_FEEDS]);
+  });
+
+  it('has no invalid_cursor: a failure on a cursored page keeps its ordinary retry', async () => {
+    vi.useFakeTimers();
+    actorFeeds(() =>
+      http.calls.length === 1
+        ? Response.json(
+            { error: 'InternalServerError', message: 'Internal Server Error' },
+            { status: 500 },
+          )
+        : Response.json({ feeds: [generator('cats', 1173)] }),
+    );
+    const pending = runToolContract(bskySearchFeeds, { actor: 'bossett.social', cursor: 'dads' });
+    await vi.runAllTimersAsync();
+    const result = await pending;
+    expect(result.isError).toBeFalsy();
+    expect(structured(result).feeds).toEqual([row('cats', 1173)]);
+    expect(http.calls).toHaveLength(2);
+  });
+
+  it('never reports catalog_unavailable for the actor endpoint', async () => {
+    actorFeeds(() => Response.json({ error: 'NotFound', message: 'Not Found' }, { status: 404 }));
+    const result = await runToolContract(bskySearchFeeds, { actor: 'bossett.social' });
+    expect(result.isError).toBe(true);
+    expect(errorOf(result).code).toBe(JsonRpcErrorCode.NotFound);
+    expect(errorOf(result).data?.reason).not.toBe('catalog_unavailable');
+    expect(textOf(result)).not.toContain('catalog');
+    expect(http.calls).toHaveLength(1);
+  });
+
+  it('rejects a reshaped response as Bluesky’s fault rather than an empty list', async () => {
+    actorFeeds(() => Response.json({ feeds: [{ uri: FEED, creator: { did: BOSSETT } }] }));
+    const result = await runToolContract(bskySearchFeeds, { actor: 'bossett.social' });
+    expect(result.isError).toBe(true);
+    expect(errorOf(result).code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+    expect(textOf(result)).not.toContain('No feed generators found');
+    expect(http.calls).toHaveLength(1);
+  });
+
+  it.each([
+    ['neither', {}],
+    ['neither, with paging', { limit: 5, cursor: 'nd' }],
+    ['both', { query: 'science', actor: 'bossett.social' }],
+  ])('fails %s of query and actor as invalid_mode before any request', async (_label, args) => {
+    const result = await runToolContract(bskySearchFeeds, args);
+    expect(result.isError).toBe(true);
+    expect(errorOf(result)).toMatchObject({
+      code: JsonRpcErrorCode.ValidationError,
+      data: { reason: 'invalid_mode' },
+    });
+    const recovery =
+      'Pass query to search the feed catalog, or actor to list one account’s feed generators — exactly one of the two.';
+    expect(errorOf(result).data?.recovery?.hint).toBe(recovery);
+    expect(textOf(result)).toContain(recovery);
+    expect(http.calls).toHaveLength(0);
+  });
+
+  it('advertises both modes on a flat root that requires neither', () => {
+    const schema = z.toJSONSchema(bskySearchFeeds.input, { io: 'input' }) as {
+      type?: string;
+      properties?: Record<string, unknown>;
+      required?: string[];
+    };
+    expect(schema.type).toBe('object');
+    expect(Object.keys(schema.properties ?? {})).toEqual(
+      expect.arrayContaining(['query', 'actor', 'limit', 'cursor']),
+    );
+    expect(schema.required ?? []).not.toContain('query');
+    expect(schema.required ?? []).not.toContain('actor');
+  });
+
+  it.each(['alice', 'not a handle', `https://bsky.app/profile/bossett.social/feed/cats`])(
+    'rejects actor %j with the field message before any request',
+    async (actor) => {
+      const result = await runToolContract(bskySearchFeeds, { actor });
+      expect(result.isError).toBe(true);
+      expect(errorOf(result).code).toBe(JsonRpcErrorCode.InvalidParams);
+      expect(textOf(result)).toContain('a handle needs a dot');
+      expect(http.calls).toHaveLength(0);
+    },
+  );
+});
+
+describe('bsky_search_feeds actor mode for a DID', () => {
+  const GHOST = 'did:plc:aaaaaaaaaaaaaaaaaaaaaaaa';
+  const PROFILE = '/xrpc/app.bsky.actor.getProfile';
+  function profile(respond: () => Response) {
+    http.route({ match: (request) => new URL(request.url).pathname === PROFILE, respond });
+  }
+  const paths = () => http.calls.map((call) => new URL(call.request.url).pathname);
+
+  it('fails an unknown DID as actor_not_found after one profile check, though its feed page is empty', async () => {
+    actorFeeds(() => Response.json({ feeds: [] }));
+    profile(() =>
+      Response.json({ error: 'InvalidRequest', message: 'Profile not found' }, { status: 400 }),
+    );
+    const result = await runToolContract(bskySearchFeeds, { actor: GHOST });
+    expect(result.isError).toBe(true);
+    expect(errorOf(result)).toMatchObject({
+      code: JsonRpcErrorCode.NotFound,
+      data: { reason: 'actor_not_found' },
+    });
+    const recovery =
+      'Verify the handle or DID with bsky_get_profile, or find the account with bsky_search_actors.';
+    expect(errorOf(result).data?.recovery?.hint).toBe(recovery);
+    expect(textOf(result)).toContain(recovery);
+    expect(textOf(result)).toContain(GHOST);
+    expect(paths()).toEqual([ACTOR_FEEDS, PROFILE]);
+    expect(new URL(http.calls[1]!.request.url).searchParams.get('actor')).toBe(GHOST);
+  });
+
+  it('keeps the empty page of a DID whose profile exists', async () => {
+    actorFeeds(() => Response.json({ feeds: [] }));
+    profile(() => Response.json({ did: BOSSETT, handle: 'bossett.social' }));
+    const result = await runToolContract(bskySearchFeeds, { actor: BOSSETT });
+    expect(result.isError).toBeFalsy();
+    const notice = `No feed generators found for actor "${BOSSETT}".`;
+    expect(structured(result)).toEqual({ feeds: [], totalReturned: 0, notice });
+    expect(textOf(result)).toContain(notice);
+    expect(paths()).toEqual([ACTOR_FEEDS, PROFILE]);
+  });
+
+  it('says so when the empty page of a DID could not be checked against its profile', async () => {
+    actorFeeds(() => Response.json({ feeds: [] }));
+    profile(() =>
+      Response.json({ error: 'Unavailable' }, { status: 503, headers: { 'Retry-After': '31' } }),
+    );
+    const result = await runToolContract(bskySearchFeeds, { actor: GHOST });
+    expect(result.isError).toBeFalsy();
+    const notice = `No feed generators found for actor "${GHOST}". Bluesky did not confirm that the account exists.`;
+    expect(structured(result)).toEqual({ feeds: [], totalReturned: 0, notice });
+    expect(textOf(result)).toContain(notice);
+    expect(paths()).toEqual([ACTOR_FEEDS, PROFILE]);
+  });
+
+  it('says so without a profile check when the empty page of a DID used up the deadline', async () => {
+    const clock = vi.spyOn(Date, 'now');
+    const start = Date.now();
+    try {
+      actorFeeds(() => {
+        clock.mockReturnValue(start + 46_000);
+        return Response.json({ feeds: [] });
+      });
+      profile(() => Response.json({ did: GHOST, handle: 'ghost.bsky.social' }));
+      const result = await runToolContract(bskySearchFeeds, { actor: GHOST });
+      expect(result.isError).toBeFalsy();
+      const notice = `No feed generators found for actor "${GHOST}". Bluesky did not confirm that the account exists.`;
+      expect(structured(result)).toEqual({ feeds: [], totalReturned: 0, notice });
+      expect(textOf(result)).toContain(notice);
+      expect(paths()).toEqual([ACTOR_FEEDS]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it.each([
+    ['an input cursor', { cursor: 'nd' }, { feeds: [] }],
+    ['a returned cursor', {}, { feeds: [], cursor: 'next' }],
+    ['an empty returned cursor', { cursor: 'nd' }, { feeds: [], cursor: '' }],
+    ['a nonempty page', {}, { feeds: [generator('cats', 1173)] }],
+  ])('spends no profile check on a page with %s', async (_label, args, body) => {
+    actorFeeds(() => Response.json(body));
+    // A routed profile records a stray check; an unrouted one would fail unrecorded.
+    profile(() => Response.json({ did: GHOST, handle: 'ghost.bsky.social' }));
+    const result = await runToolContract(bskySearchFeeds, { actor: GHOST, ...args });
+    expect(result.isError).toBeFalsy();
+    expect(
+      http.calls.map(({ request }) => {
+        const url = new URL(request.url);
+        return [url.pathname, Object.fromEntries(url.searchParams)];
+      }),
+    ).toEqual([[ACTOR_FEEDS, { actor: GHOST, limit: '25', ...args }]]);
+  });
+
+  it('checks a first page whose returned cursor is empty', async () => {
+    actorFeeds(() => Response.json({ feeds: [], cursor: '' }));
+    profile(() =>
+      Response.json({ error: 'InvalidRequest', message: 'Profile not found' }, { status: 400 }),
+    );
+    const result = await runToolContract(bskySearchFeeds, { actor: GHOST });
+    expect(errorOf(result).data?.reason).toBe('actor_not_found');
+    expect(paths()).toEqual([ACTOR_FEEDS, PROFILE]);
   });
 });
 

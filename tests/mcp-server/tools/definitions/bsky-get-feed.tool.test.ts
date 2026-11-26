@@ -363,6 +363,41 @@ describe('bsky_get_feed — reading a feed', () => {
     });
     expect(textOf(result)).not.toMatch(/likes|Created:/);
   });
+
+  it('carries bookmarkCount on both surfaces, zero included, and adds none where upstream sent none', async () => {
+    http.route({
+      match: /app\.bsky\.feed\.getFeed/,
+      respond: Response.json({
+        feed: [
+          {
+            post: post('saved', {
+              likeCount: 10788,
+              repostCount: 3089,
+              replyCount: 304,
+              quoteCount: 157,
+              bookmarkCount: 151,
+            }),
+          },
+          { post: post('zero', { bookmarkCount: 0 }) },
+          { post: post('absent') },
+        ],
+      }),
+    });
+
+    const result = await runToolContract(bskyGetFeed, { feed: WHATS_HOT });
+    const [saved, zero, absent] = structured(result).posts;
+    expect(saved).toMatchObject({ bookmarkCount: 151 });
+    expect(zero).toMatchObject({ bookmarkCount: 0 });
+    expect(absent).not.toHaveProperty('bookmarkCount');
+
+    const [savedText, zeroText, absentText] = textOf(result).split('\n\n---\n\n');
+    expect(savedText).toContain(
+      '*10788 likes · 3089 reposts · 304 replies · 157 quotes · 151 bookmarks*',
+    );
+    expect(zeroText).toContain('*3 likes · 0 bookmarks*');
+    expect(absentText).toContain('*3 likes*');
+    expect(absentText).not.toContain('bookmarks');
+  });
 });
 
 describe('bsky_get_feed — feed references', () => {

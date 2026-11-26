@@ -163,6 +163,10 @@ const PostSchema = z
         'Number of quote posts Bluesky counts — read them with bsky_get_post_quotes. An upper bound on ' +
           'what that returns, since the counter keeps quotes that have left the index.',
       ),
+    bookmarkCount: z
+      .number()
+      .optional()
+      .describe('Number of accounts that bookmarked this post. No endpoint lists who saved it.'),
     indexedAt: z
       .string()
       .optional()
@@ -253,7 +257,7 @@ export const bskySearchPosts = tool('bsky_search_posts', {
   description:
     'Full-text search across public Bluesky posts. Filters by author, mentioned account, language ' +
     '(two-letter code, e.g. "en"), hashtag, linked domain or exact URL, date range (ISO 8601), and sort order. ' +
-    'Returns posts with text, author info, engagement counts (likes/reposts/replies), normalized embeds, ' +
+    'Returns posts with text, author info, engagement counts (likes/reposts/replies/quotes/bookmarks), normalized embeds, ' +
     "AT-URIs for thread drilling, and hitsTotal, Bluesky's estimate of how many posts match: below " +
     `${HITS_TOTAL_CAP.toLocaleString()} an upper bound on what paging returns, and at exactly ` +
     `${HITS_TOTAL_CAP.toLocaleString()} (the cap) "at least that many". Post text, image and video alt text, ` +

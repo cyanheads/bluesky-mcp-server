@@ -5,7 +5,12 @@
  * @module tests/mcp-server/tools/post-format.test
  */
 
+import type { ContentBlock } from '@cyanheads/mcp-ts-core';
 import { describe, expect, it } from 'vitest';
+import { bskyGetAuthorFeed } from '@/mcp-server/tools/definitions/bsky-get-author-feed.tool.js';
+import { bskyGetFeed } from '@/mcp-server/tools/definitions/bsky-get-feed.tool.js';
+import { bskyGetPostQuotes } from '@/mcp-server/tools/definitions/bsky-get-post-quotes.tool.js';
+import { bskySearchPosts } from '@/mcp-server/tools/definitions/bsky-search-posts.tool.js';
 import type { RenderablePost } from '@/mcp-server/tools/post-format.js';
 import {
   actorLabel,
@@ -270,6 +275,82 @@ describe('renderPostLines', () => {
     expect(text).toContain('did:plc:abc123');
     expect(text).toContain('5 likes');
     expect(text).toContain('2025-01-01T00:00:00Z');
+  });
+
+  /** bookmarkCount renders last on the engagement line, by the same rule as the other four counters. */
+  it.each<[Partial<RenderablePost>, string]>([
+    [
+      { likeCount: 10788, repostCount: 3089, replyCount: 304, quoteCount: 157, bookmarkCount: 151 },
+      '*10788 likes · 3089 reposts · 304 replies · 157 quotes · 151 bookmarks*',
+    ],
+    [
+      { likeCount: 0, repostCount: 0, replyCount: 0, quoteCount: 0, bookmarkCount: 0 },
+      '*0 likes · 0 reposts · 0 replies · 0 quotes · 0 bookmarks*',
+    ],
+    [
+      { likeCount: 5, repostCount: 1, replyCount: 0, quoteCount: 0 },
+      '*5 likes · 1 reposts · 0 replies · 0 quotes*',
+    ],
+    [{ bookmarkCount: 151 }, '*151 bookmarks*'],
+  ])('renders the engagement line for %j', (counts, line) => {
+    const lines = renderPostLines(makePost(counts));
+    expect(lines.filter((l) => /^\*\d/.test(l))).toEqual([line]);
+  });
+});
+
+/**
+ * The four closed post schemas are separate declarations, and a field one of them leaves out is
+ * stripped from both surfaces by the output parse that runs before format().
+ */
+describe('bookmarkCount through every closed post schema', () => {
+  const post = {
+    uri: 'at://did:plc:abc123/app.bsky.feed.post/rkey1',
+    cid: 'bafyreiabc',
+    text: 'Hello Bluesky',
+    author: { did: 'did:plc:abc123', handle: 'alice.bsky.social' },
+    quoteCount: 157,
+    bookmarkCount: 151,
+  };
+  const textOf = (blocks: ContentBlock[]) =>
+    blocks.map((b) => ('text' in b ? b.text : '')).join('\n');
+
+  it.each([
+    [
+      'bsky_get_feed',
+      () => {
+        const out = bskyGetFeed.output.parse({ posts: [post] });
+        return { posts: out.posts, text: textOf(bskyGetFeed.format!(out)) };
+      },
+    ],
+    [
+      'bsky_get_author_feed',
+      () => {
+        const out = bskyGetAuthorFeed.output.parse({ posts: [post] });
+        return { posts: out.posts, text: textOf(bskyGetAuthorFeed.format!(out)) };
+      },
+    ],
+    [
+      'bsky_get_post_quotes',
+      () => {
+        const out = bskyGetPostQuotes.output.parse({
+          uri: 'at://did:plc:quoted/app.bsky.feed.post/target',
+          sort: 'latest',
+          posts: [post],
+        });
+        return { posts: out.posts, text: textOf(bskyGetPostQuotes.format!(out)) };
+      },
+    ],
+    [
+      'bsky_search_posts',
+      () => {
+        const out = bskySearchPosts.output.parse({ posts: [post] });
+        return { posts: out.posts, text: textOf(bskySearchPosts.format!(out)) };
+      },
+    ],
+  ])('%s keeps it on both surfaces', (_name, run) => {
+    const { posts, text } = run();
+    expect(posts[0]?.bookmarkCount).toBe(151);
+    expect(text).toContain('*157 quotes · 151 bookmarks*');
   });
 });
 

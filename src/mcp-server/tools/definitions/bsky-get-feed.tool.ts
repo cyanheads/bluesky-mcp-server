@@ -108,6 +108,10 @@ const PostSchema = z
         'Number of quote posts Bluesky counts — read them with bsky_get_post_quotes. An upper bound on ' +
           'what that returns, since the counter keeps quotes that have left the index.',
       ),
+    bookmarkCount: z
+      .number()
+      .optional()
+      .describe('Number of accounts that bookmarked this post. No endpoint lists who saved it.'),
     indexedAt: z.string().optional().describe('ISO 8601 timestamp when this post was indexed.'),
     createdAt: z.string().optional().describe('ISO 8601 timestamp when this post was created.'),
     labels: z
@@ -192,7 +196,7 @@ export const bskyGetFeed = tool('bsky_get_feed', {
   title: 'Get Bluesky Feed',
   description:
     'Read posts and reposts from a Bluesky feed generator or list in the order Bluesky serves them. Accepts generator and list AT-URIs and bsky.app feed and list URLs. To read list membership, use bsky_get_list. Generator feeds come from the "feedUri" of each ' +
-    'bsky_get_trending topic — the way to read what a trend is about — from bsky_search_feeds catalog results, from a quoted feed in a post ' +
+    'bsky_get_trending topic — the way to read what a trend is about — from bsky_search_feeds results, from a quoted feed in a post ' +
     '(an embed with recordKind "generator"), or from a shared link; Discover is ' +
     'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot. Returns posts with full ' +
     'text, engagement counts, embeds, and AT-URIs for drilling into threads via bsky_get_post_thread. ' +

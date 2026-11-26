@@ -323,6 +323,11 @@ const READ_LISTS = [
     input: { query: 'science' },
     endpoint: 'app.bsky.unspecced.getPopularFeedGenerators',
   },
+  {
+    tool: bskySearchFeeds,
+    input: { actor: 'bsky.app' },
+    endpoint: 'app.bsky.feed.getActorFeeds',
+  },
 ] as const;
 
 describe.each(READ_LISTS)('$endpoint read limits', ({ tool, input, endpoint }) => {
@@ -612,7 +617,7 @@ describe('strict read-limit policy', () => {
       import('@/services/bluesky/bluesky-service.js'),
     ]);
     service.initBlueskyService();
-    const strictTools = [author, feed, graph, actors, catalog];
+    const strictTools = [author, feed, graph, actors, catalog, catalog];
     for (const [i, strictTool] of strictTools.entries()) {
       const item = READ_LISTS[i];
       expect(item).toBeDefined();
@@ -644,5 +649,20 @@ describe('strict read-limit policy', () => {
       expect(structured(result).notice).not.toContain('requested;');
       http.reset();
     }
+  });
+});
+
+describe('bsky_search_feeds actor', () => {
+  it.each(ACTOR_FORMS)('reads %s as %s', async (_label, actor, sent) => {
+    http.route({
+      match: /app\.bsky\.feed\.getActorFeeds/,
+      respond: () => Response.json({ feeds: [], cursor: 'next' }),
+    });
+    const result = await runToolContract(bskySearchFeeds, { actor });
+    expect(result.isError).toBeFalsy();
+    expect(sentParam('app.bsky.feed.getActorFeeds', 'actor')).toBe(sent);
+    expect(structured(result).notice).toContain(`"${sent}"`);
+    expect(structured(result).notice).not.toContain('@bsky.app');
+    expect(textOf(result)).toContain(String(structured(result).notice));
   });
 });

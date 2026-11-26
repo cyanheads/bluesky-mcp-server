@@ -202,6 +202,7 @@ src/
     bluesky/
       at-syntax.ts                      # Identifier / AT-URI / feed-ref / ISO 8601 patterns, and the one parser for @handle and bsky.app URLs
       bluesky-service.ts                # AT Protocol read client — keyless AppView reads, retry, error mapping, normalization; post search via the session
+      collection-records.ts             # AppView list and starter-pack response schemas and their public projections
       post-facets.ts                    # Open rich-text feature schema and typed known variants
       search-session.ts                 # App-password session for post search — lazy login, single-flight renewal, login-rejection and login-limit latches
       xrpc.ts                           # Shared request plumbing — User-Agent, timeout, XRPC URLs, error-status and HTML-body handling
@@ -213,7 +214,7 @@ src/
       read-limits.ts                    # Conditional input maxima, per-call clamping, and composed disclosure
       response-budget.ts                # 48,000-byte per-surface budget — measures the real output, re-requests an overflowing page at the limit that fits
       definitions/
-        bsky-search-feeds.tool.ts       # Keyless provider catalog metadata search; feedUri chains to bsky-get-feed
+        bsky-search-feeds.tool.ts       # Keyless feed discovery in two modes — catalog metadata search by query, or one account's feeds by actor; feedUri chains to bsky-get-feed
         bsky-search-posts.tool.ts       # Full-text post search with filters (disabledTool() without an app password)
         bsky-get-profile.tool.ts        # Actor profile lookup by handle or DID
         bsky-get-feed.tool.ts           # A feed generator's posts by AT-URI or bsky.app URL
@@ -221,6 +222,7 @@ src/
         bsky-get-post-thread.tool.ts    # Conversation thread by AT-URI, with truncation and threadgate disclosure
         bsky-get-post-quotes.tool.ts    # Quote posts behind a post's quoteCount, the restated quoted post cut from each embed
         bsky-get-post-interactions.tool.ts # Accounts behind likes/reposts; account creation and like timestamps kept distinct
+        bsky-get-list.tool.ts           # A list or starter pack's metadata and members, or an actor's lists or starter packs
         bsky-search-actors.tool.ts      # Actor discovery by name/handle fragment
         bsky-get-follows.tool.ts        # Social graph edges (followers/following)
         bsky-get-trending.tool.ts       # Real-time trending topics, each with the feedUri of its feed

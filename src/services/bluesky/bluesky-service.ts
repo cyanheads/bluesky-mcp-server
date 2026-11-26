@@ -38,6 +38,8 @@ import {
 import {
   type CollectionKind,
   type CollectionResult,
+  type DiscoveryPage,
+  isListUri,
   ListDiscoveryPage,
   ListPage,
   StarterPackDiscoveryPage,
@@ -84,7 +86,11 @@ import {
 /** @internal Public Bluesky AppView — every read except post search goes here, unauthenticated. */
 const APPVIEW_URL = 'https://api.bsky.app';
 
-/** @internal The catalog's required generator identity and sparse author-supplied metadata. */
+/**
+ * @internal A page of `generatorView`s, the envelope the catalog and `getActorFeeds` share: required
+ * generator identity, sparse author-supplied metadata, and the like count only when it is a number —
+ * a malformed count costs that row its count, never the page.
+ */
 const CatalogPageSchema = z.object({
   feeds: z.array(
     z.object({
@@ -96,10 +102,50 @@ const CatalogPageSchema = z.object({
         handle: z.string(),
         displayName: z.string().optional(),
       }),
+      likeCount: z.number().optional().catch(undefined),
     }),
   ),
   cursor: z.string().optional(),
 });
+
+/** @internal One feed row per generator, every absent field left absent; an empty cursor ends. */
+function feedPage(raw: z.output<typeof CatalogPageSchema>): SearchFeedsResult {
+  return {
+    feeds: raw.feeds.map((feed) => ({
+      feedUri: feed.uri,
+      displayName: feed.displayName,
+      ...(feed.description !== undefined ? { description: feed.description } : {}),
+      creator: {
+        did: feed.creator.did,
+        handle: feed.creator.handle,
+        ...(feed.creator.displayName !== undefined
+          ? { displayName: feed.creator.displayName }
+          : {}),
+      },
+      ...(feed.likeCount !== undefined ? { likeCount: feed.likeCount } : {}),
+    })),
+    ...(raw.cursor ? { cursor: raw.cursor } : {}),
+  };
+}
+
+/**
+ * @internal Parse an AppView response body at the service edge. A body that fails its schema is
+ * Bluesky's fault: it fails as `ServiceUnavailable` with the `ZodError` as its cause, never as the
+ * bare `ZodError` the framework would classify as the caller's invalid input.
+ */
+function parseResponse<S extends z.ZodType>(
+  schema: S,
+  body: unknown,
+  lexicon: string,
+): z.output<S> {
+  const parsed = schema.safeParse(body);
+  if (parsed.success) return parsed.data;
+  throw serviceUnavailable(
+    `Bluesky answered ${lexicon} with a response this server could not read.`,
+    { lexicon },
+    { cause: parsed.error },
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Raw upstream response shapes
@@ -499,6 +545,7 @@ function normalizePost(r: RawPostView): PostView {
     ...(typeof r.repostCount === 'number' ? { repostCount: r.repostCount } : {}),
     ...(typeof r.likeCount === 'number' ? { likeCount: r.likeCount } : {}),
     ...(typeof r.quoteCount === 'number' ? { quoteCount: r.quoteCount } : {}),
+    ...(typeof r.bookmarkCount === 'number' ? { bookmarkCount: r.bookmarkCount } : {}),
     ...(r.indexedAt ? { indexedAt: r.indexedAt } : {}),
     ...(r.record.createdAt ? { createdAt: r.record.createdAt } : {}),
     ...(r.labels?.length
@@ -679,6 +726,9 @@ function isTransient(err: unknown): boolean {
 /** @internal Maps a failed request onto a tool's declared reason, or leaves it as classified. */
 type ErrorMapper = (err: McpError) => McpError | undefined;
 
+/** Notice sentence for an empty actor page marked `actorUnconfirmed`. */
+export const UNCONFIRMED_ACTOR_NOTICE = 'Bluesky did not confirm that the account exists.';
+
 /** One deadline for a collection operation, including handle resolution and feed budget refetches. */
 export function collectionDeadlineAtMs(): number {
   return Date.now() + 45_000;
@@ -702,6 +752,12 @@ function collectionNotFound(kind: keyof typeof COLLECTION_MISSING, ref: string):
   return notFound(`${message}: ${ref}.`, { reason });
 }
 
+/**
+ * Maps an AppView answer that the target does not exist onto the kind's not-found reason. For an
+ * actor, a 400 `InvalidRequest` naming `Invalid AT identifier` counts too: the AppView's own
+ * identifier check rejected a value that passed the input pattern, and such a value names no
+ * account.
+ */
 function collectionError(kind: keyof typeof COLLECTION_MISSING, ref: string): ErrorMapper {
   return (err) => {
     const { error, message } = xrpcError(err);
@@ -710,7 +766,11 @@ function collectionError(kind: keyof typeof COLLECTION_MISSING, ref: string): Er
       ((status === 400 || status === 404) &&
         error === 'InvalidRequest' &&
         message === COLLECTION_MISSING[kind].message) ||
-      (kind === 'list' && (status === 400 || status === 404) && error === 'UnknownList')
+      (kind === 'list' && (status === 400 || status === 404) && error === 'UnknownList') ||
+      (kind === 'actor' &&
+        status === 400 &&
+        error === 'InvalidRequest' &&
+        message?.includes('Invalid AT identifier'))
     ) {
       return collectionNotFound(kind, ref);
     }
@@ -957,7 +1017,8 @@ export class BlueskyService {
     ctx: Context,
   ): Promise<SearchFeedsResult> {
     const lexicon = 'app.bsky.unspecced.getPopularFeedGenerators';
-    const raw = CatalogPageSchema.parse(
+    const raw = parseResponse(
+      CatalogPageSchema,
       await this.get<unknown>(
         lexicon,
         params,
@@ -970,22 +1031,48 @@ export class BlueskyService {
             : cursorError(err, params.cursor, lexicon),
         45_000,
       ),
+      lexicon,
     );
-    return {
-      feeds: raw.feeds.map((feed) => ({
-        feedUri: feed.uri,
-        displayName: feed.displayName,
-        ...(feed.description !== undefined ? { description: feed.description } : {}),
-        creator: {
-          did: feed.creator.did,
-          handle: feed.creator.handle,
-          ...(feed.creator.displayName !== undefined
-            ? { displayName: feed.creator.displayName }
-            : {}),
-        },
-      })),
-      ...(raw.cursor ? { cursor: raw.cursor } : {}),
-    };
+    return feedPage(raw);
+  }
+
+  /**
+   * List the feed generators one account created, in Bluesky's order. An unknown handle is answered
+   * 400 `Profile not found`, mapped to `actor_not_found`; an unknown DID is answered 200 with no
+   * feeds, the same as a real account with none, so an empty first page for a DID spends one
+   * profile check inside the same deadline ({@link confirmActorExists}). There is no
+   * invalid-cursor answer to map: Bluesky answers any cursor with 200, so a cursor from another
+   * actor or from the catalog yields a plausible wrong page rather than an error.
+   */
+  async getActorFeeds(
+    params: { actor: string; limit: number; cursor?: string },
+    ctx: Context,
+  ): Promise<SearchFeedsResult> {
+    const lexicon = 'app.bsky.feed.getActorFeeds';
+    const deadlineAtMs = collectionDeadlineAtMs();
+    const page = feedPage(
+      parseResponse(
+        CatalogPageSchema,
+        await this.get<unknown>(
+          lexicon,
+          params,
+          ctx,
+          collectionError('actor', params.actor),
+          collectionTimeLeftMs(ctx, deadlineAtMs),
+        ),
+        lexicon,
+      ),
+    );
+    if (
+      params.actor.startsWith('did:') &&
+      !params.cursor &&
+      !page.cursor &&
+      page.feeds.length === 0 &&
+      !(await this.confirmActorExists(params.actor, ctx, deadlineAtMs))
+    ) {
+      return { ...page, actorUnconfirmed: true };
+    }
+    return page;
   }
 
   /** Fetch an actor's public profile. */
@@ -1125,7 +1212,7 @@ export class BlueskyService {
     };
   }
 
-  /** Canonical collection record URI. Only the resolver's explicit miss is a not-found. */
+  /** Canonical collection record URI, its owner handle resolved within the collection deadline. */
   private async collectionUri(
     ref: { authority: string; collection: string; rkey: string },
     kind: 'list' | 'starterPack',
@@ -1133,25 +1220,11 @@ export class BlueskyService {
     deadlineAtMs: number,
   ): Promise<string> {
     const uri = `at://${ref.authority}/${ref.collection}/${ref.rkey}`;
-    if (ref.authority.startsWith('did:')) return uri;
-    const { did } = z.object({ did: z.string().startsWith('did:').regex(ACTOR_REF_REGEX) }).parse(
-      await this.get<unknown>(
-        'com.atproto.identity.resolveHandle',
-        { handle: ref.authority.toLowerCase() },
-        ctx,
-        (err) => {
-          const { error, message } = xrpcError(err);
-          if (
-            httpStatus(err) === 400 &&
-            error === 'InvalidRequest' &&
-            message === 'Unable to resolve handle'
-          ) {
-            return collectionNotFound(kind, uri);
-          }
-          return;
-        },
-        collectionTimeLeftMs(ctx, deadlineAtMs),
-      ),
+    const did = await this.resolveAuthority(
+      ref.authority,
+      ctx,
+      () => collectionNotFound(kind, uri),
+      deadlineAtMs,
     );
     return `at://${did}/${ref.collection}/${ref.rkey}`;
   }
@@ -1162,7 +1235,8 @@ export class BlueskyService {
     ctx: Context,
     deadlineAtMs: number,
   ) {
-    const { list, items, cursor } = ListPage.parse(
+    const { list, items, cursor } = parseResponse(
+      ListPage,
       await this.get<unknown>(
         'app.bsky.graph.getList',
         { list: uri, ...page },
@@ -1170,6 +1244,7 @@ export class BlueskyService {
         collectionError('list', uri),
         collectionTimeLeftMs(ctx, deadlineAtMs),
       ),
+      'app.bsky.graph.getList',
     );
     return { list, members: items, ...(cursor !== undefined ? { cursor } : {}) };
   }
@@ -1194,7 +1269,8 @@ export class BlueskyService {
       return { kind: 'list', ...(await this.readListPage(uri, page, ctx, deadlineAtMs)) };
     }
     const uri = await this.collectionUri(ref, 'starterPack', ctx, deadlineAtMs);
-    const { starterPack } = StarterPackView.parse(
+    const { starterPack } = parseResponse(
+      StarterPackView,
       await this.get<unknown>(
         'app.bsky.graph.getStarterPack',
         { starterPack: uri },
@@ -1202,10 +1278,14 @@ export class BlueskyService {
         collectionError('starterPack', uri),
         collectionTimeLeftMs(ctx, deadlineAtMs),
       ),
+      'app.bsky.graph.getStarterPack',
     );
-    const backing = parseBlueskyRef(starterPack.listUri);
-    if (backing?.kind !== 'record')
-      throw new Error('Bluesky supplied an invalid backing list URI.');
+    const backing = isListUri(starterPack.listUri)
+      ? parseBlueskyRef(starterPack.listUri)
+      : undefined;
+    if (backing?.kind !== 'record') {
+      return { kind: 'missingBackingList', starterPack, backingList: 'unreadable' };
+    }
     try {
       const listUri = await this.collectionUri(backing, 'list', ctx, deadlineAtMs);
       return {
@@ -1220,20 +1300,27 @@ export class BlueskyService {
         err.code === JsonRpcErrorCode.NotFound &&
         (err.data as { reason?: string } | undefined)?.reason === 'list_not_found'
       ) {
-        return { kind: 'missingBackingList', starterPack };
+        return { kind: 'missingBackingList', starterPack, backingList: 'notFound' };
       }
       throw err;
     }
   }
 
-  /** Discover one collection stream for an actor with its own opaque cursor. */
+  /**
+   * Discover one collection stream for an actor with its own opaque cursor. Both endpoints answer
+   * an unknown handle with 400 `Profile not found`, but an unknown DID with 200 and an empty page,
+   * so a first page Bluesky sent empty for a DID goes through {@link confirmActorExists} inside
+   * the same deadline. A row that does not parse is dropped and counted in `unreadable`.
+   */
   async discoverCollections(
     params: { actor: string; kind: CollectionKind; limit: number; cursor?: string | undefined },
     ctx: Context,
-  ): Promise<CollectionResult> {
+  ): Promise<DiscoveryPage> {
     const ref = parseBlueskyRef(params.actor);
     if (ref?.kind !== 'actor') throw validationError(ACTOR_REF_MESSAGE);
-    const actor = ref.actor.startsWith('did:') ? ref.actor : ref.actor.toLowerCase();
+    const isDid = ref.actor.startsWith('did:');
+    const actor = isDid ? ref.actor : ref.actor.toLowerCase();
+    const deadlineAtMs = collectionDeadlineAtMs();
     const query = { actor, limit: params.limit, cursor: params.cursor };
     const lexicon =
       params.kind === 'lists' ? 'app.bsky.graph.getLists' : 'app.bsky.graph.getActorStarterPacks';
@@ -1242,29 +1329,108 @@ export class BlueskyService {
       query,
       ctx,
       collectionError('actor', ref.actor),
-      collectionTimeLeftMs(ctx, collectionDeadlineAtMs()),
+      collectionTimeLeftMs(ctx, deadlineAtMs),
     );
-    return params.kind === 'lists'
-      ? { kind: 'lists', ...ListDiscoveryPage.parse(raw) }
-      : { kind: 'starterPacks', ...StarterPackDiscoveryPage.parse(raw) };
+    const page: DiscoveryPage =
+      params.kind === 'lists'
+        ? parseResponse(ListDiscoveryPage, raw, lexicon)
+        : parseResponse(StarterPackDiscoveryPage, raw, lexicon);
+    if (page.unreadable) {
+      ctx.log.warning('Dropped discovery rows this server could not read', {
+        lexicon,
+        unreadable: page.unreadable,
+      });
+    }
+    // Rows Bluesky sent, read or not: a page of unreadable rows still shows the account exists.
+    const empty =
+      (page.kind === 'lists' ? page.lists : page.starterPacks).length + (page.unreadable ?? 0) ===
+      0;
+    if (
+      isDid &&
+      !params.cursor &&
+      !page.cursor &&
+      empty &&
+      !(await this.confirmActorExists(actor, ctx, deadlineAtMs))
+    ) {
+      return { ...page, actorUnconfirmed: true };
+    }
+    return page;
   }
 
   /**
-   * @internal The DID an AT-URI authority names. A DID costs nothing; a handle costs one
-   * `resolveHandle`, which answers an unknown handle with 400 — mapped onto the caller's own
-   * not-found reason by `unknown`.
+   * @internal Whether Bluesky confirms an account for `did`, for an endpoint that answers an
+   * unknown DID with 200 and an empty page. One `app.bsky.actor.getProfile`, its retries bounded
+   * by one request timeout and by what is left of `deadlineAtMs`, tells the two apart: it answers
+   * an unknown account with 400 `Profile not found`, which is thrown as `actor_not_found`. Resolves
+   * `true` for a profile and `false` for a check that could not finish (another 4xx, a 5xx, 429,
+   * timeout, spent deadline, or unreadable body); the caller then marks its empty page
+   * unconfirmed. The caller's cancellation is rethrown.
+   */
+  private async confirmActorExists(
+    did: string,
+    ctx: Context,
+    deadlineAtMs: number,
+  ): Promise<boolean> {
+    try {
+      await this.get<unknown>(
+        'app.bsky.actor.getProfile',
+        { actor: did },
+        ctx,
+        collectionError('actor', did),
+        // Best effort: a hung profile check never holds a page it could only mark unconfirmed.
+        Math.min(collectionTimeLeftMs(ctx, deadlineAtMs), TIMEOUT_MS),
+      );
+      return true;
+    } catch (err) {
+      ctx.signal.throwIfAborted();
+      if (
+        err instanceof McpError &&
+        (err.data as { reason?: string } | undefined)?.reason === 'actor_not_found'
+      ) {
+        throw err;
+      }
+      ctx.log.warning('Could not confirm the Bluesky account exists; marking its empty page', {
+        actor: did,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+  }
+
+  /**
+   * @internal The DID an AT-URI authority names; every handle authority resolves here. A DID is
+   * returned as given, without a request. A handle is lowercased, since handles are
+   * case-insensitive, and costs one `resolveHandle`. A 400 whose XRPC envelope names
+   * `InvalidRequest`, the AppView's answer to an unknown and a malformed handle alike, or the
+   * lexicon's `HandleNotFound` becomes the caller's own not-found from `unknown`; every other
+   * failure keeps its ordinary retry and classification. An answer that is not a DID fails as
+   * `ServiceUnavailable` and never becomes a record URI. With `deadlineAtMs`, the lookup and its
+   * retries run inside that deadline.
    */
   private async resolveAuthority(
     authority: string,
     ctx: Context,
     unknown: () => McpError,
+    deadlineAtMs?: number,
   ): Promise<string> {
     if (authority.startsWith('did:')) return authority;
-    const { did } = await this.get<{ did: string }>(
-      'com.atproto.identity.resolveHandle',
-      { handle: authority },
-      ctx,
-      (err) => (httpStatus(err) === 400 ? unknown() : undefined),
+    const lexicon = 'com.atproto.identity.resolveHandle';
+    const { did } = parseResponse(
+      z.object({ did: z.string().startsWith('did:').regex(ACTOR_REF_REGEX) }),
+      await this.get<unknown>(
+        lexicon,
+        { handle: authority.toLowerCase() },
+        ctx,
+        (err) => {
+          const { error } = xrpcError(err);
+          return httpStatus(err) === 400 &&
+            (error === 'InvalidRequest' || error === 'HandleNotFound')
+            ? unknown()
+            : undefined;
+        },
+        deadlineAtMs === undefined ? undefined : collectionTimeLeftMs(ctx, deadlineAtMs),
+      ),
+      lexicon,
     );
     return did;
   }

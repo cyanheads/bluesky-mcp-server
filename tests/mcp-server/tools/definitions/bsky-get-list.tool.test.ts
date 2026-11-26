@@ -42,6 +42,12 @@ const route = (lexicon: string, respond: () => Response, once = false) =>
 const xrpcError = (message: string, status = 400, error = 'InvalidRequest') =>
   Response.json({ error, message }, { status });
 const requests = () => http.calls.map(({ request }) => new URL(request.url));
+/** A last route on the AppView origin, so a request no test expected is recorded too. */
+const recordStrays = () =>
+  http.route({
+    match: (request) => new URL(request.url).origin === 'https://api.bsky.app',
+    respond: () => xrpcError('No route for this request', 418, 'Unrouted'),
+  });
 const output = (result: { structuredContent?: unknown }) =>
   result.structuredContent as Record<string, unknown>;
 const text = (result: { content: { type: string; text?: string }[] }) =>
@@ -100,7 +106,7 @@ describe('bsky_get_list direct detail', () => {
       cursor: 'next/&=opaque',
     });
     expect(next.isError).toBeFalsy();
-    expect(output(next)).toEqual({ list, members: [member('second')] });
+    expect(output(next)).toEqual({ list, members: [member('second')], totalReturned: 1 });
     expect(text(next)).toContain('second.bsky.social');
     expect(requests().map((url) => [url.pathname, Object.fromEntries(url.searchParams)])).toEqual([
       ['/xrpc/com.atproto.identity.resolveHandle', { handle: 'nytimes.com' }],
@@ -146,6 +152,7 @@ describe('bsky_get_list direct detail', () => {
       },
       list,
       members: [member('paged')],
+      totalReturned: 1,
     });
     const rendered = text(result);
     expect(rendered).toContain('**Joins this week:** 0');
@@ -187,6 +194,39 @@ describe('bsky_get_list direct detail', () => {
     expect(text(result)).not.toContain('No members on this page.');
     expect(http.calls).toHaveLength(2);
   });
+
+  it.each([
+    [
+      'a backing list Bluesky could not find',
+      () => {
+        route('app.bsky.graph.getStarterPack', () => Response.json({ starterPack: pack }));
+        route('app.bsky.graph.getList', () => xrpcError('List not found'));
+      },
+      { uri: PACK, name: 'NYT starter pack', creator: owner, listUri: LIST },
+      'Starter pack membership is unavailable because Bluesky could not find its backing list.',
+    ],
+    [
+      'a backing list reference that is not a list AT-URI',
+      () =>
+        route('app.bsky.graph.getStarterPack', () =>
+          Response.json({
+            starterPack: { ...pack, record: { ...pack.record, list: 'at://did:web:example/x/y' } },
+          }),
+        ),
+      { uri: PACK, name: 'NYT starter pack', creator: owner, listUri: 'at://did:web:example/x/y' },
+      'Starter pack membership is unavailable because its backing list reference could not be read.',
+    ],
+  ])(
+    'puts the clamp notice ahead of the reason membership is unavailable for %s',
+    async (_label, serve, starterPack, reason) => {
+      serve();
+      const result = await runToolContract(bskyGetList, { list: PACK, limit: 150 });
+      const notice = `limit 150 requested; 100 applied. ${reason}`;
+      expect(result.isError).toBeFalsy();
+      expect(output(result)).toEqual({ starterPack, notice });
+      expect(text(result)).toContain(notice);
+    },
+  );
 
   it('does not degrade a generic 400 from the backing list to unavailable membership', async () => {
     route('app.bsky.graph.getStarterPack', () => Response.json({ starterPack: pack }));
@@ -330,10 +370,14 @@ describe('bsky_get_list discovery', () => {
     });
     expect(output(next)).toEqual({
       starterPacks: [],
-      notice: 'limit 150 requested; 100 applied.',
+      totalReturned: 0,
+      notice:
+        'limit 150 requested; 100 applied. No more starter packs — the previous page was the last.',
     });
     expect(text(next)).toContain('No starter packs on this page.');
-    expect(text(next)).toContain('limit 150 requested; 100 applied.');
+    expect(text(next)).toContain(
+      'limit 150 requested; 100 applied. No more starter packs — the previous page was the last.',
+    );
     expect(requests().map((url) => Object.fromEntries(url.searchParams))).toEqual([
       { actor: 'nytimes.com', limit: '100' },
       { actor: 'nytimes.com', limit: '100', cursor: 'p2' },
@@ -341,12 +385,186 @@ describe('bsky_get_list discovery', () => {
   });
 });
 
+const members = (count: number) => Array.from({ length: count }, (_, i) => member(`m${i}`));
+const withCursor = (cursor: string | undefined) => (cursor === undefined ? {} : { cursor });
+
+/** Each read, how to serve one page of it, and the words its page notices use for it. */
+const PAGE_READS = [
+  {
+    read: 'a list',
+    input: { list: LIST },
+    serve: (count: number, cursor?: string) =>
+      route('app.bsky.graph.getList', () =>
+        Response.json({ list, items: members(count), ...withCursor(cursor) }),
+      ),
+    target: 'list',
+    noun: 'members',
+    none: 'No members found on this list.',
+  },
+  {
+    read: 'a starter pack',
+    input: { list: PACK },
+    serve: (count: number, cursor?: string) => {
+      route('app.bsky.graph.getStarterPack', () => Response.json({ starterPack: pack }));
+      route('app.bsky.graph.getList', () =>
+        Response.json({ list, items: members(count), ...withCursor(cursor) }),
+      );
+    },
+    target: 'starter pack',
+    noun: 'members',
+    none: 'No members found on this starter pack’s list.',
+  },
+  {
+    read: 'an actor’s lists',
+    input: { actor: 'nytimes.com', kind: 'lists' },
+    serve: (count: number, cursor?: string) =>
+      route('app.bsky.graph.getLists', () =>
+        Response.json({ lists: Array.from({ length: count }, () => list), ...withCursor(cursor) }),
+      ),
+    target: 'actor and kind',
+    noun: 'lists',
+    none: 'No lists found for actor "nytimes.com".',
+  },
+  {
+    read: 'an actor’s starter packs',
+    input: { actor: '@NYTimes.COM', kind: 'starterPacks' },
+    serve: (count: number, cursor?: string) =>
+      route('app.bsky.graph.getActorStarterPacks', () =>
+        Response.json({
+          starterPacks: Array.from({ length: count }, () => pack),
+          ...withCursor(cursor),
+        }),
+      ),
+    target: 'actor and kind',
+    noun: 'starter packs',
+    none: 'No starter packs found for actor "NYTimes.COM".',
+  },
+] as const;
+
+const FRAMEWORK_DEFAULT = 'Raise the cap or narrow with filters.';
+
+describe.each(PAGE_READS)(
+  'bsky_get_list page notices — $read',
+  ({ input, serve, target, noun, none }) => {
+    const follow = `Pass the returned cursor with the same ${target} to fetch the next page of ${noun}, even after an empty page.`;
+    const last = `No more ${noun} — the previous page was the last.`;
+
+    it('tells a page with a cursor to follow it, and counts what the page held', async () => {
+      serve(2, 'next');
+      const result = await runToolContract(bskyGetList, { ...input, limit: 2 });
+      expect(result.isError).toBeFalsy();
+      expect(output(result)).toMatchObject({
+        cursor: 'next',
+        totalReturned: 2,
+        truncated: true,
+        shown: 2,
+        cap: 2,
+        notice: follow,
+      });
+      expect(text(result)).toContain(follow);
+      expect(text(result)).not.toContain(FRAMEWORK_DEFAULT);
+    });
+
+    it('keeps the clamp notice ahead of the cursor notice on both surfaces', async () => {
+      serve(1, 'next');
+      const result = await runToolContract(bskyGetList, { ...input, limit: 150 });
+      const clamp = 'limit 150 requested; 100 applied.';
+      expect(output(result)).toMatchObject({
+        totalReturned: 1,
+        truncated: true,
+        cap: 100,
+        notice: `${clamp} ${follow}`,
+      });
+      const rendered = text(result);
+      expect(rendered).toContain(clamp);
+      expect(rendered.indexOf(clamp)).toBeLessThan(rendered.indexOf(follow));
+      expect(rendered).not.toContain(FRAMEWORK_DEFAULT);
+    });
+
+    it('treats an empty page that still carries a cursor as a page to follow, not the end', async () => {
+      serve(0, 'next');
+      const result = await runToolContract(bskyGetList, { ...input, cursor: 'c1' });
+      expect(output(result)).toMatchObject({
+        cursor: 'next',
+        totalReturned: 0,
+        truncated: true,
+        shown: 0,
+        notice: follow,
+      });
+      for (const surface of [String(output(result).notice), text(result)]) {
+        expect(surface).not.toContain(last);
+        expect(surface).not.toContain(none);
+        expect(surface).not.toContain(FRAMEWORK_DEFAULT);
+      }
+    });
+
+    it('says the previous page was the last when a followed cursor ends on an empty page', async () => {
+      serve(0);
+      const result = await runToolContract(bskyGetList, { ...input, cursor: 'c1' });
+      expect(output(result)).toMatchObject({ totalReturned: 0, notice: last });
+      expect(output(result)).not.toHaveProperty('truncated');
+      expect(output(result)).not.toHaveProperty('cursor');
+      expect(text(result)).toContain(last);
+      expect(text(result)).not.toContain(none);
+    });
+
+    it('says nothing was found when the first page is empty without a cursor', async () => {
+      serve(0);
+      const result = await runToolContract(bskyGetList, input);
+      expect(output(result)).toMatchObject({ totalReturned: 0, notice: none });
+      expect(output(result)).not.toHaveProperty('truncated');
+      expect(text(result)).toContain(none);
+      expect(text(result)).not.toContain(last);
+    });
+
+    it('adds no page notice to a nonempty last page', async () => {
+      serve(3);
+      const result = await runToolContract(bskyGetList, { ...input, cursor: 'c1' });
+      expect(output(result)).toMatchObject({ totalReturned: 3 });
+      expect(output(result)).not.toHaveProperty('notice');
+      expect(output(result)).not.toHaveProperty('truncated');
+      expect(text(result)).not.toContain(last);
+      expect(text(result)).not.toContain(none);
+    });
+
+    it('keeps the clamp notice alone on a nonempty last page', async () => {
+      serve(3);
+      const result = await runToolContract(bskyGetList, { ...input, limit: 150 });
+      const clamp = 'limit 150 requested; 100 applied.';
+      expect(output(result)).toMatchObject({ totalReturned: 3, notice: clamp });
+      expect(output(result)).not.toHaveProperty('truncated');
+      expect(text(result)).toContain(clamp);
+      for (const wording of [follow, last, none]) expect(text(result)).not.toContain(wording);
+    });
+
+    it.each([
+      ['the first page', {}, none],
+      ['a page a cursor led to', { cursor: 'c1' }, last],
+    ])(
+      'ends on an empty returned cursor on %s instead of saying to follow it',
+      async (_label, paging, notice) => {
+        serve(0, '');
+        const result = await runToolContract(bskyGetList, { ...input, ...paging });
+        expect(output(result)).toMatchObject({ cursor: '', totalReturned: 0, notice });
+        expect(output(result)).not.toHaveProperty('truncated');
+        expect(text(result)).toContain(notice);
+        expect(text(result)).not.toContain(follow);
+      },
+    );
+  },
+);
+
 describe('bsky_get_list validation and formatting', () => {
   it('distinguishes an empty field from two authored quote characters', async () => {
     const authored = { ...list, name: '""' };
     route('app.bsky.graph.getList', () => Response.json({ list: authored, items: [] }));
     const result = await runToolContract(bskyGetList, { list: LIST });
-    expect(output(result)).toEqual({ list: authored, members: [] });
+    expect(output(result)).toEqual({
+      list: authored,
+      members: [],
+      totalReturned: 0,
+      notice: 'No members found on this list.',
+    });
     expect(text(result)).toContain('**Name:**\n> ""');
     expect(text(result)).toContain('**Description (JSON string):**\n> ""');
   });
@@ -421,6 +639,64 @@ describe('bsky_get_list validation and formatting', () => {
     },
   );
 
+  it('fails an unknown DID as actor_not_found, though discovery answers it with an empty page', async () => {
+    const unknown = 'did:plc:aaaaaaaaaaaaaaaaaaaaaaaa';
+    route('app.bsky.graph.getLists', () => Response.json({ lists: [] }));
+    route('app.bsky.actor.getProfile', () => xrpcError('Profile not found'));
+    const result = await runToolContract(bskyGetList, { actor: unknown, kind: 'lists' });
+    const hint =
+      'Verify the handle or DID with bsky_get_profile or find the account with bsky_search_actors.';
+    expect(result.isError).toBe(true);
+    expect(output(result)).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.NotFound,
+        data: { reason: 'actor_not_found', recovery: { hint } },
+      },
+    });
+    expect(text(result)).toContain(hint);
+    expect(text(result)).not.toContain('No lists found');
+    expect(requests().map((url) => [url.pathname, Object.fromEntries(url.searchParams)])).toEqual([
+      ['/xrpc/app.bsky.graph.getLists', { actor: unknown, limit: '25' }],
+      ['/xrpc/app.bsky.actor.getProfile', { actor: unknown }],
+    ]);
+  });
+
+  it('fails an actor the AppView rejects as an invalid identifier as actor_not_found, after one request', async () => {
+    /** 255 characters: it passes the input pattern, and the AppView rejects it as malformed. */
+    const long = `${`${'a'.repeat(60)}.`.repeat(4)}example.com`;
+    route('app.bsky.graph.getLists', () =>
+      xrpcError(`Invalid app.bsky.graph.getLists params: Invalid AT identifier (got "${long}")`),
+    );
+    recordStrays();
+    const result = await runToolContract(bskyGetList, { actor: long, kind: 'lists' });
+    const hint =
+      'Verify the handle or DID with bsky_get_profile or find the account with bsky_search_actors.';
+    expect(result.isError).toBe(true);
+    expect(output(result)).toMatchObject({
+      error: {
+        code: JsonRpcErrorCode.NotFound,
+        data: { reason: 'actor_not_found', recovery: { hint } },
+      },
+    });
+    expect(text(result)).toContain(hint);
+    expect(requests().map((url) => [url.pathname, Object.fromEntries(url.searchParams)])).toEqual([
+      ['/xrpc/app.bsky.graph.getLists', { actor: long, limit: '25' }],
+    ]);
+  });
+
+  it('says so when a DID’s empty discovery page could not be checked against its profile', async () => {
+    const did = 'did:plc:aaaaaaaaaaaaaaaaaaaaaaaa';
+    route('app.bsky.graph.getActorStarterPacks', () => Response.json({ starterPacks: [] }));
+    route('app.bsky.actor.getProfile', () =>
+      Response.json({ error: 'Unavailable' }, { status: 503, headers: { 'Retry-After': '31' } }),
+    );
+    const result = await runToolContract(bskyGetList, { actor: did, kind: 'starterPacks' });
+    const notice = `No starter packs found for actor "${did}". Bluesky did not confirm that the account exists.`;
+    expect(result.isError).toBeFalsy();
+    expect(output(result)).toEqual({ starterPacks: [], totalReturned: 0, notice });
+    expect(text(result)).toContain(notice);
+  });
+
   it('round-trips literal names, descriptions, and display names without adding markup or links', async () => {
     const value = ' \t> [Click](https://bad.example/)\r\n<script>&copy;</script>\n\n`\u0000 ';
     const authored = {
@@ -432,7 +708,13 @@ describe('bsky_get_list validation and formatting', () => {
     route('app.bsky.graph.getList', () => Response.json({ list: authored, items: [], cursor: '' }));
     const result = await runToolContract(bskyGetList, { list: LIST });
     expect(result.isError).toBeFalsy();
-    expect(output(result)).toEqual({ list: authored, members: [], cursor: '' });
+    expect(output(result)).toEqual({
+      list: authored,
+      members: [],
+      cursor: '',
+      totalReturned: 0,
+      notice: 'No members found on this list.',
+    });
     const ast = new Parser().parse(text(result)).walker();
     const links: string[] = [];
     const quoted: string[] = [];
@@ -453,9 +735,135 @@ describe('bsky_get_list validation and formatting', () => {
       );
     }
     expect(links).toEqual([LIST]);
-    expect(quoted.map((entry) => JSON.parse(entry))).toEqual([value, value, value]);
+    // The last block quote is the enrichment notice the framework appends, not authored text.
+    expect(quoted.at(-1)).toBe('No members found on this list.');
+    expect(quoted.slice(0, -1).map((entry) => JSON.parse(entry))).toEqual([value, value, value]);
     expect(text(result)).toContain('**Name (JSON string):**');
     expect(text(result)).toContain('No members on this page.');
     expect(text(result)).toContain('**Cursor:** ""');
+  });
+});
+
+/**
+ * Records Bluesky serves that this server cannot read. `BAD_PACK` is a real starter pack whose
+ * record names its backing list with a misspelled collection, served with no hydrated list view.
+ */
+describe('bsky_get_list records Bluesky sent malformed', () => {
+  const OWNER = { did: 'did:plc:xgs3qrwos3dwxmixoflcxrhu', handle: 'devin.divy.zone' };
+  const BAD_PACK = `at://${OWNER.did}/app.bsky.graph.starterpack/3kvrbgdrtbs2v`;
+  const UNREADABLE_LIST = 'at://did:web:example/app.bsly.graph.list/example';
+  const badPack = (rkey = '3kvrbgdrtbs2v') => ({
+    uri: `at://${OWNER.did}/app.bsky.graph.starterpack/${rkey}`,
+    creator: OWNER,
+    record: { name: 'Test pack', list: UNREADABLE_LIST },
+  });
+  const projected = { uri: PACK, name: 'NYT starter pack', creator: owner, listUri: LIST };
+  const follow =
+    'Pass the returned cursor with the same actor and kind to fetch the next page of starter packs, even after an empty page.';
+
+  it('leaves a malformed starter pack out of discovery and counts it on both surfaces', async () => {
+    route('app.bsky.graph.getActorStarterPacks', () =>
+      Response.json({ starterPacks: [pack, badPack()] }),
+    );
+    recordStrays();
+    const result = await runToolContract(bskyGetList, {
+      actor: 'devin.divy.zone',
+      kind: 'starterPacks',
+    });
+    const notice = '1 starter pack Bluesky sent on this page could not be read and is left out.';
+    expect(result.isError).toBeFalsy();
+    expect(output(result)).toEqual({ starterPacks: [projected], totalReturned: 1, notice });
+    expect(text(result)).toContain(notice);
+    expect(text(result)).toContain(PACK);
+    expect(text(result)).not.toContain(BAD_PACK);
+    expect(requests().map((url) => url.pathname)).toEqual([
+      '/xrpc/app.bsky.graph.getActorStarterPacks',
+    ]);
+  });
+
+  it.each([
+    [
+      'a first page for a DID',
+      { actor: OWNER.did, kind: 'starterPacks' },
+      'app.bsky.graph.getActorStarterPacks',
+      { starterPacks: [badPack(), badPack('other')] },
+      '2 starter packs Bluesky sent on this page could not be read and are left out.',
+      'No starter packs found',
+    ],
+    [
+      'a page a cursor led to',
+      { actor: 'devin.divy.zone', kind: 'lists', cursor: 'c1' },
+      'app.bsky.graph.getLists',
+      { lists: [{ ...list, uri: UNREADABLE_LIST }] },
+      '1 list Bluesky sent on this page could not be read and is left out.',
+      'the previous page was the last',
+    ],
+  ] as const)(
+    'says the rows could not be read when every row on %s was left out',
+    async (_label, input, lexicon, body, notice, absent) => {
+      route(lexicon, () => Response.json(body));
+      recordStrays();
+      const result = await runToolContract(bskyGetList, input);
+      const key = input.kind;
+      expect(result.isError).toBeFalsy();
+      expect(output(result)).toEqual({ [key]: [], totalReturned: 0, notice });
+      expect(text(result)).toContain(notice);
+      expect(text(result)).not.toContain(absent);
+      expect(String(output(result).notice)).not.toContain(absent);
+      expect(requests().map((url) => url.pathname)).toEqual([`/xrpc/${lexicon}`]);
+    },
+  );
+
+  it('keeps the clamp notice first and the cursor instruction last on a page with a row left out', async () => {
+    route('app.bsky.graph.getActorStarterPacks', () =>
+      Response.json({ starterPacks: [badPack(), pack], cursor: 'next' }),
+    );
+    recordStrays();
+    const result = await runToolContract(bskyGetList, {
+      actor: 'devin.divy.zone',
+      kind: 'starterPacks',
+      limit: 150,
+    });
+    const clamp = 'limit 150 requested; 100 applied.';
+    const omitted = '1 starter pack Bluesky sent on this page could not be read and is left out.';
+    expect(output(result)).toEqual({
+      starterPacks: [projected],
+      cursor: 'next',
+      totalReturned: 1,
+      truncated: true,
+      shown: 1,
+      cap: 100,
+      notice: `${clamp} ${omitted} ${follow}`,
+    });
+    const rendered = text(result);
+    expect(rendered.indexOf(clamp)).toBeGreaterThanOrEqual(0);
+    expect(rendered.indexOf(clamp)).toBeLessThan(rendered.indexOf(omitted));
+    expect(rendered.indexOf(omitted)).toBeLessThan(rendered.indexOf(follow));
+    expect(rendered).not.toContain(FRAMEWORK_DEFAULT);
+  });
+
+  it('returns a starter pack whose backing list reference is not a list AT-URI, with membership unavailable', async () => {
+    route('app.bsky.graph.getStarterPack', () => Response.json({ starterPack: badPack() }));
+    recordStrays();
+    const result = await runToolContract(bskyGetList, { list: BAD_PACK });
+    const notice =
+      'Starter pack membership is unavailable because its backing list reference could not be read.';
+    expect(result.isError).toBeFalsy();
+    expect(output(result)).toEqual({
+      starterPack: { uri: BAD_PACK, name: 'Test pack', creator: OWNER, listUri: UNREADABLE_LIST },
+      notice,
+    });
+    const rendered = text(result);
+    expect(rendered).toContain(notice);
+    expect(rendered).not.toContain('could not find');
+    expect(rendered).not.toContain('No members on this page.');
+    expect(rendered).toContain(`"${UNREADABLE_LIST}"`);
+    const links: string[] = [];
+    const walker = new Parser().parse(rendered).walker();
+    for (let event = walker.next(); event; event = walker.next()) {
+      if (event.entering && event.node.type === 'link') links.push(event.node.destination ?? '');
+    }
+    expect(links).toEqual([BAD_PACK]);
+    expect(requests().map((url) => url.pathname)).toEqual(['/xrpc/app.bsky.graph.getStarterPack']);
   });
 });

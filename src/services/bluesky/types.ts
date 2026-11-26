@@ -204,6 +204,8 @@ export interface PostAuthor {
 /** A single post view (feed items + search results share this shape). */
 export interface PostView {
   author: PostAuthor;
+  /** Accounts that bookmarked the post. A counter only: no endpoint lists who saved it. */
+  bookmarkCount?: number;
   cid: string;
   createdAt?: string;
   embed?: Embed;
@@ -369,17 +371,21 @@ export interface SearchActorsResult {
   cursor?: string;
 }
 
-/** A public feed generator listed in the provider's catalog, in provider order. */
+/** A public feed generator, from the provider's catalog or one account's own feeds. */
 export interface CatalogFeed {
   creator: { did: string; handle: string; displayName?: string };
   description?: string;
   displayName: string;
   /** Generator AT-URI accepted directly by bsky_get_feed. */
   feedUri: string;
+  /** Likes Bluesky counts for the feed; absent when it sent no number, and 0 is a real count. */
+  likeCount?: number;
 }
 
-/** One page from the unstable public feed-generator catalog. */
+/** One page of feed generators: catalog matches, or one account's generators. */
 export interface SearchFeedsResult {
+  /** An actor page for a DID came back empty and Bluesky's profile check could not finish. */
+  actorUnconfirmed?: true;
   cursor?: string;
   feeds: CatalogFeed[];
 }

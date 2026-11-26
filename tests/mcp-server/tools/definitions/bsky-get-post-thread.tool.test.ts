@@ -5,7 +5,7 @@
 
 import type { Context } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { bskyGetPostThread } from '@/mcp-server/tools/definitions/bsky-get-post-thread.tool.js';
 import { initBlueskyService } from '@/services/bluesky/bluesky-service.js';
@@ -1002,6 +1002,56 @@ describe('bskyGetPostThread', () => {
     expect(text).toContain('7 quotes');
     expect(text).toContain('2026-07-28T12:27:14.146Z');
     expect(text).toContain('https://cdn/avatar.jpg');
+  });
+
+  it('carries bookmarkCount on the target, its parent, and its replies on both surfaces', async () => {
+    mockGetPostThread.mockResolvedValue({
+      thread: {
+        post: { ...ROOT_POST, bookmarkCount: 151 },
+        parent: {
+          post: {
+            ...REPLY_POST,
+            uri: 'at://did:plc:def/app.bsky.feed.post/parent1',
+            cid: 'bafyrparent',
+            bookmarkCount: 0,
+          },
+        },
+        replies: [
+          { post: { ...REPLY_POST, likeCount: 1, bookmarkCount: 2 } },
+          {
+            post: {
+              ...REPLY_POST,
+              uri: 'at://did:plc:def/app.bsky.feed.post/reply2',
+              cid: 'bafyrreply2',
+              likeCount: 4,
+            },
+          },
+        ],
+      },
+    });
+
+    const result = await runToolContract(bskyGetPostThread, { uri: ROOT_POST.uri });
+    const { thread } = result.structuredContent as { thread: ThreadPost };
+    expect(thread.post.bookmarkCount).toBe(151);
+    expect(thread.parent?.post.bookmarkCount).toBe(0);
+    expect(thread.replies?.[0]?.post.bookmarkCount).toBe(2);
+    expect(thread.replies?.[1]?.post).not.toHaveProperty('bookmarkCount');
+
+    const text = result.content.map((b) => ('text' in b ? b.text : '')).join('\n');
+    const [parentSection, targetSection, repliesSection] = text
+      .split(/^## (?:This post|Replies)$/m)
+      .map((s) => s.split('\n'));
+    expect(parentSection).toContain('*0 bookmarks*');
+    expect(targetSection).toContain('*20 likes · 3 replies · 151 bookmarks*');
+    expect(repliesSection).toContain('*1 likes · 2 bookmarks*');
+    expect(repliesSection).toContain('*4 likes*');
+    expect(repliesSection?.filter((l) => l.includes('bookmarks'))).toHaveLength(1);
+  });
+
+  it('advertises bookmarkCount on the passthrough thread node it carries', () => {
+    expect(bskyGetPostThread.output.shape.thread.description).toMatch(
+      /quoteCount\?, bookmarkCount\?, indexedAt\?/,
+    );
   });
 
   it('renders an image embed on a thread node', () => {

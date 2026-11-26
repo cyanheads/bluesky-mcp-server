@@ -29,7 +29,7 @@
 
 ## Overview
 
-Read Bluesky without an account: profiles, lists and starter packs, feed catalog searches, trending topics and the feeds behind them, custom and author feeds, threads, and quote posts. Paste a bsky.app link or `@handle` anywhere one is asked for, and add an optional app password to unlock full-text post search.
+Read Bluesky without an account: profiles, lists and starter packs, feed discovery by catalog search or by creator, trending topics and the feeds behind them, custom and author feeds, threads, and quote posts. Paste a bsky.app link or `@handle` anywhere one is asked for, and add an optional app password to unlock full-text post search.
 
 ### Tools
 
@@ -44,7 +44,7 @@ Read Bluesky without an account: profiles, lists and starter packs, feed catalog
 | `bsky_get_post_quotes` | Read the quote posts behind a post's `quoteCount`, newest first or by like count — where much of the reaction to a post lives |
 | `bsky_get_post_interactions` | List the accounts that liked or reposted a post, with optional account creation and separate like timestamps |
 | `bsky_search_actors` | Find Bluesky accounts by name or handle fragment |
-| `bsky_search_feeds` | Search public feed catalog names and descriptions, then read a returned feedUri with `bsky_get_feed` |
+| `bsky_search_feeds` | Search public feed catalog names and descriptions, or list every feed one account created, then read a returned feedUri with `bsky_get_feed` |
 | `bsky_get_follows` | Paginated social graph edges — who a user follows or who follows them |
 | `bsky_get_trending` | Real-time trending topics on Bluesky with a story summary, post count, category, status, the accounts driving each topic, and the feed that collects its posts |
 
@@ -96,13 +96,15 @@ Post tools preserve optional rich-text `facets` separately from the original tex
 
 ### `bsky_get_list` <sub>tool</sub>
 
-- Pass `list` with a list or starter-pack AT-URI, a `https://bsky.app/profile/<actor>/lists/<rkey>` URL, or a `https://bsky.app/starter-pack/<actor>/<rkey>` URL. Handle authorities resolve to DIDs before reading the record
+- Pass `list` with a list or starter-pack AT-URI, a `https://bsky.app/profile/<actor>/lists/<rkey>` URL, or a `https://bsky.app/starter-pack/<actor>/<rkey>` URL. Handle authorities resolve to DIDs before reading the record, case-insensitively; an unknown or malformed handle fails as `list_not_found` or `starter_pack_not_found`
 - Returns list identity, creator, purpose, optional description and `listItemCount`, and a page of membership records with account DIDs and handles. Purpose is the upstream string, including `app.bsky.graph.defs#curatelist`, `#modlist`, or `#referencelist`
 - Starter-pack metadata remains separate from its backing list: name, creator, optional description and join counts, and supplied feed references. Read the backing list or a recommended generator with `bsky_get_feed`
-- If a pack's backing list is confirmed missing, the pack metadata and list URI remain available with a membership-unavailable notice. Missing membership is not an empty member page
-- To discover an account's collections, pass `actor` instead of `list` and choose `kind: lists` or `kind: starterPacks`. Each collection has its own cursor; discovery returns the AppView-visible records
-- Default 25 results per page, capped at 100 through the shared clamping policy. Continue with the same record or actor/collection and a nonempty returned cursor, including after an empty page. An empty or absent cursor ends pagination. Reported member counts are separate from the current page length
-- `list_not_found`, `starter_pack_not_found`, and `actor_not_found` identify confirmed missing targets; malformed or mixed input modes fail before any request. Reads are always keyless
+- If a pack's backing list is confirmed missing, or the pack's record names it by a reference that is not a list AT-URI, the pack metadata and the reference as Bluesky sent it remain available with a membership-unavailable notice that says which. Missing membership is not an empty member page
+- To discover an account's collections, pass `actor` instead of `list` and choose `kind: lists` or `kind: starterPacks`. Each collection has its own cursor; discovery returns the AppView-visible records. A record this server cannot read, such as a starter pack whose backing list or feed reference is malformed, is left out of the page and counted in its notice; the rest of the page is returned
+- Default 25 results per page, capped at 100 through the shared clamping policy. Continue with the same record or actor/collection and a nonempty returned cursor, including after an empty page. An empty or absent cursor ends pagination. Reported member counts are separate from the current page length; `totalReturned` counts the members, lists, or starter packs on the page, 0 included, and is absent when starter-pack membership is unavailable
+- A page's `notice` is the limit-clamp notice, when the limit was clamped, then at most one page notice: a discovery page that left records out opens it with how many; a page with a cursor says to pass it with the same list, starter pack, or actor and kind, even after an empty page; an empty page without one says the previous page was the last when the call carried a cursor, and that nothing was found otherwise. A page whose every record was left out says so instead. A nonempty last page carries none beyond what it left out
+- Bluesky answers an unknown DID with an empty page, so an empty first discovery page for a DID costs one `app.bsky.actor.getProfile` check, bounded to 15 seconds, and a missing profile fails as `actor_not_found`. If that check cannot finish, the empty page is returned and its notice adds that Bluesky did not confirm the account exists. An actor that Bluesky rejects as an invalid identifier also fails as `actor_not_found`
+- `list_not_found`, `starter_pack_not_found`, and `actor_not_found` identify confirmed missing targets. The input schema is a flat object; exactly one mode is enforced at call time, so anything other than `list` alone or `actor` with `kind` fails as `invalid_mode` before any request. A list, starter-pack, or discovery response the server cannot read fails as `ServiceUnavailable`. Reads are always keyless
 
 ---
 
@@ -183,11 +185,13 @@ Post tools preserve optional rich-text `facets` separately from the original tex
 
 ### `bsky_search_feeds` <sub>tool</sub>
 
-- Searches the provider’s public feed catalog metadata, not post text; returns `feedUri`, `displayName`, optional `description`, and creator DID/handle with optional display name, in provider order
+- Two modes, exactly one per call: `query` searches the provider’s public feed catalog metadata, not post text; `actor` (handle, `@handle`, DID, or bsky.app profile URL) lists every feed generator that account created through `app.bsky.feed.getActorFeeds`. Neither or both fails as `invalid_mode`
+- Returns `feedUri`, `displayName`, optional `description`, `likeCount` (optional; 0 is a real count), and creator DID/handle with optional display name, in provider order; `content[]` shows the count as **Likes**
 - Always keyless, even with post-search credentials configured; pass a returned `feedUri` directly to `bsky_get_feed` to read its posts
-- `query` is required; `limit` defaults to 25 and caps at 100 through the shared clamping policy. Pass the opaque `cursor` with the same query; cursor presence alone signals continuation, even on an empty page
-- Uses unstable `app.bsky.unspecced.getPopularFeedGenerators`, which may change or disappear; `catalog_unavailable` recovers through `bsky_get_trending`. This is discovery, not comprehensive enumeration
-- A malformed cursor answered with the catalog's generic HTTP 400 `InvalidRequest` or 500 `InternalServerError` fails after one request as `invalid_cursor`; drop it or copy the previous response's cursor unchanged
+- `limit` defaults to 25 and caps at 100 through the shared clamping policy. Pass the opaque `cursor` with the same `query` or the same `actor` it came from; cursor presence alone signals continuation, even on an empty page
+- `query` mode uses unstable `app.bsky.unspecced.getPopularFeedGenerators`, which may change or disappear; `catalog_unavailable` recovers through `bsky_get_trending`. This is discovery, not comprehensive enumeration. A malformed cursor answered with the catalog's generic HTTP 400 `InvalidRequest` or 500 `InternalServerError` fails after one request as `invalid_cursor`; drop it or copy the previous response's cursor unchanged
+- `actor` mode has no `invalid_cursor`: Bluesky answers any cursor with 200, so a cursor from another actor or from the catalog yields a plausible wrong page. An unknown handle, or an actor Bluesky rejects as an invalid identifier, fails as `actor_not_found`; Bluesky answers an unknown DID with an empty page, so an empty first page for a DID costs one `app.bsky.actor.getProfile` check, bounded to 15 seconds, and if that check cannot finish the notice adds that Bluesky did not confirm the account exists
+- A catalog or actor-feeds response the server cannot read fails as `ServiceUnavailable`
 - Feed names, descriptions, and creator identity render as quoted third-party data; supplied blank values and omitted fields stay distinct
 
 ---

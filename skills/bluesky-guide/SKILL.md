@@ -4,7 +4,7 @@ description: Use bsky_* tools for topic research, account attribution, list or s
 license: Apache-2.0
 metadata:
   author: "cyanheads"
-  version: "1.1"
+  version: "1.2"
 ---
 
 ## Scope
@@ -16,7 +16,7 @@ Use these workflows to investigate public Bluesky discussion. The tools read pos
 Carry identifiers returned by the preceding call into the next one:
 
 - `bsky_search_actors` yields candidate handles and DIDs. Inspect the selected account with `bsky_get_profile` before attributing statements to a person known only by name.
-- `bsky_get_trending` and `bsky_search_feeds` yield `feedUri` values for `bsky_get_feed`.
+- `bsky_get_trending` and `bsky_search_feeds` yield `feedUri` values for `bsky_get_feed`. `bsky_search_feeds` takes exactly one of `query`, which searches the public feed catalog by name and description, or `actor`, which lists every feed that account created. Each row carries `likeCount`, so feeds can be compared by it.
 - `bsky_get_list` discovers an account's lists or starter packs and opens their returned record URIs. A starter pack has its own URI and a separate backing-list URI; use the list URI with `bsky_get_feed`, or follow one of the pack's feed-generator references.
 - Returned posts carry their own `uri` for `bsky_get_post_thread`, `bsky_get_post_quotes`, and `bsky_get_post_interactions`. A profile's `pinnedPostUri` is another entry point into a conversation.
 
@@ -34,12 +34,12 @@ Start from the user's evidence: a name leads through actor discovery and a selec
 
 ## Workflows
 
-**Topic research.** When available, use `bsky_search_posts` for matching post text and its structured filters. Without it, use `bsky_search_feeds` for a named topic or `bsky_get_trending` for current discussion, then read a returned feed with `bsky_get_feed`. Report which path supplied the evidence. Finding no suitable catalog feed does not establish that nobody posted about the topic.
+**Topic research.** When available, use `bsky_search_posts` for matching post text and its structured filters. Without it, use `bsky_search_feeds` with `query` for a named topic or `bsky_get_trending` for current discussion, then read a returned feed with `bsky_get_feed`. When the feed's creator is known, `bsky_search_feeds` with `actor` lists that account's feeds, which a catalog query need not return. Report which path supplied the evidence. Finding no suitable catalog feed does not establish that nobody posted about the topic.
 
 **An account's statements.** Resolve the intended account, then read `bsky_get_author_feed`. Attribute original posts to their actual authors and describe reposts as reposts. When identity or verification matters, inspect `bsky_get_profile`; a discovery result is a candidate account, and the full profile carries verification issuances when available. Drill into a relevant post's conversation before summarizing a statement that depends on surrounding replies.
 
-**A curated group.** Use `bsky_get_list` to discover the account's lists or starter packs, then open the chosen record. Page membership before claiming to have examined the group; an upstream member count is not the number of accounts on the current page. If a pack reports unavailable membership, describe that gap rather than calling the group empty. Read recent activity through `bsky_get_feed` using the backing list's URI, and treat the pack's recommended generators as separate feeds. Membership and recent posting activity answer different questions.
+**A curated group.** Use `bsky_get_list` to discover the account's lists or starter packs, then open the chosen record. Page membership before claiming to have examined the group; an upstream member count is not the number of accounts on the current page, and `totalReturned` counts only the current page. A page notice says whether to pass the cursor on or that the previous page was the last. An empty discovery page for a DID that carries the notice that Bluesky did not confirm the account exists does not show the account has no collections; check it with `bsky_get_profile`. If a pack reports unavailable membership, describe that gap rather than calling the group empty. Read recent activity through `bsky_get_feed` using the backing list's URI, and treat the pack's recommended generators as separate feeds. Membership and recent posting activity answer different questions.
 
 **Reactions to a post.** Read the target with `bsky_get_post_thread`, then use `bsky_get_post_quotes` for commentary that quotes it. Keep the target's statement separate from each reaction: quote results identify the target without repeating its text. Continue relevant reply branches and quote pages, and state which parts remain unread or unavailable rather than presenting the retrieved reactions as exhaustive.
 
-**Who amplified a post.** Pass the post's URI to `bsky_get_post_interactions` with `kind: reposts` or `kind: likes`. Continue each list with its own cursor and the same post and kind. Account `createdAt` records when the account joined; `likedAt` records when it liked this post. Reposts carry no interaction timestamp. Inspect selected accounts with `bsky_get_profile` when attribution needs more context. Post counters can exceed retrievable interactions, so exhausted cursors do not establish that every counted account was examined; a like or repost alone does not explain the account's intent.
+**Who amplified a post.** Pass the post's URI to `bsky_get_post_interactions` with `kind: reposts` or `kind: likes`. Continue each list with its own cursor and the same post and kind. Account `createdAt` records when the account joined; `likedAt` records when it liked this post. Reposts carry no interaction timestamp. Inspect selected accounts with `bsky_get_profile` when attribution needs more context. Post counters can exceed retrievable interactions, so exhausted cursors do not establish that every counted account was examined; a like or repost alone does not explain the account's intent. `bookmarkCount` on a post is the number of accounts that bookmarked it; no tool lists those accounts, so report the count and no more.

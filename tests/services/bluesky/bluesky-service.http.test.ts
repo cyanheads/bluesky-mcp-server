@@ -12,10 +12,12 @@ import {
   runToolContract,
 } from '@cyanheads/mcp-ts-core/testing';
 import { Parser } from 'commonmark';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bskyProfileResource } from '@/mcp-server/resources/definitions/bsky-profile.resource.js';
 import { bskyGetAuthorFeed } from '@/mcp-server/tools/definitions/bsky-get-author-feed.tool.js';
+import { bskyGetFeed } from '@/mcp-server/tools/definitions/bsky-get-feed.tool.js';
 import { bskyGetFollows } from '@/mcp-server/tools/definitions/bsky-get-follows.tool.js';
+import { bskyGetList } from '@/mcp-server/tools/definitions/bsky-get-list.tool.js';
 import { bskyGetPostThread } from '@/mcp-server/tools/definitions/bsky-get-post-thread.tool.js';
 import { bskyGetProfile } from '@/mcp-server/tools/definitions/bsky-get-profile.tool.js';
 import { bskySearchActors } from '@/mcp-server/tools/definitions/bsky-search-actors.tool.js';
@@ -660,5 +662,766 @@ describe('bsky_get_post_thread — error contract through the real service', () 
     expect(
       (result.structuredContent as { thread: { post: { uri: string } } }).thread.post.uri,
     ).toBe(uri);
+  });
+});
+
+describe('upstream responses this server cannot read', () => {
+  const did = 'did:plc:z72i7hdynmk6r22z27h6tvur';
+  const reads: Array<
+    [string, RegExp, (service: ReturnType<typeof getBlueskyService>) => Promise<unknown>]
+  > = [
+    [
+      'the feed catalog',
+      /getPopularFeedGenerators/,
+      (service) => service.searchFeeds({ query: 'science', limit: 5 }, createMockContext()),
+    ],
+    [
+      'a list',
+      /app\.bsky\.graph\.getList\b/,
+      (service) =>
+        service.getList(
+          { list: `at://${did}/app.bsky.graph.list/news`, limit: 5 },
+          createMockContext(),
+        ),
+    ],
+    [
+      'a starter pack',
+      /getStarterPack\b/,
+      (service) =>
+        service.getList(
+          { list: `at://${did}/app.bsky.graph.starterpack/pack`, limit: 5 },
+          createMockContext(),
+        ),
+    ],
+    [
+      'list discovery',
+      /getLists\b/,
+      (service) =>
+        service.discoverCollections({ actor: did, kind: 'lists', limit: 5 }, createMockContext()),
+    ],
+    [
+      'starter pack discovery',
+      /getActorStarterPacks/,
+      (service) =>
+        service.discoverCollections(
+          { actor: did, kind: 'starterPacks', limit: 5 },
+          createMockContext(),
+        ),
+    ],
+  ];
+
+  it.each(reads)(
+    'reports a reshaped %s response as Bluesky being unavailable, never as the caller’s invalid input',
+    async (_label, match, read) => {
+      http.route({ match, respond: () => Response.json({ unexpected: [{ shape: 1 }] }) });
+
+      const error = await read(getBlueskyService()).then(
+        () => undefined,
+        (err: unknown) => err as { code?: number; message?: string; cause?: unknown },
+      );
+
+      expect(error?.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+      expect(error?.message).toMatch(/could not read/);
+      expect(error?.cause).toBeInstanceOf(Error);
+      expect(http.calls).toHaveLength(1);
+    },
+  );
+});
+
+describe('handle resolution — one resolver for every handle authority', () => {
+  const did = 'did:plc:eclio37ymobqex2ncko63h4r';
+  const RESOLVE_HANDLE = 'com.atproto.identity.resolveHandle';
+  /** 255 characters: it passes every input pattern, and the AppView rejects it as malformed. */
+  const LONG = `${`${'a'.repeat(60)}.`.repeat(4)}example.com`;
+  const lexicon = (name: string) => (request: Request) =>
+    new URL(request.url).pathname === `/xrpc/${name}`;
+  const sent = () => http.calls.map(({ request }) => new URL(request.url));
+  const lexicons = () => sent().map((url) => url.pathname.slice('/xrpc/'.length));
+  /** How the AppView answers a handle it rejects as malformed, as measured live. */
+  const invalidHandle = (handle: string) =>
+    xrpcError(
+      400,
+      'InvalidRequest',
+      `Invalid com.atproto.identity.resolveHandle params: Invalid handle (got "${handle}")`,
+    );
+  const MISSING_MEMBERSHIP =
+    'Starter pack membership is unavailable because Bluesky could not find its backing list.';
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** One collection caller and one other caller of the resolver, with what each reads next. */
+  const callers = [
+    {
+      path: 'a collection read (bsky_get_list on a list)',
+      run: (authority: string) =>
+        runToolContract(bskyGetList, { list: `at://${authority}/app.bsky.graph.list/news` }),
+      record: 'app.bsky.graph.getList',
+      answer: () =>
+        Response.json({
+          list: {
+            uri: `at://${did}/app.bsky.graph.list/news`,
+            name: 'News',
+            creator: { did, handle: 'nytimes.com' },
+            purpose: 'app.bsky.graph.defs#curatelist',
+          },
+          items: [],
+        }),
+      target: ['list', `at://${did}/app.bsky.graph.list/news`],
+      reason: 'list_not_found',
+      hint: bskyGetList.errors?.find((e) => e.reason === 'list_not_found')?.recovery,
+    },
+    {
+      path: 'a generator feed (bsky_get_feed)',
+      run: (authority: string) =>
+        runToolContract(bskyGetFeed, { feed: `at://${authority}/app.bsky.feed.generator/news` }),
+      record: 'app.bsky.feed.getFeed',
+      answer: () => Response.json({ feed: [] }),
+      target: ['feed', `at://${did}/app.bsky.feed.generator/news`],
+      reason: 'feed_not_found',
+      hint: bskyGetFeed.errors?.find((e) => e.reason === 'feed_not_found')?.recovery,
+    },
+  ] as const;
+
+  describe.each(callers)('through $path', ({ run, record, answer, target, reason, hint }) => {
+    it('sends a mixed-case handle lowercased and reads the record at the DID it names', async () => {
+      http.route(
+        { match: lexicon(RESOLVE_HANDLE), respond: () => Response.json({ did }) },
+        { match: lexicon(record), respond: answer },
+      );
+
+      const result = await run('NYTimes.COM');
+
+      expect(result.isError).toBeFalsy();
+      expect(lexicons()).toEqual([RESOLVE_HANDLE, record]);
+      expect(sent()[0]?.searchParams.get('handle')).toBe('nytimes.com');
+      expect(sent()[1]?.searchParams.get(target[0])).toBe(target[1]);
+    });
+
+    it.each([
+      ['InvalidRequest, its answer to a malformed handle', LONG, () => invalidHandle(LONG)],
+      [
+        'HandleNotFound, the lexicon’s declared error',
+        'missing.example.com',
+        () => xrpcError(400, 'HandleNotFound', 'Unable to resolve handle'),
+      ],
+    ])(
+      'maps a 400 %s to the caller’s not-found, before any record request',
+      async (_label, handle, respond) => {
+        http.route(
+          { match: lexicon(RESOLVE_HANDLE), respond },
+          { match: lexicon(record), respond: answer },
+        );
+
+        const result = await run(handle);
+
+        expect(result.isError).toBe(true);
+        expect(hint).toBeTruthy();
+        expect(errorOf(result)).toMatchObject({
+          code: JsonRpcErrorCode.NotFound,
+          data: { reason, recovery: { hint } },
+        });
+        expect(textOf(result)).toContain(hint ?? '<missing>');
+        expect(lexicons()).toEqual([RESOLVE_HANDLE]);
+      },
+    );
+
+    it('leaves a 400 without an XRPC envelope as an ordinary failure, after one request', async () => {
+      http.route({
+        match: lexicon(RESOLVE_HANDLE),
+        respond: () => new Response('Bad Request', { status: 400 }),
+      });
+
+      const result = await run('nytimes.com');
+
+      expect(result.isError).toBe(true);
+      expect(errorOf(result).code).toBe(JsonRpcErrorCode.InvalidParams);
+      expect(errorOf(result).data?.reason).toBeUndefined();
+      expect(lexicons()).toEqual([RESOLVE_HANDLE]);
+    });
+
+    it.each([
+      [429, 'RateLimitExceeded', 'Rate Limit Exceeded'],
+      [500, 'InternalServerError', 'Internal Server Error'],
+      // Only a 400 says the handle is unknown, whatever envelope another status carries.
+      [500, 'InvalidRequest', 'Invalid request'],
+    ])(
+      'retries a %i %s instead of reporting the handle missing',
+      async (status, error, message) => {
+        vi.useFakeTimers();
+        http.route(
+          {
+            match: lexicon(RESOLVE_HANDLE),
+            once: true,
+            respond: () => xrpcError(status, error, message),
+          },
+          { match: lexicon(RESOLVE_HANDLE), respond: () => Response.json({ did }) },
+          { match: lexicon(record), respond: answer },
+        );
+
+        const pending = run('nytimes.com');
+        await vi.runAllTimersAsync();
+        const result = await pending;
+
+        expect(result.isError).toBeFalsy();
+        expect(lexicons()).toEqual([RESOLVE_HANDLE, RESOLVE_HANDLE, record]);
+      },
+    );
+
+    it.each([
+      ['a value that is no identifier', 'not-a-did'],
+      ['a handle, which the actor pattern also accepts', 'nytimes.com'],
+    ])(
+      'fails an answer that is %s as ServiceUnavailable, and never reads the record',
+      async (_label, answered) => {
+        http.route(
+          { match: lexicon(RESOLVE_HANDLE), respond: () => Response.json({ did: answered }) },
+          { match: lexicon(record), respond: answer },
+        );
+
+        const result = await run('nytimes.com');
+
+        expect(result.isError).toBe(true);
+        expect(errorOf(result).code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+        expect(errorOf(result).data?.reason).toBeUndefined();
+        expect(textOf(result)).toContain(
+          `${RESOLVE_HANDLE} with a response this server could not read`,
+        );
+        expect(lexicons()).toEqual([RESOLVE_HANDLE]);
+      },
+    );
+  });
+
+  it('bounds a collection read’s handle resolution by the caller’s deadline', async () => {
+    vi.useFakeTimers();
+    const start = Date.now();
+    http.route({
+      match: lexicon(RESOLVE_HANDLE),
+      respond: (request) =>
+        new Promise<Response>((_resolve, reject) =>
+          request.signal.addEventListener('abort', () => reject(request.signal.reason), {
+            once: true,
+          }),
+        ),
+    });
+
+    const pending = getBlueskyService()
+      .getFeed(
+        { feed: 'at://nytimes.com/app.bsky.graph.list/news', deadlineAtMs: start + 1_000 },
+        createMockContext(),
+      )
+      .then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+    await vi.advanceTimersByTimeAsync(999);
+    expect(lexicons()).toEqual([RESOLVE_HANDLE]);
+    expect(http.calls[0]?.request.signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(http.calls[0]?.request.signal.aborted).toBe(true);
+    expect(await pending).toMatchObject({ code: JsonRpcErrorCode.Timeout });
+    expect(lexicons()).toEqual([RESOLVE_HANDLE]);
+    expect(Date.now() - start).toBe(1_000);
+  });
+
+  it.each([
+    [
+      'bsky_get_feed on a list',
+      () => runToolContract(bskyGetFeed, { feed: `at://${LONG}/app.bsky.graph.list/news` }),
+      'list_not_found',
+      bskyGetFeed.errors?.find((e) => e.reason === 'list_not_found')?.recovery,
+    ],
+    [
+      'bsky_get_list on a starter pack',
+      () => runToolContract(bskyGetList, { list: `at://${LONG}/app.bsky.graph.starterpack/pack` }),
+      'starter_pack_not_found',
+      bskyGetList.errors?.find((e) => e.reason === 'starter_pack_not_found')?.recovery,
+    ],
+  ])(
+    '%s reports its own not-found when Bluesky rejects the owner handle',
+    async (_label, run, reason, hint) => {
+      http.route({ match: lexicon(RESOLVE_HANDLE), respond: () => invalidHandle(LONG) });
+
+      const result = await run();
+
+      expect(result.isError).toBe(true);
+      expect(hint).toBeTruthy();
+      expect(errorOf(result)).toMatchObject({
+        code: JsonRpcErrorCode.NotFound,
+        data: { reason, recovery: { hint } },
+      });
+      expect(textOf(result)).toContain(hint ?? '<missing>');
+      expect(lexicons()).toEqual([RESOLVE_HANDLE]);
+    },
+  );
+
+  it('returns a starter pack whose backing-list owner handle Bluesky rejects, with the membership notice', async () => {
+    const pack = `at://${did}/app.bsky.graph.starterpack/pack`;
+    http.route(
+      {
+        match: lexicon('app.bsky.graph.getStarterPack'),
+        respond: () =>
+          Response.json({
+            starterPack: {
+              uri: pack,
+              creator: { did, handle: 'nytimes.com' },
+              record: { name: 'Pack', list: `at://${LONG}/app.bsky.graph.list/members` },
+            },
+          }),
+      },
+      { match: lexicon(RESOLVE_HANDLE), respond: () => invalidHandle(LONG) },
+    );
+
+    const result = await runToolContract(bskyGetList, { list: pack });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({
+      starterPack: { uri: pack, listUri: `at://${LONG}/app.bsky.graph.list/members` },
+      notice: MISSING_MEMBERSHIP,
+    });
+    expect(textOf(result)).toContain(MISSING_MEMBERSHIP);
+    expect(lexicons()).toEqual(['app.bsky.graph.getStarterPack', RESOLVE_HANDLE]);
+  });
+});
+
+/**
+ * `getLists` and `getActorStarterPacks` answer an unknown DID with 200 and an empty page, where an
+ * unknown handle gets 400 `Profile not found`. An empty first page for a DID is checked with one
+ * `getProfile`; only its `Profile not found` changes the answer.
+ */
+describe.each([
+  { kind: 'lists', lexicon: 'app.bsky.graph.getLists' },
+  { kind: 'starterPacks', lexicon: 'app.bsky.graph.getActorStarterPacks' },
+] as const)('actor discovery of $kind for a DID', ({ kind, lexicon }) => {
+  const did = 'did:plc:aaaaaaaaaaaaaaaaaaaaaaaa';
+  const PROFILE = 'app.bsky.actor.getProfile';
+  const at = (name: string) => (request: Request) =>
+    new URL(request.url).pathname === `/xrpc/${name}`;
+  const serve = (body: Record<string, unknown> = {}) =>
+    http.route({ match: at(lexicon), respond: () => Response.json({ [kind]: [], ...body }) });
+  const serveProfile = (respond: (request: Request) => Response | Promise<Response>) =>
+    http.route({ match: at(PROFILE), respond });
+  const sent = () =>
+    http.calls.map(({ request }) => {
+      const url = new URL(request.url);
+      return [url.pathname.slice('/xrpc/'.length), Object.fromEntries(url.searchParams)];
+    });
+  const discover = (params: { actor?: string; cursor?: string } = {}, ctx = createMockContext()) =>
+    getBlueskyService().discoverCollections({ actor: did, kind, limit: 5, ...params }, ctx);
+  const emptyPage = { kind, [kind]: [] };
+  const unconfirmedPage = { ...emptyPage, actorUnconfirmed: true };
+
+  it.each([
+    ['without a cursor', {}],
+    ['with the empty cursor that ends a stream', { cursor: '' }],
+  ])(
+    'fails as actor_not_found after exactly two requests when the page ends %s',
+    async (_label, body) => {
+      serve(body);
+      serveProfile(() => xrpcError(400, 'InvalidRequest', 'Profile not found'));
+
+      await expect(discover()).rejects.toMatchObject({
+        code: JsonRpcErrorCode.NotFound,
+        data: { reason: 'actor_not_found' },
+      });
+      expect(sent()).toEqual([
+        [lexicon, { actor: did, limit: '5' }],
+        [PROFILE, { actor: did }],
+      ]);
+    },
+  );
+
+  it('returns the empty page for an account that exists, after one profile request', async () => {
+    serve();
+    serveProfile(() => Response.json({ did, handle: 'quiet.bsky.social' }));
+
+    await expect(discover()).resolves.toEqual(emptyPage);
+    expect(sent().map(([name]) => name)).toEqual([lexicon, PROFILE]);
+  });
+
+  it.each([
+    [
+      '503 the retry budget cannot wait out',
+      () =>
+        Response.json({ error: 'Unavailable' }, { status: 503, headers: { 'Retry-After': '31' } }),
+    ],
+    [
+      '429 the retry budget cannot wait out',
+      () =>
+        Response.json(
+          { error: 'RateLimitExceeded' },
+          { status: 429, headers: { 'Retry-After': '31' } },
+        ),
+    ],
+    ['different 400', () => xrpcError(400, 'AccountDeactivated', 'Account is deactivated')],
+  ])(
+    'marks the empty page unconfirmed when the profile check answers a %s',
+    async (_label, respond) => {
+      serve();
+      serveProfile(respond);
+
+      await expect(discover()).resolves.toEqual(unconfirmedPage);
+      expect(sent().map(([name]) => name)).toEqual([lexicon, PROFILE]);
+    },
+  );
+
+  it('marks the empty page unconfirmed when every profile attempt comes back unreadable', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      serve();
+      serveProfile(() => new Response('not json', { status: 200 }));
+
+      const pending = discover();
+      await vi.runAllTimersAsync();
+
+      await expect(pending).resolves.toEqual(unconfirmedPage);
+      const names = sent().map(([name]) => name);
+      expect(names[0]).toBe(lexicon);
+      expect(names.length).toBeGreaterThan(2);
+      expect(names.slice(1).every((name) => name === PROFILE)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('marks the empty page unconfirmed without a profile request once the collection deadline is spent', async () => {
+    const clock = vi.spyOn(Date, 'now');
+    const start = Date.now();
+    try {
+      http.route({
+        match: at(lexicon),
+        respond: () => {
+          clock.mockReturnValue(start + 46_000);
+          return Response.json({ [kind]: [] });
+        },
+      });
+      // A routed profile records a check the spent deadline should have prevented.
+      serveProfile(() => Response.json({ did, handle: 'quiet.bsky.social' }));
+
+      await expect(discover()).resolves.toEqual(unconfirmedPage);
+      expect(sent().map(([name]) => name)).toEqual([lexicon]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it.each([
+    ['one request timeout when more of the collection deadline is left', 0, 15_000],
+    [
+      'the rest of the collection deadline when less than a request timeout is left',
+      35_000,
+      10_000,
+    ],
+  ])('settles a hung profile check as unconfirmed after %s', async (_label, spentMs, boundMs) => {
+    vi.useFakeTimers();
+    try {
+      http.route({
+        match: at(lexicon),
+        respond: () => {
+          vi.setSystemTime(Date.now() + spentMs);
+          return Response.json({ [kind]: [] });
+        },
+      });
+      serveProfile(
+        (request) =>
+          new Promise<Response>((_resolve, reject) =>
+            request.signal.addEventListener('abort', () => reject(request.signal.reason), {
+              once: true,
+            }),
+          ),
+      );
+
+      let page: unknown;
+      const pending = discover().then((value) => {
+        page = value;
+      });
+      await vi.advanceTimersByTimeAsync(boundMs - 1);
+      expect(page).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(page).toEqual(unconfirmedPage);
+      await pending;
+      expect(sent().map(([name]) => name)).toEqual([lexicon, PROFILE]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rethrows the caller’s cancellation during the profile check instead of degrading', async () => {
+    const caller = new AbortController();
+    serve();
+    serveProfile(
+      (request) =>
+        new Promise<Response>((_resolve, reject) => {
+          request.signal.addEventListener('abort', () => reject(request.signal.reason), {
+            once: true,
+          });
+          caller.abort();
+        }),
+    );
+
+    const settled = await discover({}, createMockContext({ signal: caller.signal })).then(
+      (page) => ({ page }),
+      (error: unknown) => ({ error }),
+    );
+
+    expect(settled).toEqual({ error: caller.signal.reason });
+    expect(caller.signal.reason).toHaveProperty('name', 'AbortError');
+    expect(sent().map(([name]) => name)).toEqual([lexicon, PROFILE]);
+  });
+
+  /**
+   * A profile route that answers 200 records any stray check in `sent()`, where an unrouted one
+   * would fail unrecorded and only mark the page unconfirmed.
+   */
+  it.each([
+    ['a handle', { actor: 'nytimes.com' }, {}, { actor: 'nytimes.com', limit: '5' }],
+    [
+      'a call that followed a cursor',
+      { cursor: 'c1' },
+      {},
+      { actor: did, limit: '5', cursor: 'c1' },
+    ],
+    [
+      'an empty page that still carries a cursor',
+      {},
+      { cursor: 'next' },
+      { actor: did, limit: '5' },
+    ],
+  ])('spends no profile request on %s', async (_label, params, body, query) => {
+    serve(body);
+    serveProfile(() => Response.json({ did, handle: 'quiet.bsky.social' }));
+
+    await expect(discover(params)).resolves.toEqual({ ...emptyPage, ...body });
+    expect(sent()).toEqual([[lexicon, query]]);
+  });
+
+  it('spends no profile request on a page that holds a collection', async () => {
+    const creator = { did, handle: 'curator.bsky.social' };
+    const listUri = `at://${did}/app.bsky.graph.list/3lbugqe62cm2n`;
+    const packUri = `at://${did}/app.bsky.graph.starterpack/3lbugqemf5427`;
+    http.route({
+      match: at(lexicon),
+      respond: () =>
+        Response.json({
+          [kind]: [
+            kind === 'lists'
+              ? {
+                  uri: listUri,
+                  name: 'Curated',
+                  creator,
+                  purpose: 'app.bsky.graph.defs#curatelist',
+                }
+              : { uri: packUri, creator, record: { name: 'Pack', list: listUri } },
+          ],
+        }),
+    });
+    serveProfile(() => Response.json({ did, handle: 'curator.bsky.social' }));
+
+    await expect(discover()).resolves.toEqual({
+      kind,
+      [kind]: [
+        kind === 'lists'
+          ? { uri: listUri, name: 'Curated', creator, purpose: 'app.bsky.graph.defs#curatelist' }
+          : { uri: packUri, creator, name: 'Pack', listUri },
+      ],
+    });
+    expect(sent()).toEqual([[lexicon, { actor: did, limit: '5' }]]);
+  });
+});
+
+/**
+ * The AppView answers an actor that passes the input pattern but fails its own identifier check
+ * with 400 `InvalidRequest` naming `Invalid AT identifier`. Such an identifier names no account, so
+ * an actor read reports `actor_not_found`; a record read keeps the plain 400.
+ */
+describe('an identifier the AppView rejects as invalid', () => {
+  const did = 'did:plc:z72i7hdynmk6r22z27h6tvur';
+  /** 255 characters: it passes every input pattern, and the AppView rejects it as malformed. */
+  const LONG = `${`${'a'.repeat(60)}.`.repeat(4)}example.com`;
+  const invalidIdentifier = (lexicon: string, value: string) => () =>
+    xrpcError(
+      400,
+      'InvalidRequest',
+      `Invalid ${lexicon} params: Invalid AT identifier (got "${value}")`,
+    );
+  const ctx = createMockContext;
+
+  it.each([
+    [
+      'Invalid AT identifier on actor discovery to actor_not_found',
+      'app.bsky.graph.getLists',
+      invalidIdentifier('app.bsky.graph.getLists', LONG),
+      () =>
+        getBlueskyService().discoverCollections({ actor: LONG, kind: 'lists', limit: 5 }, ctx()),
+      'actor_not_found',
+    ],
+    [
+      'Invalid AT identifier on an actor feed read to actor_not_found',
+      'app.bsky.feed.getActorFeeds',
+      invalidIdentifier('app.bsky.feed.getActorFeeds', LONG),
+      () => getBlueskyService().getActorFeeds({ actor: LONG, limit: 5 }, ctx()),
+      'actor_not_found',
+    ],
+    [
+      'another InvalidRequest on actor discovery to no reason',
+      'app.bsky.graph.getLists',
+      () => xrpcError(400, 'InvalidRequest', 'Invalid app.bsky.graph.getLists params: bad cursor'),
+      () =>
+        getBlueskyService().discoverCollections({ actor: LONG, kind: 'lists', limit: 5 }, ctx()),
+      undefined,
+    ],
+    [
+      'Invalid AT identifier on a list read to no reason',
+      'app.bsky.graph.getList',
+      invalidIdentifier('app.bsky.graph.getList', did),
+      () =>
+        getBlueskyService().getList(
+          { list: `at://${did}/app.bsky.graph.list/news`, limit: 5 },
+          ctx(),
+        ),
+      undefined,
+    ],
+  ])('maps %s, after one request', async (_label, lexicon, respond, read, reason) => {
+    http.route({
+      match: (request) => new URL(request.url).pathname === `/xrpc/${lexicon}`,
+      respond,
+    });
+
+    const error = await read().then(
+      () => undefined,
+      (err: unknown) => err as { code?: number; data?: { reason?: string } },
+    );
+
+    expect(error?.code).toBe(
+      reason === undefined ? JsonRpcErrorCode.InvalidParams : JsonRpcErrorCode.NotFound,
+    );
+    expect(error?.data?.reason).toBe(reason);
+    expect(http.calls).toHaveLength(1);
+  });
+});
+
+/**
+ * Collection records Bluesky serves that this server cannot read. The starter pack fixture is the
+ * one Bluesky serves at `BAD_PACK`: a record whose `list` misspells the list collection, with no
+ * hydrated list view beside it.
+ */
+describe('collection records Bluesky sent malformed', () => {
+  const owner = { did: 'did:plc:xgs3qrwos3dwxmixoflcxrhu', handle: 'devin.divy.zone' };
+  const BAD_PACK = `at://${owner.did}/app.bsky.graph.starterpack/3kvrbgdrtbs2v`;
+  const UNREADABLE_LIST = 'at://did:web:example/app.bsly.graph.list/example';
+  const listUri = (rkey: string) => `at://${owner.did}/app.bsky.graph.list/${rkey}`;
+  const packUri = (rkey: string) => `at://${owner.did}/app.bsky.graph.starterpack/${rkey}`;
+  const badPack = {
+    uri: BAD_PACK,
+    creator: owner,
+    record: { name: 'Test pack', list: UNREADABLE_LIST },
+  };
+  /** A pack view as `getActorStarterPacks` sends it, and the projection the server returns. */
+  const packView = (rkey: string) => ({
+    uri: packUri(rkey),
+    creator: owner,
+    record: { name: `Pack ${rkey}`, list: listUri(rkey) },
+  });
+  const pack = (rkey: string) => ({
+    uri: packUri(rkey),
+    creator: owner,
+    name: `Pack ${rkey}`,
+    listUri: listUri(rkey),
+  });
+  const list = (rkey: string) => ({
+    uri: listUri(rkey),
+    name: `List ${rkey}`,
+    creator: owner,
+    purpose: 'app.bsky.graph.defs#curatelist',
+  });
+  const at = (name: string) => (request: Request) =>
+    new URL(request.url).pathname === `/xrpc/${name}`;
+  const lexicons = () =>
+    http.calls.map(({ request }) => new URL(request.url).pathname.slice('/xrpc/'.length));
+  /** A last route on the AppView origin, so a request no test expected is recorded too. */
+  const recordStrays = () =>
+    http.route({
+      match: (request) => new URL(request.url).origin === 'https://api.bsky.app',
+      respond: () => xrpcError(418, 'Unrouted', 'No route for this request'),
+    });
+  const discover = (actor: string, kind: 'lists' | 'starterPacks') =>
+    getBlueskyService().discoverCollections({ actor, kind, limit: 5 }, createMockContext());
+
+  it('drops a malformed starter pack from discovery, keeps the rest in order, and counts it', async () => {
+    http.route({
+      match: at('app.bsky.graph.getActorStarterPacks'),
+      respond: () =>
+        Response.json({ starterPacks: [packView('sp1'), badPack, packView('3kvud4dulq526')] }),
+    });
+    recordStrays();
+
+    await expect(discover('devin.divy.zone', 'starterPacks')).resolves.toEqual({
+      kind: 'starterPacks',
+      starterPacks: [pack('sp1'), pack('3kvud4dulq526')],
+      unreadable: 1,
+    });
+    expect(lexicons()).toEqual(['app.bsky.graph.getActorStarterPacks']);
+  });
+
+  it('drops a list whose URI is not a list AT-URI and keeps the page’s cursor', async () => {
+    http.route({
+      match: at('app.bsky.graph.getLists'),
+      respond: () =>
+        Response.json({
+          lists: [list('first'), { ...list('second'), uri: UNREADABLE_LIST }],
+          cursor: 'next',
+        }),
+    });
+    recordStrays();
+
+    await expect(discover('devin.divy.zone', 'lists')).resolves.toEqual({
+      kind: 'lists',
+      lists: [list('first')],
+      unreadable: 1,
+      cursor: 'next',
+    });
+    expect(lexicons()).toEqual(['app.bsky.graph.getLists']);
+  });
+
+  it('spends no profile check on a DID page whose every row was dropped, since Bluesky sent rows', async () => {
+    const badFeed = {
+      ...packView('feeds'),
+      record: {
+        ...packView('feeds').record,
+        feeds: [{ uri: 'at://did:web:example/app.bsky.feed.generatr/x' }],
+      },
+    };
+    http.route({
+      match: at('app.bsky.graph.getActorStarterPacks'),
+      respond: () => Response.json({ starterPacks: [badPack, badFeed] }),
+    });
+    recordStrays();
+
+    await expect(discover(owner.did, 'starterPacks')).resolves.toEqual({
+      kind: 'starterPacks',
+      starterPacks: [],
+      unreadable: 2,
+    });
+    expect(lexicons()).toEqual(['app.bsky.graph.getActorStarterPacks']);
+  });
+
+  it('reads a starter pack whose backing list reference is not a list AT-URI as membership unavailable, after one request', async () => {
+    http.route({
+      match: at('app.bsky.graph.getStarterPack'),
+      respond: () => Response.json({ starterPack: badPack }),
+    });
+    recordStrays();
+
+    await expect(
+      getBlueskyService().getList({ list: BAD_PACK, limit: 5 }, createMockContext()),
+    ).resolves.toEqual({
+      kind: 'missingBackingList',
+      backingList: 'unreadable',
+      starterPack: { uri: BAD_PACK, creator: owner, name: 'Test pack', listUri: UNREADABLE_LIST },
+    });
+    expect(lexicons()).toEqual(['app.bsky.graph.getStarterPack']);
   });
 });

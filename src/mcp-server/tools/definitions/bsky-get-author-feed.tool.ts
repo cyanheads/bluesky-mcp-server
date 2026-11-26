@@ -112,6 +112,10 @@ const PostSchema = z
         'Number of quote posts Bluesky counts — read them with bsky_get_post_quotes. An upper bound on ' +
           'what that returns, since the counter keeps quotes that have left the index.',
       ),
+    bookmarkCount: z
+      .number()
+      .optional()
+      .describe('Number of accounts that bookmarked this post. No endpoint lists who saved it.'),
     indexedAt: z.string().optional().describe('ISO 8601 timestamp when this post was indexed.'),
     createdAt: z.string().optional().describe('ISO 8601 timestamp when this post was created.'),
     labels: z

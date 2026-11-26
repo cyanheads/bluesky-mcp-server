@@ -1566,3 +1566,135 @@ describe('BlueskyService.getProfile — actor normalization', () => {
     expect(profile).not.toHaveProperty('pronouns');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Post counters — bookmarkCount
+// ---------------------------------------------------------------------------
+
+/** A raw `app.bsky.feed.defs#postView` with the four counters every post view carries, plus `extra`. */
+const countedPost = (rkey: string, extra: Record<string, unknown> = {}) => ({
+  uri: `at://did:plc:abc/app.bsky.feed.post/${rkey}`,
+  cid: `bafyr-${rkey}`,
+  author: { did: 'did:plc:abc', handle: 'alice.bsky.social' },
+  record: { text: `text of ${rkey}` },
+  likeCount: 10788,
+  repostCount: 3089,
+  replyCount: 304,
+  quoteCount: 157,
+  ...extra,
+});
+
+describe('BlueskyService — bookmarkCount normalization', () => {
+  let service: BlueskyService;
+
+  beforeEach(() => {
+    service = new BlueskyService();
+    mockFetch.mockReset();
+  });
+
+  it('copies a number, keeps zero, and omits anything else rather than defaulting it', async () => {
+    mockFetch.mockImplementation(() =>
+      fakeResponse({
+        feed: [
+          { post: countedPost('saved', { bookmarkCount: 151 }) },
+          { post: countedPost('zero', { bookmarkCount: 0 }) },
+          { post: countedPost('absent') },
+          { post: countedPost('null', { bookmarkCount: null }) },
+        ],
+      }),
+    );
+
+    const { feed } = await service.getAuthorFeed(
+      { actor: 'alice.bsky.social' },
+      createMockContext(),
+    );
+
+    expect(feed[0]?.bookmarkCount).toBe(151);
+    expect(feed[1]?.bookmarkCount).toBe(0);
+    expect(feed[2]).not.toHaveProperty('bookmarkCount');
+    expect(feed[3]).not.toHaveProperty('bookmarkCount');
+    expect(feed[0]).toMatchObject({
+      likeCount: 10788,
+      repostCount: 3089,
+      replyCount: 304,
+      quoteCount: 157,
+    });
+  });
+
+  it('carries it on the thread target, its parent, and its replies', async () => {
+    mockFetch.mockImplementation(() =>
+      fakeResponse({
+        thread: {
+          $type: 'app.bsky.feed.defs#threadViewPost',
+          post: countedPost('target', { bookmarkCount: 151 }),
+          parent: {
+            $type: 'app.bsky.feed.defs#threadViewPost',
+            post: countedPost('parent', { bookmarkCount: 0 }),
+          },
+          replies: [
+            {
+              $type: 'app.bsky.feed.defs#threadViewPost',
+              post: countedPost('reply', { bookmarkCount: 2 }),
+            },
+            { $type: 'app.bsky.feed.defs#threadViewPost', post: countedPost('bare') },
+          ],
+        },
+      }),
+    );
+
+    const { thread } = await service.getPostThread(
+      { uri: 'at://did:plc:abc/app.bsky.feed.post/target' },
+      createMockContext(),
+    );
+
+    expect(thread.post.bookmarkCount).toBe(151);
+    expect(thread.parent?.post.bookmarkCount).toBe(0);
+    expect(thread.replies?.[0]?.post.bookmarkCount).toBe(2);
+    expect(thread.replies?.[1]?.post).not.toHaveProperty('bookmarkCount');
+  });
+
+  /**
+   * `app.bsky.embed.record#viewRecord` carries like, repost, reply, and quote counts and no
+   * bookmarkCount; the quoted-post embed maps none of them, so it gains no counter either.
+   */
+  it('gives a quoted post no counter', async () => {
+    mockFetch.mockImplementation(() =>
+      fakeResponse({
+        feed: [
+          {
+            post: countedPost('quoting', {
+              bookmarkCount: 151,
+              embed: {
+                $type: 'app.bsky.embed.record#view',
+                record: {
+                  $type: 'app.bsky.embed.record#viewRecord',
+                  uri: 'at://did:plc:quoted/app.bsky.feed.post/q1',
+                  cid: 'bafyrquoted',
+                  author: { did: 'did:plc:quoted', handle: 'quoted.bsky.social' },
+                  value: { text: 'the quoted text' },
+                  likeCount: 9,
+                  repostCount: 8,
+                  replyCount: 7,
+                  quoteCount: 6,
+                },
+              },
+            }),
+          },
+        ],
+      }),
+    );
+
+    const { feed } = await service.getAuthorFeed(
+      { actor: 'alice.bsky.social' },
+      createMockContext(),
+    );
+
+    expect(feed[0]?.embed).toEqual({
+      type: 'record',
+      uri: 'at://did:plc:quoted/app.bsky.feed.post/q1',
+      cid: 'bafyrquoted',
+      text: 'the quoted text',
+      authorHandle: 'quoted.bsky.social',
+    });
+  });
+});

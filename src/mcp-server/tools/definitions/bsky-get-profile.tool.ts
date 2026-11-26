@@ -120,7 +120,9 @@ export const bskyGetProfile = tool('bsky_get_profile', {
         feedgens: z
           .number()
           .optional()
-          .describe('Number of feed generators curated by this account, when supplied.'),
+          .describe(
+            'Number of feed generators curated by this account, when supplied. bsky_search_feeds with actor lists them.',
+          ),
         starterPacks: z
           .number()
           .optional()

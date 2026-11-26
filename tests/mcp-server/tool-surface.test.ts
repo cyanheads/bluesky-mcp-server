@@ -79,6 +79,21 @@ describe('tools that stay registered without credentials', () => {
   });
 });
 
+describe('advertised input roots', () => {
+  /**
+   * The Anthropic Messages API rejects a top-level combinator in `input_schema`, and Claude clients
+   * rewrite such a root to its first branch. Cross-field rules belong in the handler.
+   */
+  it.each([...ALWAYS_REGISTERED, bskySearchPosts].map((def) => [def.name, def] as const))(
+    '%s advertises a flat object root with no combinator',
+    (_name, def) => {
+      const schema = z.toJSONSchema(def.input) as Record<string, unknown>;
+      expect(schema.type).toBe('object');
+      for (const key of ['anyOf', 'oneOf', 'allOf', 'not']) expect(schema).not.toHaveProperty(key);
+    },
+  );
+});
+
 describe('the server instructions', () => {
   it('never name post search, or claim to need no account for it, when search is off', () => {
     const text = serverInstructions(false);

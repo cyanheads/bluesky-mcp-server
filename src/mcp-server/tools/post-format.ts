@@ -332,6 +332,7 @@ export interface RenderablePost {
     handle: string;
     verification?: RenderableVerification | undefined;
   };
+  bookmarkCount?: number | undefined;
   cid: string;
   createdAt?: string | undefined;
   /** Normalized embed union — narrowed at render time, since tool schemas type it as passthrough. */
@@ -568,6 +569,7 @@ export function renderPostLines(post: RenderablePost, headingPrefix = ''): strin
   if (post.repostCount != null) meta.push(`${post.repostCount} reposts`);
   if (post.replyCount != null) meta.push(`${post.replyCount} replies`);
   if (post.quoteCount != null) meta.push(`${post.quoteCount} quotes`);
+  if (post.bookmarkCount != null) meta.push(`${post.bookmarkCount} bookmarks`);
   if (meta.length) lines.push(`*${meta.join(' · ')}*`);
   if (post.createdAt) lines.push(`*Created: ${post.createdAt}*`);
   if (post.indexedAt) lines.push(`*Indexed: ${post.indexedAt}*`);
