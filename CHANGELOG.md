@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.8.1](changelog/0.8.x/0.8.1.md) — 2026-11-25
+
+Lists an account's feeds with bsky_search_feeds actor mode and likeCount, adds bookmarkCount to posts and totalReturned to bsky_get_list, and fixes bsky_get_list page notices, its advertised input root, and handle resolution.
+
 ## [0.8.0](changelog/0.8.x/0.8.0.md) — 2026-11-11 · ⚠️ Breaking
 
 Discover Bluesky lists and starter packs, page through their members, and read list feeds.
