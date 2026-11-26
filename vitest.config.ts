@@ -17,6 +17,8 @@ export default mergeConfig(
   defineConfig({
     resolve: { alias },
     test: {
+      // Bun's child-process IPC channel lacks the unref() Vitest's fork pool calls; Node keeps forks.
+      pool: process.versions.bun ? 'threads' : 'forks',
       projects: [
         {
           extends: true,
